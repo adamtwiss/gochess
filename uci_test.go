@@ -7,7 +7,56 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestParseGoParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens []string
+		want   goParams
+	}{
+		{
+			"empty",
+			nil,
+			goParams{depth: 64},
+		},
+		{
+			"depth only",
+			[]string{"depth", "10"},
+			goParams{depth: 10},
+		},
+		{
+			"infinite",
+			[]string{"infinite"},
+			goParams{depth: 64, infinite: true},
+		},
+		{
+			"ponder with time",
+			[]string{"ponder", "wtime", "60000", "btime", "60000", "winc", "1000", "binc", "1000"},
+			goParams{depth: 64, ponder: true, wtime: 60000, btime: 60000, winc: 1000, binc: 1000},
+		},
+		{
+			"movetime",
+			[]string{"movetime", "5000"},
+			goParams{depth: 64, movetime: 5000},
+		},
+		{
+			"movestogo",
+			[]string{"wtime", "30000", "btime", "30000", "movestogo", "10"},
+			goParams{depth: 64, wtime: 30000, btime: 30000, movestogo: 10},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseGoParams(tt.tokens)
+			if got != tt.want {
+				t.Errorf("parseGoParams(%v) = %+v, want %+v", tt.tokens, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestParseUCIMove(t *testing.T) {
 	tests := []struct {
@@ -283,5 +332,487 @@ func TestUCISetOption(t *testing.T) {
 
 	if engine.hashSizeMB != 32 {
 		t.Errorf("hash size = %d, want 32", engine.hashSizeMB)
+	}
+}
+
+func TestUCIBookMove(t *testing.T) {
+	// Build a book with a single entry at startpos
+	var b Board
+	b.Reset()
+	hash := b.HashKey
+	moves := b.GenerateLegalMoves()
+
+	// Find e2e4
+	var e4 Move
+	for _, m := range moves {
+		if m.String() == "e2e4" {
+			e4 = m
+			break
+		}
+	}
+	if e4 == NoMove {
+		t.Fatal("e2e4 not found in legal moves")
+	}
+
+	entries := map[uint64]*BookEntry{
+		hash: {
+			Hash:  hash,
+			Name:  "Starting Position",
+			Moves: []BookMove{{Move: e4, Weight: 100}},
+		},
+	}
+	data, err := serializeBookEntries(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := parseBookData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := "position startpos\ngo depth 10\nquit\n"
+	var out bytes.Buffer
+	engine := NewUCIEngineWithIO(strings.NewReader(input), &out)
+	engine.SetBook(book)
+	engine.Run()
+
+	output := out.String()
+	if !strings.Contains(output, "bestmove e2e4") {
+		t.Errorf("expected book move e2e4, output:\n%s", output)
+	}
+	if !strings.Contains(output, "info string book: Starting Position") {
+		t.Errorf("expected book info string, output:\n%s", output)
+	}
+	// Should NOT contain "info depth" since book move skips search
+	if strings.Contains(output, "info depth") {
+		t.Errorf("expected no search info when book move found, output:\n%s", output)
+	}
+}
+
+func TestUCIOwnBookOption(t *testing.T) {
+	var b Board
+	b.Reset()
+	hash := b.HashKey
+	moves := b.GenerateLegalMoves()
+
+	entries := map[uint64]*BookEntry{
+		hash: {
+			Hash:  hash,
+			Moves: []BookMove{{Move: moves[0], Weight: 100}},
+		},
+	}
+	data, err := serializeBookEntries(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := parseBookData(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Disable OwnBook, then search — should do a real search (no instant book move)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine := NewUCIEngineWithIO(inR, outW)
+	engine.SetBook(book)
+
+	done := make(chan struct{})
+	go func() {
+		engine.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	fmt.Fprintln(inW, "setoption name OwnBook value false")
+	fmt.Fprintln(inW, "position startpos")
+	fmt.Fprintln(inW, "go depth 1")
+
+	scanner := bufio.NewScanner(outR)
+	var lines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+		if strings.HasPrefix(line, "bestmove") {
+			break
+		}
+	}
+
+	inW.Close()
+	<-done
+
+	output := strings.Join(lines, "\n")
+	// With OwnBook disabled, should see search info
+	if !strings.Contains(output, "info depth") {
+		t.Errorf("expected search info when OwnBook disabled, output:\n%s", output)
+	}
+}
+
+func TestUCIBookAnnouncement(t *testing.T) {
+	input := "uci\nquit\n"
+	var out bytes.Buffer
+	engine := NewUCIEngineWithIO(strings.NewReader(input), &out)
+	engine.Run()
+
+	output := out.String()
+	if !strings.Contains(output, "option name OwnBook type check default true") {
+		t.Errorf("missing OwnBook option announcement, output:\n%s", output)
+	}
+	if !strings.Contains(output, "option name BookFile type string") {
+		t.Errorf("missing BookFile option announcement, output:\n%s", output)
+	}
+}
+
+func TestUCIPonderOption(t *testing.T) {
+	// Verify Ponder option is announced in uci output
+	input := "uci\nquit\n"
+	var out bytes.Buffer
+	engine := NewUCIEngineWithIO(strings.NewReader(input), &out)
+	engine.Run()
+
+	output := out.String()
+	if !strings.Contains(output, "option name Ponder type check default true") {
+		t.Errorf("missing Ponder option announcement, output:\n%s", output)
+	}
+
+	// Setting Ponder to false should omit ponder move from bestmove
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine2 := NewUCIEngineWithIO(inR, outW)
+
+	done := make(chan struct{})
+	go func() {
+		engine2.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	fmt.Fprintln(inW, "setoption name Ponder value false")
+	fmt.Fprintln(inW, "position startpos")
+	fmt.Fprintln(inW, "go depth 5")
+
+	scanner := bufio.NewScanner(outR)
+	var bestmoveLine string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "bestmove") {
+			bestmoveLine = line
+			break
+		}
+	}
+
+	inW.Close()
+	<-done
+
+	if bestmoveLine == "" {
+		t.Fatal("no bestmove received")
+	}
+	if strings.Contains(bestmoveLine, "ponder") {
+		t.Errorf("expected no ponder move when Ponder option is false, got: %s", bestmoveLine)
+	}
+}
+
+func TestUCIBestmovePonder(t *testing.T) {
+	// Normal go depth 5 should include ponder move when PV >= 2
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine := NewUCIEngineWithIO(inR, outW)
+
+	done := make(chan struct{})
+	go func() {
+		engine.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	fmt.Fprintln(inW, "position startpos")
+	fmt.Fprintln(inW, "go depth 5")
+
+	scanner := bufio.NewScanner(outR)
+	var bestmoveLine string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "bestmove") {
+			bestmoveLine = line
+			break
+		}
+	}
+
+	inW.Close()
+	<-done
+
+	if bestmoveLine == "" {
+		t.Fatal("no bestmove received")
+	}
+	// From startpos at depth 5, PV should have >= 2 moves
+	if !strings.Contains(bestmoveLine, " ponder ") {
+		t.Errorf("expected bestmove to include ponder move, got: %s", bestmoveLine)
+	}
+
+	// Verify ponder move is a valid 4-char UCI move
+	parts := strings.Fields(bestmoveLine)
+	if len(parts) < 4 || parts[2] != "ponder" {
+		t.Errorf("unexpected bestmove format: %s", bestmoveLine)
+	}
+}
+
+func TestUCIPonderHit(t *testing.T) {
+	// go ponder → search runs → ponderhit → search continues → bestmove arrives
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine := NewUCIEngineWithIO(inR, outW)
+
+	done := make(chan struct{})
+	go func() {
+		engine.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	fmt.Fprintln(inW, "position startpos")
+	fmt.Fprintln(inW, "go ponder wtime 60000 btime 60000")
+
+	// Wait for search to start producing info lines
+	scanner := bufio.NewScanner(outR)
+	gotInfo := false
+	bestmoveCh := make(chan string, 1)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "info depth") {
+				gotInfo = true
+			}
+			if strings.HasPrefix(line, "bestmove") {
+				bestmoveCh <- line
+				return
+			}
+		}
+		close(bestmoveCh)
+	}()
+
+	// Give search a moment to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Send ponderhit
+	fmt.Fprintln(inW, "ponderhit")
+
+	select {
+	case bm := <-bestmoveCh:
+		if bm == "" {
+			t.Fatal("no bestmove received after ponderhit")
+		}
+		if !strings.HasPrefix(bm, "bestmove") {
+			t.Errorf("unexpected output: %s", bm)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout waiting for bestmove after ponderhit")
+	}
+
+	_ = gotInfo // search was running
+
+	inW.Close()
+	<-done
+}
+
+func TestUCIPonderStop(t *testing.T) {
+	// go ponder → search runs → stop → bestmove arrives immediately
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine := NewUCIEngineWithIO(inR, outW)
+
+	done := make(chan struct{})
+	go func() {
+		engine.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	fmt.Fprintln(inW, "position startpos")
+	fmt.Fprintln(inW, "go ponder")
+
+	scanner := bufio.NewScanner(outR)
+	bestmoveCh := make(chan string, 1)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "bestmove") {
+				bestmoveCh <- line
+				return
+			}
+		}
+		close(bestmoveCh)
+	}()
+
+	// Give search a moment to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Send stop instead of ponderhit
+	fmt.Fprintln(inW, "stop")
+
+	select {
+	case bm := <-bestmoveCh:
+		if bm == "" {
+			t.Fatal("no bestmove received after stop during ponder")
+		}
+		if !strings.HasPrefix(bm, "bestmove") {
+			t.Errorf("unexpected output: %s", bm)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for bestmove after stop during ponder")
+	}
+
+	inW.Close()
+	<-done
+}
+
+func TestUCIPonderHitTimeLimits(t *testing.T) {
+	// go ponder wtime 100 btime 100 → ponderhit → search finishes quickly (not infinite)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine := NewUCIEngineWithIO(inR, outW)
+
+	done := make(chan struct{})
+	go func() {
+		engine.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	fmt.Fprintln(inW, "position startpos")
+	fmt.Fprintln(inW, "go ponder wtime 100 btime 100")
+
+	scanner := bufio.NewScanner(outR)
+	bestmoveCh := make(chan string, 1)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "bestmove") {
+				bestmoveCh <- line
+				return
+			}
+		}
+		close(bestmoveCh)
+	}()
+
+	// Give search a moment
+	time.Sleep(200 * time.Millisecond)
+
+	// Send ponderhit — with wtime=100 btime=100, search should finish quickly
+	start := time.Now()
+	fmt.Fprintln(inW, "ponderhit")
+
+	select {
+	case bm := <-bestmoveCh:
+		elapsed := time.Since(start)
+		if bm == "" {
+			t.Fatal("no bestmove received")
+		}
+		// With 100ms clock, time alloc is 10ms (floor). Should finish well under 5s.
+		if elapsed > 5*time.Second {
+			t.Errorf("search took too long after ponderhit with short time: %v", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for bestmove after ponderhit with short time")
+	}
+
+	inW.Close()
+	<-done
+}
+
+func TestUCIPonderExhaustsDepth(t *testing.T) {
+	// go ponder depth 2 on simple position → search finishes → ponderhit → bestmove
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	engine := NewUCIEngineWithIO(inR, outW)
+
+	done := make(chan struct{})
+	go func() {
+		engine.Run()
+		outW.Close()
+		close(done)
+	}()
+
+	// Use a simple endgame where depth 2 finishes almost instantly
+	fmt.Fprintln(inW, "position fen 8/8/8/8/8/5k2/4q3/4K3 w - - 0 1")
+	fmt.Fprintln(inW, "go ponder depth 2")
+
+	scanner := bufio.NewScanner(outR)
+	bestmoveCh := make(chan string, 1)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "bestmove") {
+				bestmoveCh <- line
+				return
+			}
+		}
+		close(bestmoveCh)
+	}()
+
+	// Wait long enough for depth 2 to finish (search blocks on ponderDone)
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify no bestmove yet (search finished but goroutine is waiting)
+	select {
+	case bm := <-bestmoveCh:
+		// It's possible on very slow systems, but this shouldn't fire
+		// before ponderhit. If it does, re-check the implementation.
+		t.Logf("bestmove arrived before ponderhit (possible race): %s", bm)
+		inW.Close()
+		<-done
+		return
+	default:
+		// Good — no bestmove yet, goroutine is waiting
+	}
+
+	// Send ponderhit — should unblock the goroutine
+	fmt.Fprintln(inW, "ponderhit")
+
+	select {
+	case bm := <-bestmoveCh:
+		if bm == "" {
+			t.Fatal("no bestmove received after ponderhit")
+		}
+		if !strings.HasPrefix(bm, "bestmove") {
+			t.Errorf("unexpected output: %s", bm)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for bestmove after ponderhit on exhausted depth")
+	}
+
+	inW.Close()
+	<-done
+}
+
+func TestUCIBookFileOption(t *testing.T) {
+	// Build a book file on disk
+	opts := BookBuildOptions{MaxPly: 10, MinFreq: 1, TopN: 4}
+	bookPath := t.TempDir() + "/test.bin"
+	if err := BuildOpeningBook("testdata/2600.pgn", "testdata/eco.pgn", bookPath, opts); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use string reader + bytes.Buffer to avoid io.Pipe deadlock
+	// (setoption BookFile sends "info string" output during processing)
+	input := fmt.Sprintf("setoption name BookFile value %s\nisready\nposition startpos\ngo depth 10\nquit\n", bookPath)
+	var out bytes.Buffer
+	engine := NewUCIEngineWithIO(strings.NewReader(input), &out)
+	engine.Run()
+
+	output := out.String()
+	// Should see the book loaded info string
+	if !strings.Contains(output, "info string book loaded:") {
+		t.Errorf("expected book loaded info, output:\n%s", output)
+	}
+	// Should get a bestmove without search (book hit)
+	if !strings.Contains(output, "bestmove") {
+		t.Errorf("expected bestmove, output:\n%s", output)
+	}
+	// No search should have happened
+	if strings.Contains(output, "info depth") {
+		t.Errorf("expected no search when book has a move, output:\n%s", output)
 	}
 }

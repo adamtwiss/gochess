@@ -11,16 +11,28 @@ import (
 	"time"
 )
 
+// goParams holds parsed "go" command parameters.
+type goParams struct {
+	depth, movetime, wtime, btime, winc, binc, movestogo int
+	infinite, ponder                                      bool
+}
+
 // UCIEngine implements the UCI protocol for the chess engine.
 type UCIEngine struct {
-	board      Board
-	tt         *TranspositionTable
-	hashSizeMB int
-	searchInfo *SearchInfo
-	searchMu   sync.Mutex
-	searchWg   sync.WaitGroup
-	input      *bufio.Scanner
-	output     io.Writer
+	board        Board
+	tt           *TranspositionTable
+	hashSizeMB   int
+	searchInfo   *SearchInfo
+	searchMu     sync.Mutex
+	searchWg     sync.WaitGroup
+	input        *bufio.Scanner
+	output       io.Writer
+	book         *OpeningBook
+	pondering    bool
+	ponderDone   chan struct{}
+	ponderParams goParams
+	ponderSide   Color
+	ponderOpt    bool
 }
 
 // NewUCIEngine creates a UCI engine reading from stdin and writing to stdout.
@@ -36,6 +48,7 @@ func NewUCIEngineWithIO(in io.Reader, out io.Writer) *UCIEngine {
 		hashSizeMB: 64,
 		input:      scanner,
 		output:     out,
+		ponderOpt:  true,
 	}
 	e.tt = NewTranspositionTable(e.hashSizeMB)
 	e.board.Reset()
@@ -64,6 +77,8 @@ func (e *UCIEngine) Run() {
 			e.cmdGo(tokens[1:])
 		case "stop":
 			e.cmdStop()
+		case "ponderhit":
+			e.cmdPonderhit()
 		case "setoption":
 			e.cmdSetOption(tokens[1:])
 		case "quit":
@@ -79,10 +94,18 @@ func (e *UCIEngine) send(format string, args ...interface{}) {
 	fmt.Fprintf(e.output, format+"\n", args...)
 }
 
+// SetBook sets the opening book for the engine.
+func (e *UCIEngine) SetBook(book *OpeningBook) {
+	e.book = book
+}
+
 func (e *UCIEngine) cmdUCI() {
 	e.send("id name GoChess")
 	e.send("id author Adam")
 	e.send("option name Hash type spin default 64 min 1 max 4096")
+	e.send("option name Ponder type check default true")
+	e.send("option name OwnBook type check default true")
+	e.send("option name BookFile type string default <empty>")
 	e.send("uciok")
 }
 
@@ -135,58 +158,79 @@ func (e *UCIEngine) cmdPosition(tokens []string) {
 	}
 }
 
-func (e *UCIEngine) cmdGo(tokens []string) {
-	e.cmdStop()
-
-	// Parse go parameters
-	depth := 64
-	var movetime, wtime, btime, winc, binc, movestogo int
-	infinite := false
-
+// parseGoParams parses the tokens following a "go" command into goParams.
+func parseGoParams(tokens []string) goParams {
+	p := goParams{depth: 64}
 	for i := 0; i < len(tokens); i++ {
 		switch tokens[i] {
 		case "depth":
 			if i+1 < len(tokens) {
 				i++
-				depth, _ = strconv.Atoi(tokens[i])
+				p.depth, _ = strconv.Atoi(tokens[i])
 			}
 		case "movetime":
 			if i+1 < len(tokens) {
 				i++
-				movetime, _ = strconv.Atoi(tokens[i])
+				p.movetime, _ = strconv.Atoi(tokens[i])
 			}
 		case "wtime":
 			if i+1 < len(tokens) {
 				i++
-				wtime, _ = strconv.Atoi(tokens[i])
+				p.wtime, _ = strconv.Atoi(tokens[i])
 			}
 		case "btime":
 			if i+1 < len(tokens) {
 				i++
-				btime, _ = strconv.Atoi(tokens[i])
+				p.btime, _ = strconv.Atoi(tokens[i])
 			}
 		case "winc":
 			if i+1 < len(tokens) {
 				i++
-				winc, _ = strconv.Atoi(tokens[i])
+				p.winc, _ = strconv.Atoi(tokens[i])
 			}
 		case "binc":
 			if i+1 < len(tokens) {
 				i++
-				binc, _ = strconv.Atoi(tokens[i])
+				p.binc, _ = strconv.Atoi(tokens[i])
 			}
 		case "movestogo":
 			if i+1 < len(tokens) {
 				i++
-				movestogo, _ = strconv.Atoi(tokens[i])
+				p.movestogo, _ = strconv.Atoi(tokens[i])
 			}
 		case "infinite":
-			infinite = true
+			p.infinite = true
+		case "ponder":
+			p.ponder = true
+		}
+	}
+	return p
+}
+
+func (e *UCIEngine) cmdGo(tokens []string) {
+	e.cmdStop()
+
+	params := parseGoParams(tokens)
+
+	// Probe opening book before search (skip when pondering)
+	if !params.ponder && e.book != nil {
+		if move, name, ok := e.book.PickMove(e.board.HashKey); ok {
+			if name != "" {
+				e.send("info string book: %s", name)
+			}
+			e.send("bestmove %s", move.String())
+			return
 		}
 	}
 
 	// Compute time allocation
-	allocMS := computeSearchTime(movetime, wtime, btime, winc, binc, movestogo, infinite, e.board.SideToMove)
+	var allocMS int
+	if params.ponder {
+		allocMS = 0 // infinite during ponder
+	} else {
+		allocMS = computeSearchTime(params.movetime, params.wtime, params.btime,
+			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove)
+	}
 
 	// Copy board for search goroutine (fresh UndoStack)
 	var searchBoard Board
@@ -220,13 +264,39 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			d, scoreStr, nodes, nps, ms, hashfull, strings.Join(pvStrs, " "))
 	}
 	e.searchInfo = info
+
+	if params.ponder {
+		e.pondering = true
+		e.ponderDone = make(chan struct{})
+		e.ponderParams = params
+		e.ponderSide = e.board.SideToMove
+	}
 	e.searchMu.Unlock()
 
 	e.searchWg.Add(1)
 	go func() {
 		defer e.searchWg.Done()
-		bestMove, _ := searchBoard.SearchWithInfo(depth, info)
-		e.send("bestmove %s", bestMove.String())
+		bestMove, searchResult := searchBoard.SearchWithInfo(params.depth, info)
+
+		// If pondering and search finished before ponderhit/stop, wait
+		e.searchMu.Lock()
+		if e.pondering {
+			ponderDone := e.ponderDone
+			e.searchMu.Unlock()
+			if ponderDone != nil {
+				<-ponderDone
+			}
+		} else {
+			e.searchMu.Unlock()
+		}
+
+		// Build bestmove string
+		result := bestMove.String()
+		if e.ponderOpt && len(searchResult.PV) >= 2 {
+			result += " ponder " + searchResult.PV[1].String()
+		}
+		e.send("bestmove %s", result)
+
 		e.searchMu.Lock()
 		e.searchInfo = nil
 		e.searchMu.Unlock()
@@ -238,8 +308,33 @@ func (e *UCIEngine) cmdStop() {
 	if e.searchInfo != nil {
 		e.searchInfo.Stopped = true
 	}
+	if e.pondering {
+		e.pondering = false
+		if e.ponderDone != nil {
+			close(e.ponderDone)
+			e.ponderDone = nil
+		}
+	}
 	e.searchMu.Unlock()
 	e.searchWg.Wait()
+}
+
+func (e *UCIEngine) cmdPonderhit() {
+	e.searchMu.Lock()
+	defer e.searchMu.Unlock()
+	if !e.pondering || e.searchInfo == nil {
+		return
+	}
+	p := e.ponderParams
+	allocMS := computeSearchTime(p.movetime, p.wtime, p.btime,
+		p.winc, p.binc, p.movestogo, p.infinite, e.ponderSide)
+	e.searchInfo.StartTime = time.Now()
+	e.searchInfo.MaxTime = time.Duration(allocMS) * time.Millisecond
+	e.pondering = false
+	if e.ponderDone != nil {
+		close(e.ponderDone)
+		e.ponderDone = nil
+	}
 }
 
 func (e *UCIEngine) cmdSetOption(tokens []string) {
@@ -278,6 +373,25 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.hashSizeMB = mb
 		e.tt = NewTranspositionTable(mb)
+	} else if strings.EqualFold(name, "Ponder") {
+		e.ponderOpt = strings.EqualFold(tokens[valueIdx], "true")
+	} else if strings.EqualFold(name, "OwnBook") {
+		if e.book != nil {
+			e.book.SetUseBook(strings.EqualFold(tokens[valueIdx], "true"))
+		}
+	} else if strings.EqualFold(name, "BookFile") {
+		value := strings.Join(tokens[valueIdx:], " ")
+		if value == "" || value == "<empty>" {
+			e.book = nil
+			return
+		}
+		book, err := LoadOpeningBook(value)
+		if err != nil {
+			e.send("info string failed to load book: %v", err)
+			return
+		}
+		e.book = book
+		e.send("info string book loaded: %d positions", book.Size())
 	}
 }
 
