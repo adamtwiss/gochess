@@ -18,20 +18,61 @@ func main() {
 	hashMB := flag.Int("hash", 64, "transposition table size in MB")
 	verbose := flag.Bool("v", false, "verbose output: show board, per-depth search info, and stats")
 
+	// Book building flags
+	buildBook := flag.Bool("buildbook", false, "build opening book from PGN files")
+	bookPGN := flag.String("pgn", "", "PGN file with GM games for book building")
+	bookECO := flag.String("eco", "", "ECO PGN file for opening names")
+	bookOut := flag.String("bookout", "book.bin", "output file for built book")
+	bookDepth := flag.Int("bookdepth", 30, "max full moves to include in book")
+	bookMinFreq := flag.Int("bookminfreq", 3, "min frequency to include a move")
+	bookTopN := flag.Int("booktop", 8, "max moves per position")
+
+	// Book loading flag
+	bookFile := flag.String("book", "", "opening book file for UCI mode")
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n\nOptions:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample:\n  chess -e testdata/wac.epd -t 5000 -n 20\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20\n")
+		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -eco eco.pgn -bookout book.bin\n")
+		fmt.Fprintf(os.Stderr, "  chess -book book.bin\n")
 	}
 	flag.Parse()
+
+	if *buildBook {
+		if *bookPGN == "" {
+			fmt.Fprintf(os.Stderr, "Error: -pgn is required for -buildbook\n")
+			os.Exit(1)
+		}
+		opts := chess.BookBuildOptions{
+			MaxPly:  *bookDepth * 2,
+			MinFreq: *bookMinFreq,
+			TopN:    *bookTopN,
+		}
+		if err := chess.BuildOpeningBook(*bookPGN, *bookECO, *bookOut, opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error building book: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Book written to %s\n", *bookOut)
+		return
+	}
 
 	if *epdFile != "" {
 		runEPD(*epdFile, *depth, time.Duration(*maxTimeMS)*time.Millisecond, *maxPositions, *hashMB, *verbose)
 		return
 	}
 
-	// No EPD file specified — enter UCI mode
+	// Enter UCI mode
 	engine := chess.NewUCIEngine()
+	if *bookFile != "" {
+		book, err := chess.LoadOpeningBook(*bookFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading book: %v\n", err)
+			os.Exit(1)
+		}
+		engine.SetBook(book)
+	}
 	engine.Run()
 }
 
