@@ -1,5 +1,10 @@
 package chess
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Piece represents a chess piece
 type Piece int8
 
@@ -383,6 +388,119 @@ func atoi(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// ParseUCIMove parses a UCI move string (e.g., "e2e4", "e7e8q") and returns the
+// corresponding legal Move. It matches against legal moves to resolve flags for
+// castling, en passant, and promotions.
+func (b *Board) ParseUCIMove(s string) (Move, error) {
+	if len(s) < 4 || len(s) > 5 {
+		return NoMove, fmt.Errorf("invalid UCI move: %s", s)
+	}
+
+	from := ParseSquare(s[0:2])
+	to := ParseSquare(s[2:4])
+	if from == NoSquare || to == NoSquare {
+		return NoMove, fmt.Errorf("invalid UCI move squares: %s", s)
+	}
+
+	var promoFlag int
+	if len(s) == 5 {
+		switch s[4] {
+		case 'q':
+			promoFlag = FlagPromoteQ
+		case 'r':
+			promoFlag = FlagPromoteR
+		case 'b':
+			promoFlag = FlagPromoteB
+		case 'n':
+			promoFlag = FlagPromoteN
+		default:
+			return NoMove, fmt.Errorf("invalid promotion piece: %c", s[4])
+		}
+	}
+
+	moves := b.GenerateLegalMoves()
+	for _, m := range moves {
+		if m.From() != from || m.To() != to {
+			continue
+		}
+		if promoFlag != 0 {
+			if m.Flags() == promoFlag {
+				return m, nil
+			}
+		} else if !m.IsPromotion() {
+			return m, nil
+		}
+	}
+
+	return NoMove, fmt.Errorf("illegal UCI move: %s", s)
+}
+
+// ToFEN returns the FEN string for the current board position.
+func (b *Board) ToFEN() string {
+	var fen strings.Builder
+
+	// Piece placement
+	for rank := 7; rank >= 0; rank-- {
+		empty := 0
+		for file := 0; file < 8; file++ {
+			piece := b.Squares[NewSquare(file, rank)]
+			if piece == Empty {
+				empty++
+			} else {
+				if empty > 0 {
+					fen.WriteByte(byte('0' + empty))
+					empty = 0
+				}
+				fen.WriteString(pieceToChar(piece))
+			}
+		}
+		if empty > 0 {
+			fen.WriteByte(byte('0' + empty))
+		}
+		if rank > 0 {
+			fen.WriteByte('/')
+		}
+	}
+
+	// Side to move
+	if b.SideToMove == White {
+		fen.WriteString(" w ")
+	} else {
+		fen.WriteString(" b ")
+	}
+
+	// Castling rights
+	if b.Castling == NoCastling {
+		fen.WriteByte('-')
+	} else {
+		if b.Castling&WhiteKingside != 0 {
+			fen.WriteByte('K')
+		}
+		if b.Castling&WhiteQueenside != 0 {
+			fen.WriteByte('Q')
+		}
+		if b.Castling&BlackKingside != 0 {
+			fen.WriteByte('k')
+		}
+		if b.Castling&BlackQueenside != 0 {
+			fen.WriteByte('q')
+		}
+	}
+
+	// En passant
+	fen.WriteByte(' ')
+	if b.EnPassant == NoSquare {
+		fen.WriteByte('-')
+	} else {
+		fen.WriteString(b.EnPassant.String())
+	}
+
+	// Halfmove clock and fullmove number
+	fen.WriteString(fmt.Sprintf(" %d %d", b.HalfmoveClock, b.FullmoveNum))
+
+	return fen.String()
 }
 
 func pieceToChar(p Piece) string {

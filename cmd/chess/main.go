@@ -30,8 +30,9 @@ func main() {
 		return
 	}
 
-	flag.Usage()
-	os.Exit(1)
+	// No EPD file specified — enter UCI mode
+	engine := chess.NewUCIEngine()
+	engine.Run()
 }
 
 // pvToSAN converts a PV line to SAN notation by replaying moves on a board copy.

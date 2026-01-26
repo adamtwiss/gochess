@@ -245,7 +245,7 @@ func (b *Board) UnmakeMove(m Move) {
 	b.HalfmoveClock = undo.HalfmoveClock
 	b.HashKey = undo.HashKey
 	b.PawnHashKey = undo.PawnHashKey
-	if b.SideToMove == White {
+	if b.SideToMove == Black {
 		b.FullmoveNum--
 	}
 
