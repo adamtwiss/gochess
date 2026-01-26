@@ -179,6 +179,29 @@ func BenchmarkSearchTactical(b *testing.B) {
 	}
 }
 
+// TestAspirationWindowMate verifies mate detection works with aspiration windows
+func TestAspirationWindowMate(t *testing.T) {
+	var b Board
+	// Mate in 2: 1. Qd8+ Kh7 2. Qg8# (or similar)
+	b.SetFEN("6k1/8/6K1/8/8/8/8/3Q4 w - - 0 1")
+
+	tt := NewTranspositionTable(16)
+	move, info := b.SearchWithTT(6, 0, tt)
+
+	t.Logf("Best move: %s", move.String())
+	t.Logf("Score: %d", info.Score)
+	t.Logf("PV: %v", movesToStrings(info.PV))
+
+	if move == NoMove {
+		t.Error("Search returned no move")
+	}
+
+	// Should find mate even with aspiration windows narrowing the search
+	if info.Score < MateScore-10 {
+		t.Errorf("Expected mate score, got %d", info.Score)
+	}
+}
+
 // TestLMRComparison compares search with and without LMR
 func TestLMRComparison(t *testing.T) {
 	if testing.Short() {

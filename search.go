@@ -111,12 +111,40 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 
 	var bestMove Move
 	var pv []Move
+	prevScore := 0
 
-	// Iterative deepening
+	// Iterative deepening with aspiration windows
 	for depth := 1; depth <= maxDepth; depth++ {
 		info.Depth = depth
 
-		score := b.negamax(depth, 0, -Infinity, Infinity, &info, &pv)
+		var score int
+
+		if depth >= 4 && prevScore > -MateScore+100 && prevScore < MateScore-100 {
+			// Aspiration window search
+			delta := 25
+			alpha, beta := prevScore-delta, prevScore+delta
+			for {
+				pv = pv[:0]
+				score = b.negamax(depth, 0, alpha, beta, &info, &pv)
+				if info.Stopped {
+					break
+				}
+				if score <= alpha {
+					delta = widenDelta(delta)
+					alpha = prevScore - delta
+					continue
+				}
+				if score >= beta {
+					delta = widenDelta(delta)
+					beta = prevScore + delta
+					continue
+				}
+				break // score within window
+			}
+		} else {
+			pv = pv[:0]
+			score = b.negamax(depth, 0, -Infinity, Infinity, &info, &pv)
+		}
 
 		// Check if we ran out of time mid-search
 		if info.Stopped {
@@ -124,6 +152,7 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 		}
 
 		// Save results from this iteration
+		prevScore = score
 		info.Score = score
 		if len(pv) > 0 {
 			bestMove = pv[0]
@@ -139,6 +168,18 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 	}
 
 	return bestMove, info
+}
+
+// widenDelta returns the next wider aspiration window delta
+func widenDelta(delta int) int {
+	switch {
+	case delta <= 25:
+		return 100
+	case delta <= 100:
+		return 500
+	default:
+		return Infinity
+	}
 }
 
 // negamax performs alpha-beta search from the current position
@@ -205,9 +246,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		return b.quiescence(alpha, beta, info)
 	}
 
+	inCheck := b.InCheck()
+
 	// Null-move pruning
 	// Skip if: in check, at root, or depth too shallow
-	if depth >= 3 && !b.InCheck() && ply > 0 {
+	if depth >= 3 && !inCheck && ply > 0 {
 		R := 2 // Reduction factor
 		if depth > 6 {
 			R = 3
@@ -224,6 +267,16 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 		if score >= beta {
 			return beta // Null-move cutoff
+		}
+	}
+
+	// Reverse Futility Pruning (Static Null Move Pruning)
+	// At shallow depths, if static eval is far above beta, prune
+	if depth <= 3 && !inCheck && ply > 0 {
+		staticEval := b.EvaluateRelative()
+		margin := depth * 120
+		if staticEval-margin >= beta {
+			return staticEval - margin
 		}
 	}
 
@@ -248,7 +301,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 	bestMove := NoMove
 	bestScore := -Infinity
-	inCheck := b.InCheck()
 	moveCount := 0
 
 	for {
@@ -280,27 +332,52 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		childPV := make([]Move, 0, depth-1)
 		var score int
 
-		// Late Move Reductions (LMR)
-		// Very conservative: only reduce clearly bad moves at sufficient depth
-		// Conditions: LMR enabled, very late move, high depth, quiet move, not in check, not killer, not checking
+		// Late Move Reductions (LMR) + Principal Variation Search (PVS)
 		isKiller := move == killers[0] || move == killers[1]
 		hasHighHistory := info.History[move.From()][move.To()] > 1000
 
-		if LMREnabled && moveCount >= 8 && depth >= 5 && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !hasHighHistory && !givesCheck {
+		reduction := 0
+		if LMREnabled && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !hasHighHistory && !givesCheck {
+			d, m := depth, moveCount
+			if d >= 64 {
+				d = 63
+			}
+			if m >= 64 {
+				m = 63
+			}
+			reduction = lmrTable[d][m]
+		}
+
+		if reduction > 0 {
 			info.LMRAttempts++
 
-			// Always reduce by just 1 ply
-			score = -b.negamax(newDepth-1, ply+1, -alpha-1, -alpha, info, &childPV)
+			// LMR: reduced depth, zero window
+			score = -b.negamax(newDepth-reduction, ply+1, -alpha-1, -alpha, info, &childPV)
 
-			// Re-search at full depth if it might be good
 			if score > alpha && !info.Stopped {
+				// LMR failed high → re-search full depth, zero window (PVS)
 				info.LMRReSearches++
 				childPV = childPV[:0]
-				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
+				score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info, &childPV)
 			} else {
 				info.LMRSavings++
 			}
+
+			if score > alpha && score < beta && !info.Stopped {
+				// PVS failed high → full window re-search
+				childPV = childPV[:0]
+				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
+			}
+		} else if moveCount > 1 {
+			// PVS: zero-window for non-first moves
+			score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info, &childPV)
+			if score > alpha && score < beta && !info.Stopped {
+				// Failed high → full window re-search
+				childPV = childPV[:0]
+				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
+			}
 		} else {
+			// First move: always full window
 			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
 		}
 
