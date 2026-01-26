@@ -23,22 +23,27 @@ const (
 func (b *Board) Evaluate() int {
 	score := 0
 
-	// Material
-	score += b.Pieces[WhitePawn].Count() * PawnValue
-	score += b.Pieces[WhiteKnight].Count() * KnightValue
-	score += b.Pieces[WhiteBishop].Count() * BishopValue
-	score += b.Pieces[WhiteRook].Count() * RookValue
-	score += b.Pieces[WhiteQueen].Count() * QueenValue
-
-	score -= b.Pieces[BlackPawn].Count() * PawnValue
-	score -= b.Pieces[BlackKnight].Count() * KnightValue
-	score -= b.Pieces[BlackBishop].Count() * BishopValue
-	score -= b.Pieces[BlackRook].Count() * RookValue
-	score -= b.Pieces[BlackQueen].Count() * QueenValue
+	// Material counting (simple and fast)
+	score += b.evaluateMaterial(White)
+	score -= b.evaluateMaterial(Black)
 
 	// Mobility - count squares each piece can attack
 	score += b.evaluateMobility(White)
 	score -= b.evaluateMobility(Black)
+
+	return score
+}
+
+// evaluateMaterial returns simple material count for a color
+func (b *Board) evaluateMaterial(color Color) int {
+	score := 0
+	pieceOffset := Piece(color) * 6
+
+	score += b.Pieces[WhitePawn+pieceOffset].Count() * PawnValue
+	score += b.Pieces[WhiteKnight+pieceOffset].Count() * KnightValue
+	score += b.Pieces[WhiteBishop+pieceOffset].Count() * BishopValue
+	score += b.Pieces[WhiteRook+pieceOffset].Count() * RookValue
+	score += b.Pieces[WhiteQueen+pieceOffset].Count() * QueenValue
 
 	return score
 }

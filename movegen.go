@@ -390,7 +390,6 @@ func (b *Board) InCheck() bool {
 
 // IsLegal returns true if the move is legal (doesn't leave king in check)
 func (b *Board) IsLegal(m Move) bool {
-	// Make a copy of relevant state
 	us := b.SideToMove
 
 	// Make the move temporarily
@@ -418,4 +417,291 @@ func (b *Board) GenerateLegalMoves() []Move {
 	}
 
 	return legal
+}
+
+// GenerateCaptures returns all pseudo-legal capture moves (including promotions)
+func (b *Board) GenerateCaptures() []Move {
+	moves := make([]Move, 0, 32)
+	us := b.SideToMove
+	them := 1 - us
+	theirPieces := b.Occupied[them]
+	ourPieces := b.Occupied[us]
+
+	// Pawn captures and promotions
+	if us == White {
+		pawns := b.Pieces[WhitePawn]
+
+		// Captures
+		captureL := ((pawns & NotFileA) << 7) & theirPieces
+		captureR := ((pawns & NotFileH) << 9) & theirPieces
+
+		for captureL != 0 {
+			to := captureL.PopLSB()
+			from := to - 7
+			if to.Rank() == 7 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+		for captureR != 0 {
+			to := captureR.PopLSB()
+			from := to - 9
+			if to.Rank() == 7 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+
+		// Non-capture promotions (still tactical)
+		empty := ^b.AllPieces
+		promo := ((pawns << 8) & empty) & Rank8
+		for promo != 0 {
+			to := promo.PopLSB()
+			from := to - 8
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+		}
+
+		// En passant
+		if b.EnPassant != NoSquare {
+			epBB := SquareBB(b.EnPassant)
+			epL := ((pawns & NotFileA) << 7) & epBB
+			epR := ((pawns & NotFileH) << 9) & epBB
+			if epL != 0 {
+				moves = append(moves, NewMoveFlags(b.EnPassant-7, b.EnPassant, FlagEnPassant))
+			}
+			if epR != 0 {
+				moves = append(moves, NewMoveFlags(b.EnPassant-9, b.EnPassant, FlagEnPassant))
+			}
+		}
+	} else {
+		pawns := b.Pieces[BlackPawn]
+
+		// Captures
+		captureL := ((pawns & NotFileA) >> 9) & theirPieces
+		captureR := ((pawns & NotFileH) >> 7) & theirPieces
+
+		for captureL != 0 {
+			to := captureL.PopLSB()
+			from := to + 9
+			if to.Rank() == 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+		for captureR != 0 {
+			to := captureR.PopLSB()
+			from := to + 7
+			if to.Rank() == 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+
+		// Non-capture promotions (still tactical)
+		empty := ^b.AllPieces
+		promo := ((pawns >> 8) & empty) & Rank1
+		for promo != 0 {
+			to := promo.PopLSB()
+			from := to + 8
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+			moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+		}
+
+		// En passant
+		if b.EnPassant != NoSquare {
+			epBB := SquareBB(b.EnPassant)
+			epL := ((pawns & NotFileA) >> 9) & epBB
+			epR := ((pawns & NotFileH) >> 7) & epBB
+			if epL != 0 {
+				moves = append(moves, NewMoveFlags(b.EnPassant+9, b.EnPassant, FlagEnPassant))
+			}
+			if epR != 0 {
+				moves = append(moves, NewMoveFlags(b.EnPassant+7, b.EnPassant, FlagEnPassant))
+			}
+		}
+	}
+
+	// Knight captures
+	knights := b.Pieces[WhiteKnight+Piece(us)*6]
+	for knights != 0 {
+		from := knights.PopLSB()
+		attacks := KnightAttacks[from] & theirPieces
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Bishop captures
+	bishops := b.Pieces[WhiteBishop+Piece(us)*6]
+	for bishops != 0 {
+		from := bishops.PopLSB()
+		attacks := BishopAttacksBB(from, b.AllPieces) & theirPieces
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Rook captures
+	rooks := b.Pieces[WhiteRook+Piece(us)*6]
+	for rooks != 0 {
+		from := rooks.PopLSB()
+		attacks := RookAttacksBB(from, b.AllPieces) & theirPieces
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Queen captures
+	queens := b.Pieces[WhiteQueen+Piece(us)*6]
+	for queens != 0 {
+		from := queens.PopLSB()
+		attacks := QueenAttacksBB(from, b.AllPieces) & theirPieces
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// King captures
+	king := b.Pieces[WhiteKing+Piece(us)*6]
+	if king != 0 {
+		from := king.LSB()
+		attacks := KingAttacks[from] & theirPieces & ^ourPieces
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	return moves
+}
+
+// GenerateQuiets returns all pseudo-legal quiet moves (non-captures, non-promotions)
+func (b *Board) GenerateQuiets() []Move {
+	moves := make([]Move, 0, 32)
+	us := b.SideToMove
+	empty := ^b.AllPieces
+
+	// Pawn quiet moves (non-promotions)
+	if us == White {
+		pawns := b.Pieces[WhitePawn]
+
+		// Single push (not to promotion rank)
+		push1 := ((pawns << 8) & empty) &^ Rank8
+		for push1 != 0 {
+			to := push1.PopLSB()
+			moves = append(moves, NewMove(to-8, to))
+		}
+
+		// Double push
+		push1ForDouble := (pawns << 8) & empty
+		push2 := ((push1ForDouble & Rank3) << 8) & empty
+		for push2 != 0 {
+			to := push2.PopLSB()
+			moves = append(moves, NewMove(to-16, to))
+		}
+	} else {
+		pawns := b.Pieces[BlackPawn]
+
+		// Single push (not to promotion rank)
+		push1 := ((pawns >> 8) & empty) &^ Rank1
+		for push1 != 0 {
+			to := push1.PopLSB()
+			moves = append(moves, NewMove(to+8, to))
+		}
+
+		// Double push
+		push1ForDouble := (pawns >> 8) & empty
+		push2 := ((push1ForDouble & Rank6) >> 8) & empty
+		for push2 != 0 {
+			to := push2.PopLSB()
+			moves = append(moves, NewMove(to+16, to))
+		}
+	}
+
+	// Knight quiets
+	knights := b.Pieces[WhiteKnight+Piece(us)*6]
+	for knights != 0 {
+		from := knights.PopLSB()
+		attacks := KnightAttacks[from] & empty
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Bishop quiets
+	bishops := b.Pieces[WhiteBishop+Piece(us)*6]
+	for bishops != 0 {
+		from := bishops.PopLSB()
+		attacks := BishopAttacksBB(from, b.AllPieces) & empty
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Rook quiets
+	rooks := b.Pieces[WhiteRook+Piece(us)*6]
+	for rooks != 0 {
+		from := rooks.PopLSB()
+		attacks := RookAttacksBB(from, b.AllPieces) & empty
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Queen quiets
+	queens := b.Pieces[WhiteQueen+Piece(us)*6]
+	for queens != 0 {
+		from := queens.PopLSB()
+		attacks := QueenAttacksBB(from, b.AllPieces) & empty
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// King quiets and castling
+	king := b.Pieces[WhiteKing+Piece(us)*6]
+	if king != 0 {
+		from := king.LSB()
+		attacks := KingAttacks[from] & empty
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+
+		// Castling
+		mg := &MoveGen{board: b, moves: moves}
+		mg.generateCastlingMoves(from)
+		moves = mg.moves
+	}
+
+	return moves
 }

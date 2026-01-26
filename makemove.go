@@ -10,18 +10,6 @@ type UndoInfo struct {
 	HashKey       uint64
 }
 
-// UndoStack stores undo information for move history
-type UndoStack struct {
-	stack []UndoInfo
-}
-
-// Global undo stack (or could be per-board)
-var undoStack UndoStack
-
-func init() {
-	undoStack.stack = make([]UndoInfo, 0, 256)
-}
-
 // MakeMove makes a move on the board and stores undo information
 func (b *Board) MakeMove(m Move) {
 	from := m.From()
@@ -39,7 +27,7 @@ func (b *Board) MakeMove(m Move) {
 		HalfmoveClock: b.HalfmoveClock,
 		HashKey:       b.HashKey,
 	}
-	undoStack.stack = append(undoStack.stack, undo)
+	b.UndoStack = append(b.UndoStack, undo)
 
 	// Handle en passant capture specially
 	if flags == FlagEnPassant {
@@ -189,15 +177,55 @@ func (b *Board) MakeMove(m Move) {
 	b.HashKey ^= Zobrist.SideToMove
 }
 
-// UnmakeMove undoes the last move
-func (b *Board) UnmakeMove(m Move) {
-	// Pop undo info
-	n := len(undoStack.stack)
+// MakeNullMove makes a null move (pass turn without moving)
+func (b *Board) MakeNullMove() {
+	// Store undo info
+	undo := UndoInfo{
+		Move:      NoMove,
+		EnPassant: b.EnPassant,
+		HashKey:   b.HashKey,
+	}
+	b.UndoStack = append(b.UndoStack, undo)
+
+	// Clear en passant
+	if b.EnPassant != NoSquare {
+		b.HashKey ^= Zobrist.EnPassant[b.EnPassant.File()]
+		b.EnPassant = NoSquare
+	}
+
+	// Switch side to move
+	b.SideToMove = 1 - b.SideToMove
+	b.HashKey ^= Zobrist.SideToMove
+}
+
+// UnmakeNullMove undoes a null move
+func (b *Board) UnmakeNullMove() {
+	n := len(b.UndoStack)
 	if n == 0 {
 		return
 	}
-	undo := undoStack.stack[n-1]
-	undoStack.stack = undoStack.stack[:n-1]
+	undo := b.UndoStack[n-1]
+	b.UndoStack = b.UndoStack[:n-1]
+
+	b.SideToMove = 1 - b.SideToMove
+	b.EnPassant = undo.EnPassant
+	b.HashKey = undo.HashKey
+}
+
+// UnmakeMove undoes the last move
+func (b *Board) UnmakeMove(m Move) {
+	// Pop undo info
+	n := len(b.UndoStack)
+	if n == 0 {
+		panic("UnmakeMove: empty undo stack!")
+	}
+	undo := b.UndoStack[n-1]
+	b.UndoStack = b.UndoStack[:n-1]
+
+	// Verify we're undoing the right move
+	if undo.Move != m {
+		panic("UnmakeMove: undo stack mismatch - expected " + undo.Move.String() + ", got " + m.String())
+	}
 
 	from := m.From()
 	to := m.To()

@@ -102,6 +102,9 @@ type Board struct {
 	Pieces    [13]Bitboard // One bitboard per piece type (index 0 unused)
 	Occupied  [2]Bitboard  // All pieces by color [White], [Black]
 	AllPieces Bitboard     // All pieces on board
+
+	// Undo stack for MakeMove/UnmakeMove (per-board to avoid sharing issues)
+	UndoStack []UndoInfo
 }
 
 // Clear removes all pieces from the board and resets state
@@ -121,6 +124,12 @@ func (b *Board) Clear() {
 	b.HalfmoveClock = 0
 	b.FullmoveNum = 1
 	b.HashKey = 0
+	// Reset undo stack (keep capacity if already allocated)
+	if b.UndoStack == nil {
+		b.UndoStack = make([]UndoInfo, 0, 256)
+	} else {
+		b.UndoStack = b.UndoStack[:0]
+	}
 }
 
 // putPiece places a piece on a square, updating all board representations

@@ -9,6 +9,41 @@ const (
 	MateScore = 29000
 )
 
+// LMREnabled controls whether Late Move Reductions are used
+// Set to false for benchmarking comparisons
+var LMREnabled = true
+
+// LMR reduction table - indexed by [depth][moveNumber]
+// Precomputed for efficiency
+var lmrTable [64][64]int
+
+func init() {
+	// Initialize LMR table using logarithmic formula
+	// Conservative approach - cap at reasonable reductions
+	for depth := 1; depth < 64; depth++ {
+		for moveNum := 1; moveNum < 64; moveNum++ {
+			if depth >= 3 && moveNum >= 3 {
+				// Base reduction of 1 for late moves
+				reduction := 1
+
+				// Increase reduction for very late moves at higher depths
+				if depth >= 6 && moveNum >= 10 {
+					reduction = 2
+				}
+
+				// Cap reduction to leave at least depth 1
+				if reduction > depth-2 {
+					reduction = depth - 2
+				}
+				if reduction < 0 {
+					reduction = 0
+				}
+				lmrTable[depth][moveNum] = reduction
+			}
+		}
+	}
+}
+
 // SearchInfo holds information about the search
 type SearchInfo struct {
 	Nodes     uint64
@@ -19,6 +54,28 @@ type SearchInfo struct {
 	MaxTime   time.Duration
 	Stopped   bool
 	TT        *TranspositionTable
+
+	// Killer moves: 2 slots per ply, max 64 ply
+	Killers [64][2]Move
+
+	// History table: indexed by [from][to], stores cutoff counts
+	History [64][64]int
+
+	// LMR statistics (for debugging/analysis)
+	LMRAttempts   uint64 // Times LMR was attempted
+	LMRReSearches uint64 // Times we had to re-search at full depth
+	LMRSavings    uint64 // Successful LMR prunings (no re-search needed)
+}
+
+// storeKiller stores a killer move at the given ply
+func (info *SearchInfo) storeKiller(ply int, move Move) {
+	if ply >= 64 {
+		return
+	}
+	if move != info.Killers[ply][0] {
+		info.Killers[ply][1] = info.Killers[ply][0]
+		info.Killers[ply][0] = move
+	}
 }
 
 // Search performs iterative deepening search and returns the best move
@@ -37,6 +94,19 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 	// Create a default TT if none provided
 	if info.TT == nil {
 		info.TT = NewTranspositionTable(16) // 16 MB default
+	}
+
+	// Clear history table for new search
+	for i := range info.History {
+		for j := range info.History[i] {
+			info.History[i][j] = 0
+		}
+	}
+
+	// Clear killer moves
+	for i := range info.Killers {
+		info.Killers[i][0] = NoMove
+		info.Killers[i][1] = NoMove
 	}
 
 	var bestMove Move
@@ -74,6 +144,11 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 // negamax performs alpha-beta search from the current position
 // ply is the distance from root (for mate score adjustment)
 func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[]Move) int {
+	// Guard against stack overflow (Go has limited goroutine stack)
+	if ply >= 64 {
+		return b.EvaluateRelative()
+	}
+
 	// Check time periodically
 	if info.Nodes&4095 == 0 && info.MaxTime > 0 {
 		if time.Since(info.StartTime) >= info.MaxTime {
@@ -130,37 +205,102 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		return b.quiescence(alpha, beta, info)
 	}
 
-	moves := b.GenerateLegalMoves()
-
-	// Check for checkmate or stalemate
-	if len(moves) == 0 {
-		if b.InCheck() {
-			// Checkmate - return negative mate score adjusted for ply
-			return -MateScore + ply
+	// Null-move pruning
+	// Skip if: in check, at root, or depth too shallow
+	if depth >= 3 && !b.InCheck() && ply > 0 {
+		R := 2 // Reduction factor
+		if depth > 6 {
+			R = 3
 		}
-		// Stalemate
-		return 0
+
+		b.MakeNullMove()
+		var nullPV []Move
+		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info, &nullPV)
+		b.UnmakeNullMove()
+
+		if info.Stopped {
+			return 0
+		}
+
+		if score >= beta {
+			return beta // Null-move cutoff
+		}
 	}
 
-	// Order moves for better pruning
-	pvMove := ttMove // Prefer TT move
+	// Get killers for this ply
+	var killers [2]Move
+	if ply < 64 {
+		killers = info.Killers[ply]
+	}
+
+	// Prefer TT move, fall back to PV move
+	pvMove := ttMove
 	if pvMove == NoMove && len(*pv) > 0 {
 		pvMove = (*pv)[0]
 	}
-	orderMoves(moves, pvMove, b)
+
+	// Use MovePicker for staged move generation
+	picker := NewMovePicker(b, pvMove, ply, killers, &info.History)
 
 	// Clear PV for this node
 	localPV := make([]Move, 0, depth)
 	*pv = (*pv)[:0]
 
-	bestMove := moves[0]
+	bestMove := NoMove
 	bestScore := -Infinity
+	inCheck := b.InCheck()
+	moveCount := 0
 
-	for _, move := range moves {
+	for {
+		move := picker.Next()
+		if move == NoMove {
+			break
+		}
+
+		// Check legality (MovePicker returns pseudo-legal moves)
+		if !b.IsLegal(move) {
+			continue
+		}
+
+		moveCount++
+
+		// Check if capture BEFORE making the move
+		isCap := isCapture(move, b)
+
 		b.MakeMove(move)
 
 		childPV := make([]Move, 0, depth-1)
-		score := -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
+		var score int
+
+		// Late Move Reductions (LMR)
+		// Very conservative: only reduce clearly bad moves at sufficient depth
+		// Conditions: LMR enabled, very late move, high depth, quiet move, not in check, not killer
+		isKiller := move == killers[0] || move == killers[1]
+		hasHighHistory := info.History[move.From()][move.To()] > 1000
+
+		if LMREnabled && moveCount >= 8 && depth >= 5 && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !hasHighHistory {
+			// Check if move gives check - never reduce checking moves
+			givesCheck := b.InCheck()
+			if !givesCheck {
+				info.LMRAttempts++
+
+				// Always reduce by just 1 ply
+				score = -b.negamax(depth-2, ply+1, -alpha-1, -alpha, info, &childPV)
+
+				// Re-search at full depth if it might be good
+				if score > alpha && !info.Stopped {
+					info.LMRReSearches++
+					childPV = childPV[:0]
+					score = -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
+				} else {
+					info.LMRSavings++
+				}
+			} else {
+				score = -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
+			}
+		} else {
+			score = -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
+		}
 
 		b.UnmakeMove(move)
 
@@ -182,11 +322,25 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 				*pv = localPV
 
 				if alpha >= beta {
-					// Beta cutoff
+					// Beta cutoff - update killer moves and history for quiet moves
+					if !isCap {
+						info.storeKiller(ply, move)
+						info.History[move.From()][move.To()] += depth * depth
+					}
 					break
 				}
 			}
 		}
+	}
+
+	// Check for checkmate or stalemate
+	if moveCount == 0 {
+		if inCheck {
+			// Checkmate - return negative mate score adjusted for ply
+			return -MateScore + ply
+		}
+		// Stalemate
+		return 0
 	}
 
 	// Store in transposition table
@@ -214,6 +368,16 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 // quiescence searches captures until the position is quiet
 func (b *Board) quiescence(alpha, beta int, info *SearchInfo) int {
+	return b.quiescenceWithDepth(alpha, beta, info, 0)
+}
+
+// quiescenceWithDepth is the internal quiescence search with depth tracking
+func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth int) int {
+	// Limit quiescence depth to prevent stack overflow
+	if qsDepth >= 32 {
+		return b.EvaluateRelative()
+	}
+
 	info.Nodes++
 
 	// Stand pat - evaluate the current position
@@ -227,16 +391,27 @@ func (b *Board) quiescence(alpha, beta int, info *SearchInfo) int {
 		alpha = standPat
 	}
 
-	// Generate and search captures only
-	moves := b.GenerateLegalMoves()
-	captures := filterCaptures(moves, b)
+	// Use MovePicker for captures only
+	picker := NewMovePickerQuiescence(b)
 
-	// Order captures by MVV-LVA
-	orderCaptures(captures, b)
+	for {
+		move := picker.Next()
+		if move == NoMove {
+			break
+		}
 
-	for _, move := range captures {
+		// Skip bad captures (SEE < 0) - delta pruning
+		if !b.SEESign(move, 0) {
+			continue
+		}
+
+		// Check legality
+		if !b.IsLegal(move) {
+			continue
+		}
+
 		b.MakeMove(move)
-		score := -b.quiescence(-beta, -alpha, info)
+		score := -b.quiescenceWithDepth(-beta, -alpha, info, qsDepth+1)
 		b.UnmakeMove(move)
 
 		if score >= beta {
@@ -250,118 +425,8 @@ func (b *Board) quiescence(alpha, beta int, info *SearchInfo) int {
 	return alpha
 }
 
-// filterCaptures returns only capture moves
-func filterCaptures(moves []Move, b *Board) []Move {
-	captures := make([]Move, 0, len(moves)/4)
-	for _, m := range moves {
-		to := m.To()
-		if b.Squares[to] != Empty || m.Flags() == FlagEnPassant {
-			captures = append(captures, m)
-		}
-	}
-	return captures
+// isCapture returns true if the move is a capture
+func isCapture(m Move, b *Board) bool {
+	return b.Squares[m.To()] != Empty || m.Flags() == FlagEnPassant
 }
 
-// orderMoves sorts moves for better alpha-beta pruning
-// PV move first, then captures by MVV-LVA, then other moves
-func orderMoves(moves []Move, pvMove Move, b *Board) {
-	// Simple insertion sort with scoring
-	scores := make([]int, len(moves))
-
-	for i, m := range moves {
-		score := 0
-
-		// PV move gets highest priority
-		if m == pvMove {
-			score = 100000
-		} else {
-			to := m.To()
-			captured := b.Squares[to]
-
-			if captured != Empty {
-				// MVV-LVA: prioritize capturing valuable pieces with less valuable pieces
-				score = 10000 + mvvLva(b.Squares[m.From()], captured)
-			} else if m.Flags() == FlagEnPassant {
-				score = 10000 + mvvLva(WhitePawn, BlackPawn)
-			} else if m.Flags()&FlagPromotion != 0 {
-				// Promotions are usually good
-				score = 9000
-			}
-		}
-
-		scores[i] = score
-	}
-
-	// Sort by score descending (simple insertion sort, fine for ~30-40 moves)
-	for i := 1; i < len(moves); i++ {
-		j := i
-		for j > 0 && scores[j] > scores[j-1] {
-			moves[j], moves[j-1] = moves[j-1], moves[j]
-			scores[j], scores[j-1] = scores[j-1], scores[j]
-			j--
-		}
-	}
-}
-
-// orderCaptures sorts captures by MVV-LVA
-func orderCaptures(moves []Move, b *Board) {
-	scores := make([]int, len(moves))
-
-	for i, m := range moves {
-		to := m.To()
-		captured := b.Squares[to]
-		if captured != Empty {
-			scores[i] = mvvLva(b.Squares[m.From()], captured)
-		} else if m.Flags() == FlagEnPassant {
-			scores[i] = mvvLva(WhitePawn, BlackPawn)
-		}
-	}
-
-	for i := 1; i < len(moves); i++ {
-		j := i
-		for j > 0 && scores[j] > scores[j-1] {
-			moves[j], moves[j-1] = moves[j-1], moves[j]
-			scores[j], scores[j-1] = scores[j-1], scores[j]
-			j--
-		}
-	}
-}
-
-// mvvLva returns a score for Most Valuable Victim - Least Valuable Attacker
-func mvvLva(attacker, victim Piece) int {
-	// Normalize to white pieces for comparison
-	attackerType := attacker
-	if attacker >= BlackPawn {
-		attackerType -= 6
-	}
-	victimType := victim
-	if victim >= BlackPawn {
-		victimType -= 6
-	}
-
-	// Victim value * 10 - attacker value
-	// This prioritizes capturing queens with pawns over capturing pawns with queens
-	victimValue := pieceValue(victimType)
-	attackerValue := pieceValue(attackerType)
-
-	return victimValue*10 - attackerValue
-}
-
-// pieceValue returns the value of a piece type (white pieces only)
-func pieceValue(p Piece) int {
-	switch p {
-	case WhitePawn:
-		return 1
-	case WhiteKnight:
-		return 3
-	case WhiteBishop:
-		return 3
-	case WhiteRook:
-		return 5
-	case WhiteQueen:
-		return 9
-	case WhiteKing:
-		return 100
-	}
-	return 0
-}

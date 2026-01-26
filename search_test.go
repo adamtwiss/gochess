@@ -144,3 +144,113 @@ func BenchmarkSearch(b *testing.B) {
 		board.Search(5, 0)
 	}
 }
+
+// BenchmarkSearchDeep tests search at depth 7 where LMR has more impact
+func BenchmarkSearchDeep(b *testing.B) {
+	var board Board
+	board.Reset()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		board.Search(7, 0)
+	}
+}
+
+// BenchmarkSearchTactical tests tactical positions at depth 8
+func BenchmarkSearchTactical(b *testing.B) {
+	positions := []string{
+		"2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1", // WAC.001
+		"r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1",  // WAC.004
+		"r1b1qrk1/pp1n1ppp/2pbpn2/8/2BP4/2N1PN2/PP3PPP/R1BQ1RK1 w - - 0 1",
+	}
+
+	var boards []Board
+	for _, fen := range positions {
+		var board Board
+		board.SetFEN(fen)
+		boards = append(boards, board)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := range boards {
+			boards[j].Search(7, 0)
+		}
+	}
+}
+
+// TestLMRComparison compares search with and without LMR
+func TestLMRComparison(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping LMR comparison in short mode")
+	}
+
+	positions := []struct {
+		name string
+		fen  string
+	}{
+		{"Starting", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+		{"WAC.001", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"},
+		{"WAC.004", "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1"},
+		{"Middlegame", "r1b1qrk1/pp1n1ppp/2pbpn2/8/2BP4/2N1PN2/PP3PPP/R1BQ1RK1 w - - 0 1"},
+	}
+
+	depth := 7
+
+	t.Log("=== LMR Comparison ===")
+	t.Logf("Testing at depth %d\n", depth)
+
+	var totalNodesWithLMR, totalNodesWithoutLMR uint64
+	var totalTimeWithLMR, totalTimeWithoutLMR time.Duration
+
+	for _, pos := range positions {
+		var board Board
+		board.SetFEN(pos.fen)
+
+		// With LMR - use fresh TT
+		LMREnabled = true
+		tt1 := NewTranspositionTable(16)
+		start := time.Now()
+		moveWith, infoWith := board.SearchWithTT(depth, 0, tt1)
+		timeWith := time.Since(start)
+
+		// Without LMR - use fresh TT
+		LMREnabled = false
+		tt2 := NewTranspositionTable(16)
+		start = time.Now()
+		moveWithout, infoWithout := board.SearchWithTT(depth, 0, tt2)
+		timeWithout := time.Since(start)
+
+		// Re-enable LMR
+		LMREnabled = true
+
+		totalNodesWithLMR += infoWith.Nodes
+		totalNodesWithoutLMR += infoWithout.Nodes
+		totalTimeWithLMR += timeWith
+		totalTimeWithoutLMR += timeWithout
+
+		nodeReduction := 100.0 * (1.0 - float64(infoWith.Nodes)/float64(infoWithout.Nodes))
+		speedup := float64(timeWithout) / float64(timeWith)
+
+		t.Logf("\n%s:", pos.name)
+		t.Logf("  With LMR:    %s, nodes=%d, time=%v", moveWith, infoWith.Nodes, timeWith)
+		t.Logf("  LMR stats:   attempts=%d, re-searches=%d, savings=%d",
+			infoWith.LMRAttempts, infoWith.LMRReSearches, infoWith.LMRSavings)
+		t.Logf("  Without LMR: %s, nodes=%d, time=%v", moveWithout, infoWithout.Nodes, timeWithout)
+		t.Logf("  Node reduction: %.1f%%, Speedup: %.2fx", nodeReduction, speedup)
+
+		// Verify same move found (usually, though LMR can occasionally change results)
+		if moveWith != moveWithout {
+			t.Logf("  NOTE: Different moves found (LMR effect)")
+		}
+	}
+
+	overallNodeReduction := 100.0 * (1.0 - float64(totalNodesWithLMR)/float64(totalNodesWithoutLMR))
+	overallSpeedup := float64(totalTimeWithoutLMR) / float64(totalTimeWithLMR)
+
+	t.Logf("\n=== TOTALS ===")
+	t.Logf("Total nodes with LMR:    %d", totalNodesWithLMR)
+	t.Logf("Total nodes without LMR: %d", totalNodesWithoutLMR)
+	t.Logf("Overall node reduction:  %.1f%%", overallNodeReduction)
+	t.Logf("Overall speedup:         %.2fx", overallSpeedup)
+}
