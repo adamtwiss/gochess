@@ -1,6 +1,7 @@
 package chess
 
 import (
+	"sync/atomic"
 	"time"
 )
 
@@ -52,8 +53,13 @@ type SearchInfo struct {
 	PV        []Move
 	StartTime time.Time
 	MaxTime   time.Duration
-	Stopped   bool
+	// Stopped indicates the search should abort. Accessed atomically (0=running, 1=stopped).
+	Stopped int32
 	TT        *TranspositionTable
+
+	// Deadline is the absolute time (UnixNano) after which the search must stop.
+	// Accessed atomically. 0 means no deadline (use MaxTime/StartTime fallback).
+	Deadline int64
 
 	// Killer moves: 2 slots per ply, max 64 ply
 	Killers [64][2]Move
@@ -119,6 +125,11 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		info.Killers[i][1] = NoMove
 	}
 
+	// Initialize Deadline from MaxTime if not already set (backward compat for Search/SearchWithTT/EPD callers)
+	if info.MaxTime > 0 && atomic.LoadInt64(&info.Deadline) == 0 {
+		atomic.StoreInt64(&info.Deadline, info.StartTime.Add(info.MaxTime).UnixNano())
+	}
+
 	var bestMove Move
 	var pv []Move
 	prevScore := 0
@@ -126,6 +137,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 	// Iterative deepening with aspiration windows
 	for depth := 1; depth <= maxDepth; depth++ {
 		info.Depth = depth
+		iterStart := time.Now()
 
 		var score int
 
@@ -136,7 +148,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			for {
 				pv = pv[:0]
 				score = b.negamax(depth, 0, alpha, beta, info, &pv)
-				if info.Stopped {
+				if atomic.LoadInt32(&info.Stopped) != 0 {
 					break
 				}
 				if score <= alpha {
@@ -157,7 +169,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		}
 
 		// Check if we ran out of time mid-search
-		if info.Stopped {
+		if atomic.LoadInt32(&info.Stopped) != 0 {
 			break
 		}
 
@@ -174,10 +186,14 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			info.OnDepth(depth, score, info.Nodes, info.PV)
 		}
 
-		// Check time after completing a depth
-		if info.MaxTime > 0 && time.Since(info.StartTime) > info.MaxTime/2 {
-			// If we've used more than half our time, unlikely to finish next depth
-			break
+		// Check if remaining time is less than the last iteration took
+		if d := atomic.LoadInt64(&info.Deadline); d > 0 {
+			now := time.Now().UnixNano()
+			remaining := d - now
+			iterElapsed := now - iterStart.UnixNano()
+			if remaining > 0 && remaining < iterElapsed {
+				break
+			}
 		}
 	}
 
@@ -205,14 +221,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 	}
 
 	// Check time periodically
-	if info.Nodes&4095 == 0 && info.MaxTime > 0 {
-		if time.Since(info.StartTime) >= info.MaxTime {
-			info.Stopped = true
+	if info.Nodes&4095 == 0 {
+		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
+			atomic.StoreInt32(&info.Stopped, 1)
 			return 0
 		}
 	}
 
-	if info.Stopped {
+	if atomic.LoadInt32(&info.Stopped) != 0 {
 		return 0
 	}
 
@@ -275,7 +291,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info, &nullPV)
 		b.UnmakeNullMove()
 
-		if info.Stopped {
+		if atomic.LoadInt32(&info.Stopped) != 0 {
 			return 0
 		}
 
@@ -368,7 +384,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 			// LMR: reduced depth, zero window
 			score = -b.negamax(newDepth-reduction, ply+1, -alpha-1, -alpha, info, &childPV)
 
-			if score > alpha && !info.Stopped {
+			if score > alpha && atomic.LoadInt32(&info.Stopped) == 0 {
 				// LMR failed high → re-search full depth, zero window (PVS)
 				info.LMRReSearches++
 				childPV = childPV[:0]
@@ -377,7 +393,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 				info.LMRSavings++
 			}
 
-			if score > alpha && score < beta && !info.Stopped {
+			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
 				// PVS failed high → full window re-search
 				childPV = childPV[:0]
 				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
@@ -385,7 +401,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		} else if moveCount > 1 {
 			// PVS: zero-window for non-first moves
 			score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info, &childPV)
-			if score > alpha && score < beta && !info.Stopped {
+			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
 				// Failed high → full window re-search
 				childPV = childPV[:0]
 				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
@@ -397,7 +413,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 		b.UnmakeMove(move)
 
-		if info.Stopped {
+		if atomic.LoadInt32(&info.Stopped) != 0 {
 			return 0
 		}
 

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -103,7 +104,7 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("id name GoChess")
 	e.send("id author Adam")
 	e.send("option name Hash type spin default 64 min 1 max 4096")
-	e.send("option name Ponder type check default true")
+	e.send("option name UCI_Ponder type check default true")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
 	e.send("uciok")
@@ -218,7 +219,17 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			if name != "" {
 				e.send("info string book: %s", name)
 			}
-			e.send("bestmove %s", move.String())
+			result := move.String()
+			if e.ponderOpt {
+				var tmpBoard Board
+				tmpBoard = e.board
+				tmpBoard.UndoStack = make([]UndoInfo, 0, 8)
+				tmpBoard.MakeMove(move)
+				if pm, _, pok := e.book.PickMove(tmpBoard.HashKey); pok {
+					result += " ponder " + pm.String()
+				}
+			}
+			e.send("bestmove %s", result)
 			return
 		}
 	}
@@ -239,10 +250,14 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 	searchBoard.PawnTable = NewPawnTable(1)
 
 	e.searchMu.Lock()
+	now := time.Now()
 	info := &SearchInfo{
-		StartTime: time.Now(),
+		StartTime: now,
 		MaxTime:   time.Duration(allocMS) * time.Millisecond,
 		TT:        e.tt,
+	}
+	if allocMS > 0 {
+		atomic.StoreInt64(&info.Deadline, now.Add(info.MaxTime).UnixNano())
 	}
 	info.OnDepth = func(d, score int, nodes uint64, pv []Move) {
 		elapsed := time.Since(info.StartTime)
@@ -306,7 +321,7 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 func (e *UCIEngine) cmdStop() {
 	e.searchMu.Lock()
 	if e.searchInfo != nil {
-		e.searchInfo.Stopped = true
+		atomic.StoreInt32(&e.searchInfo.Stopped, 1)
 	}
 	if e.pondering {
 		e.pondering = false
@@ -328,8 +343,9 @@ func (e *UCIEngine) cmdPonderhit() {
 	p := e.ponderParams
 	allocMS := computeSearchTime(p.movetime, p.wtime, p.btime,
 		p.winc, p.binc, p.movestogo, p.infinite, e.ponderSide)
-	e.searchInfo.StartTime = time.Now()
-	e.searchInfo.MaxTime = time.Duration(allocMS) * time.Millisecond
+	if allocMS > 0 {
+		atomic.StoreInt64(&e.searchInfo.Deadline, time.Now().Add(time.Duration(allocMS)*time.Millisecond).UnixNano())
+	}
 	e.pondering = false
 	if e.ponderDone != nil {
 		close(e.ponderDone)
@@ -373,7 +389,7 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.hashSizeMB = mb
 		e.tt = NewTranspositionTable(mb)
-	} else if strings.EqualFold(name, "Ponder") {
+	} else if strings.EqualFold(name, "UCI_Ponder") {
 		e.ponderOpt = strings.EqualFold(tokens[valueIdx], "true")
 	} else if strings.EqualFold(name, "OwnBook") {
 		if e.book != nil {

@@ -470,8 +470,8 @@ func TestUCIPonderOption(t *testing.T) {
 	engine.Run()
 
 	output := out.String()
-	if !strings.Contains(output, "option name Ponder type check default true") {
-		t.Errorf("missing Ponder option announcement, output:\n%s", output)
+	if !strings.Contains(output, "option name UCI_Ponder type check default true") {
+		t.Errorf("missing UCI_Ponder option announcement, output:\n%s", output)
 	}
 
 	// Setting Ponder to false should omit ponder move from bestmove
@@ -486,7 +486,7 @@ func TestUCIPonderOption(t *testing.T) {
 		close(done)
 	}()
 
-	fmt.Fprintln(inW, "setoption name Ponder value false")
+	fmt.Fprintln(inW, "setoption name UCI_Ponder value false")
 	fmt.Fprintln(inW, "position startpos")
 	fmt.Fprintln(inW, "go depth 5")
 

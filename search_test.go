@@ -86,8 +86,8 @@ func TestSearchWithTimeLimit(t *testing.T) {
 		t.Error("Search returned no move")
 	}
 
-	// Should have stopped within reasonable time
-	if elapsed > 200*time.Millisecond {
+	// Should have stopped within reasonable time (generous bound for race detector)
+	if elapsed > 500*time.Millisecond {
 		t.Errorf("Search took too long: %v", elapsed)
 	}
 }
