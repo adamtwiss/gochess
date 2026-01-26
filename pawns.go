@@ -51,10 +51,11 @@ func (pt *PawnTable) Store(entry PawnEntry) {
 
 // Precomputed masks for pawn evaluation
 var (
-	FileMasks      [8]Bitboard     // one mask per file
-	AdjacentFiles  [8]Bitboard     // neighboring file(s)
-	PassedPawnMask [2][64]Bitboard // squares that must be empty of enemy pawns for passed
+	FileMasks       [8]Bitboard     // one mask per file
+	AdjacentFiles   [8]Bitboard     // neighboring file(s)
+	PassedPawnMask  [2][64]Bitboard // squares that must be empty of enemy pawns for passed
 	ForwardFileMask [2][64]Bitboard // squares ahead on same file (for doubled detection)
+	OutpostMask     [2][64]Bitboard // squares on adjacent files from rank upward (for outpost detection)
 )
 
 func init() {
@@ -116,6 +117,32 @@ func init() {
 			}
 			if file < 7 {
 				PassedPawnMask[Black][sq] |= SquareBB(Square(r*8 + file + 1))
+			}
+		}
+
+		// Outpost masks: adjacent file squares from this rank upward (White) or downward (Black)
+		// If enemyPawns & OutpostMask[color][sq] == 0, no enemy pawn can attack sq
+		OutpostMask[White][sq] = Bitboard(0)
+		if file > 0 {
+			for r := rank; r < 8; r++ {
+				OutpostMask[White][sq] |= SquareBB(Square(r*8 + file - 1))
+			}
+		}
+		if file < 7 {
+			for r := rank; r < 8; r++ {
+				OutpostMask[White][sq] |= SquareBB(Square(r*8 + file + 1))
+			}
+		}
+
+		OutpostMask[Black][sq] = Bitboard(0)
+		if file > 0 {
+			for r := rank; r >= 0; r-- {
+				OutpostMask[Black][sq] |= SquareBB(Square(r*8 + file - 1))
+			}
+		}
+		if file < 7 {
+			for r := rank; r >= 0; r-- {
+				OutpostMask[Black][sq] |= SquareBB(Square(r*8 + file + 1))
 			}
 		}
 	}

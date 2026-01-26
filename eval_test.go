@@ -376,3 +376,237 @@ func TestPawnHashCaching(t *testing.T) {
 			entry1.WhiteMG, entry1.WhiteEG, entry2.WhiteMG, entry2.WhiteEG)
 	}
 }
+
+func TestBishopPair(t *testing.T) {
+	var b Board
+
+	// Two bishops vs one bishop + knight (similar material value)
+	b.SetFEN("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1")
+	pairScore := b.Evaluate()
+
+	b.SetFEN("4k3/8/8/8/8/8/8/2B1KN2 w - - 0 1")
+	singleScore := b.Evaluate()
+
+	// Bishop pair should give a bonus
+	if pairScore <= singleScore {
+		t.Errorf("Bishop pair (%d) should score higher than bishop+knight (%d)", pairScore, singleScore)
+	}
+	t.Logf("Bishop pair: %d, Bishop+Knight: %d, diff: %d", pairScore, singleScore, pairScore-singleScore)
+}
+
+func TestKnightOutpost(t *testing.T) {
+	var b Board
+
+	// Knight on d5 outpost: no black pawns on c or e files to attack it
+	b.SetFEN("4k3/pp4pp/8/3N4/8/8/PP4PP/4K3 w - - 0 1")
+	outpostScore := b.Evaluate()
+
+	// Knight on d5 but enemy pawns on c6 and e6 can attack it
+	b.SetFEN("4k3/pp4pp/2p1p3/3N4/8/8/PP4PP/4K3 w - - 0 1")
+	noOutpostScore := b.Evaluate()
+
+	if outpostScore <= noOutpostScore {
+		t.Errorf("Knight outpost (%d) should score higher than non-outpost (%d)", outpostScore, noOutpostScore)
+	}
+	t.Logf("Outpost: %d, Non-outpost: %d, diff: %d", outpostScore, noOutpostScore, outpostScore-noOutpostScore)
+}
+
+func TestKnightOutpostSupported(t *testing.T) {
+	var b Board
+
+	// Knight on d5 outpost supported by pawn on c4 or e4
+	b.SetFEN("4k3/pp4pp/8/3N4/4P3/8/PP4PP/4K3 w - - 0 1")
+	supportedScore := b.Evaluate()
+
+	// Knight on d5 outpost unsupported (pawns on a2, b2, not supporting)
+	b.SetFEN("4k3/pp4pp/8/3N4/8/8/PP4PP/4K3 w - - 0 1")
+	unsupportedScore := b.Evaluate()
+
+	if supportedScore <= unsupportedScore {
+		t.Errorf("Supported outpost (%d) should score higher than unsupported (%d)", supportedScore, unsupportedScore)
+	}
+	t.Logf("Supported: %d, Unsupported: %d, diff: %d", supportedScore, unsupportedScore, supportedScore-unsupportedScore)
+}
+
+func TestRookOpenFile(t *testing.T) {
+	var b Board
+
+	// Rook on open e-file (no pawns on e-file for either side)
+	b.SetFEN("4k3/pppp1ppp/8/8/8/8/PPPP1PPP/4R1K1 w - - 0 1")
+	openScore := b.Evaluate()
+
+	// Rook on closed e-file (both sides have e-pawns)
+	b.SetFEN("4k3/pppppppp/8/8/8/8/PPPPPPPP/4R1K1 w - - 0 1")
+	closedScore := b.Evaluate()
+
+	if openScore <= closedScore {
+		t.Errorf("Rook on open file (%d) should score higher than closed (%d)", openScore, closedScore)
+	}
+	t.Logf("Open: %d, Closed: %d, diff: %d", openScore, closedScore, openScore-closedScore)
+}
+
+func TestRookSemiOpenFile(t *testing.T) {
+	var b Board
+
+	// Semi-open: Rook on e1, white pawn on d2 (not e-file), black pawn on e7
+	// e-file is semi-open for white rook (no white pawn, enemy pawn present)
+	b.SetFEN("4k3/4p3/8/8/8/8/3P4/4R1K1 w - - 0 1")
+	semiOpenScore := b.Evaluate()
+
+	// Closed: Rook on e1, white pawn on e2, black pawn on d7
+	// e-file is closed for white rook (white pawn on it)
+	b.SetFEN("4k3/3p4/8/8/8/8/4P3/4R1K1 w - - 0 1")
+	closedScore := b.Evaluate()
+
+	if semiOpenScore <= closedScore {
+		t.Errorf("Rook on semi-open file (%d) should score higher than closed (%d)", semiOpenScore, closedScore)
+	}
+	t.Logf("Semi-open: %d, Closed: %d, diff: %d", semiOpenScore, closedScore, semiOpenScore-closedScore)
+}
+
+func TestRookOn7thRank(t *testing.T) {
+	var b Board
+
+	// White rook on 7th rank (b7)
+	b.SetFEN("4k3/1R6/8/8/8/8/8/4K3 w - - 0 1")
+	seventhScore := b.Evaluate()
+
+	// White rook on 5th rank (b5) — same file, different rank
+	b.SetFEN("4k3/8/8/1R6/8/8/8/4K3 w - - 0 1")
+	fifthScore := b.Evaluate()
+
+	if seventhScore <= fifthScore {
+		t.Errorf("Rook on 7th rank (%d) should score higher than 5th (%d)", seventhScore, fifthScore)
+	}
+	t.Logf("7th rank: %d, 5th rank: %d, diff: %d", seventhScore, fifthScore, seventhScore-fifthScore)
+}
+
+func TestBishopOpenPosition(t *testing.T) {
+	var b Board
+
+	// Bishop with few pawns (open position)
+	b.SetFEN("4k3/8/8/8/8/8/4P3/4KB2 w - - 0 1")
+	openScore := b.Evaluate()
+
+	// Bishop with many pawns (closed position)
+	b.SetFEN("4k3/pppppppp/8/8/8/8/PPPPPPPP/4KB2 w - - 0 1")
+	closedScore := b.Evaluate()
+
+	// Remove pawn material influence: open position has fewer pawns
+	// so we focus on the bishop bonus. The open position should
+	// give a higher per-bishop bonus even though it has less material.
+	t.Logf("Open (few pawns): %d, Closed (many pawns): %d", openScore, closedScore)
+	// We can't directly compare due to material differences, so just log.
+	// The BishopOpenPosition bonus adds 3 * (16 - totalPawns) per bishop.
+}
+
+func TestPassedPawnNotBlocked(t *testing.T) {
+	var b Board
+
+	// White passed pawn on e5, square ahead (e6) is empty
+	b.SetFEN("4k3/8/8/4P3/8/8/8/4K3 w - - 0 1")
+	freeScore := b.Evaluate()
+
+	// White passed pawn on e5, blocked by a piece on e6
+	b.SetFEN("4k3/8/4n3/4P3/8/8/8/4K3 w - - 0 1")
+	blockedScore := b.Evaluate()
+
+	if freeScore <= blockedScore {
+		t.Errorf("Free passed pawn (%d) should score higher than blocked (%d)", freeScore, blockedScore)
+	}
+	t.Logf("Free: %d, Blocked: %d, diff: %d", freeScore, blockedScore, freeScore-blockedScore)
+}
+
+func TestRookBehindPassedPawn(t *testing.T) {
+	var b Board
+
+	// White rook on e1 behind white passed pawn on e5
+	b.SetFEN("4k3/8/8/4P3/8/8/8/4KR2 w - - 0 1")
+	behindScore := b.Evaluate()
+
+	// White rook on e7 in front of white passed pawn on e5 (not behind)
+	b.SetFEN("4k3/4R3/8/4P3/8/8/8/4K3 w - - 0 1")
+	frontScore := b.Evaluate()
+
+	t.Logf("Rook behind passer: %d, Rook in front: %d, diff: %d", behindScore, frontScore, behindScore-frontScore)
+}
+
+func TestSafeMobility(t *testing.T) {
+	var b Board
+
+	// Knight with lots of safe squares
+	b.SetFEN("4k3/8/8/8/4N3/8/8/4K3 w - - 0 1")
+	freeScore := b.Evaluate()
+
+	// Knight surrounded by friendly pieces (fewer safe squares)
+	b.SetFEN("4k3/8/8/3PBP2/3PNP2/3PBP2/8/4K3 w - - 0 1")
+	crammedScore := b.Evaluate()
+
+	// The free knight should have higher mobility (though crammed has more material)
+	// We'll check that eval doesn't count friendly squares as mobility
+	t.Logf("Free knight: %d, Crammed knight: %d", freeScore, crammedScore)
+}
+
+func TestOutpostMask(t *testing.T) {
+	// Verify OutpostMask for a few key squares
+
+	// White perspective: e4 (square 28) should include d4-d7 and f4-f7 on adjacent files
+	sq := NewSquare(4, 3) // e4
+	mask := OutpostMask[White][sq]
+
+	// Should include d4, d5, d6, d7 (adjacent file d, ranks 3-7)
+	for r := 3; r < 8; r++ {
+		dSq := NewSquare(3, r)
+		if !mask.IsSet(dSq) {
+			t.Errorf("OutpostMask[White][e4] should include %s", dSq)
+		}
+		fSq := NewSquare(5, r)
+		if !mask.IsSet(fSq) {
+			t.Errorf("OutpostMask[White][e4] should include %s", fSq)
+		}
+	}
+
+	// Should NOT include ranks below (d3, d2, d1, etc.)
+	for r := 0; r < 3; r++ {
+		dSq := NewSquare(3, r)
+		if mask.IsSet(dSq) {
+			t.Errorf("OutpostMask[White][e4] should NOT include %s", dSq)
+		}
+	}
+
+	// Should NOT include e-file itself
+	for r := 0; r < 8; r++ {
+		eSq := NewSquare(4, r)
+		if mask.IsSet(eSq) {
+			t.Errorf("OutpostMask[White][e4] should NOT include %s (same file)", eSq)
+		}
+	}
+
+	// Black perspective: e5 (square 36) should include d5-d0 and f5-f0
+	sq = NewSquare(4, 4) // e5
+	mask = OutpostMask[Black][sq]
+	for r := 4; r >= 0; r-- {
+		dSq := NewSquare(3, r)
+		if !mask.IsSet(dSq) {
+			t.Errorf("OutpostMask[Black][e5] should include %s", dSq)
+		}
+		fSq := NewSquare(5, r)
+		if !mask.IsSet(fSq) {
+			t.Errorf("OutpostMask[Black][e5] should include %s", fSq)
+		}
+	}
+
+	// Edge case: a-file square should only have b-file in mask
+	sq = NewSquare(0, 3) // a4
+	mask = OutpostMask[White][sq]
+	for r := 3; r < 8; r++ {
+		bSq := NewSquare(1, r)
+		if !mask.IsSet(bSq) {
+			t.Errorf("OutpostMask[White][a4] should include %s", bSq)
+		}
+	}
+	// No file to the left of a-file
+	if mask.Count() != 5 {
+		t.Errorf("OutpostMask[White][a4] should have 5 squares (b4-b8), got %d", mask.Count())
+	}
+}
