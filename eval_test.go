@@ -27,8 +27,8 @@ func TestEvalMaterialAdvantage(t *testing.T) {
 	scoreWithoutBQ := b.Evaluate()
 
 	diff := scoreWithoutBQ - baseScore
-	// Should be close to QueenValue (900), allowing for mobility differences
-	if diff < 800 || diff > 1000 {
+	// Should reflect queen value from PST (varies by square, ~900 range)
+	if diff < 700 || diff > 1200 {
 		t.Errorf("Queen removal changed score by %d, expected ~900", diff)
 	}
 }
@@ -67,13 +67,56 @@ func TestEvalSymmetry(t *testing.T) {
 	var b Board
 	b.Reset()
 
-	// Swap all pieces (mirror the board)
 	// After e4 e5, the position should still be roughly symmetrical
 	b.SetFEN("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2")
 	score := b.Evaluate()
 
-	// Should be close to 0 due to symmetry
-	if score < -30 || score > 30 {
+	// Should be close to 0 due to symmetry (PST values are near-symmetric)
+	if score < -50 || score > 50 {
 		t.Errorf("Symmetric position eval = %d, expected close to 0", score)
+	}
+}
+
+func TestEvalPSTKnightCentralization(t *testing.T) {
+	// Knight on e4 (central) should score higher than knight on a1 (corner)
+	var b Board
+
+	// Minimal position: just kings and a white knight on e4
+	b.SetFEN("4k3/8/8/8/4N3/8/8/4K3 w - - 0 1")
+	centralScore := b.Evaluate()
+
+	// Knight on a1
+	b.SetFEN("4k3/8/8/8/8/8/8/N3K3 w - - 0 1")
+	cornerScore := b.Evaluate()
+
+	if centralScore <= cornerScore {
+		t.Errorf("Central knight (%d) should score higher than corner knight (%d)", centralScore, cornerScore)
+	}
+	t.Logf("Central knight: %d, Corner knight: %d, diff: %d", centralScore, cornerScore, centralScore-cornerScore)
+}
+
+func TestEvalTaperedPhase(t *testing.T) {
+	var b Board
+
+	// Starting position should have phase = 0 (all pieces present)
+	b.Reset()
+	phase := b.computePhase()
+	if phase != 0 {
+		t.Errorf("Starting position phase = %d, expected 0", phase)
+	}
+
+	// K+P vs K endgame should have max phase (TotalPhase)
+	b.SetFEN("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")
+	phase = b.computePhase()
+	if phase != TotalPhase {
+		t.Errorf("K+P vs K phase = %d, expected %d", phase, TotalPhase)
+	}
+
+	// K+Q vs K should have reduced phase
+	b.SetFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1")
+	phase = b.computePhase()
+	expectedPhase := TotalPhase - QueenPhase
+	if phase != expectedPhase {
+		t.Errorf("K+Q vs K phase = %d, expected %d", phase, expectedPhase)
 	}
 }

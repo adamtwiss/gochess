@@ -269,37 +269,39 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 		b.MakeMove(move)
 
+		// Check extension: extend search by 1 ply when move gives check
+		givesCheck := b.InCheck()
+		extension := 0
+		if givesCheck {
+			extension = 1
+		}
+		newDepth := depth - 1 + extension
+
 		childPV := make([]Move, 0, depth-1)
 		var score int
 
 		// Late Move Reductions (LMR)
 		// Very conservative: only reduce clearly bad moves at sufficient depth
-		// Conditions: LMR enabled, very late move, high depth, quiet move, not in check, not killer
+		// Conditions: LMR enabled, very late move, high depth, quiet move, not in check, not killer, not checking
 		isKiller := move == killers[0] || move == killers[1]
 		hasHighHistory := info.History[move.From()][move.To()] > 1000
 
-		if LMREnabled && moveCount >= 8 && depth >= 5 && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !hasHighHistory {
-			// Check if move gives check - never reduce checking moves
-			givesCheck := b.InCheck()
-			if !givesCheck {
-				info.LMRAttempts++
+		if LMREnabled && moveCount >= 8 && depth >= 5 && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !hasHighHistory && !givesCheck {
+			info.LMRAttempts++
 
-				// Always reduce by just 1 ply
-				score = -b.negamax(depth-2, ply+1, -alpha-1, -alpha, info, &childPV)
+			// Always reduce by just 1 ply
+			score = -b.negamax(newDepth-1, ply+1, -alpha-1, -alpha, info, &childPV)
 
-				// Re-search at full depth if it might be good
-				if score > alpha && !info.Stopped {
-					info.LMRReSearches++
-					childPV = childPV[:0]
-					score = -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
-				} else {
-					info.LMRSavings++
-				}
+			// Re-search at full depth if it might be good
+			if score > alpha && !info.Stopped {
+				info.LMRReSearches++
+				childPV = childPV[:0]
+				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
 			} else {
-				score = -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
+				info.LMRSavings++
 			}
 		} else {
-			score = -b.negamax(depth-1, ply+1, -beta, -alpha, info, &childPV)
+			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
 		}
 
 		b.UnmakeMove(move)

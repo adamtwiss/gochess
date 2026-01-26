@@ -1,54 +1,34 @@
 package chess
 
-// Piece values in centipawns
-const (
-	PawnValue   = 100
-	KnightValue = 320
-	BishopValue = 330
-	RookValue   = 500
-	QueenValue  = 900
-	KingValue   = 20000 // High value to detect checkmate situations
-)
-
 // Mobility bonus per square attacked (in centipawns)
 const (
-	KnightMobility = 4
-	BishopMobility = 5
-	RookMobility   = 2
+	KnightMobility = 2
+	BishopMobility = 3
+	RookMobility   = 1
 	QueenMobility  = 1
 )
 
-// Evaluate returns a static evaluation of the position in centipawns
-// Positive values favor White, negative values favor Black
+// Evaluate returns a static evaluation of the position in centipawns.
+// Positive values favor White, negative values favor Black.
+// Uses tapered evaluation blending middlegame and endgame PST scores.
 func (b *Board) Evaluate() int {
-	score := 0
+	wMG, wEG := b.evaluatePST(White)
+	bMG, bEG := b.evaluatePST(Black)
 
-	// Material counting (simple and fast)
-	score += b.evaluateMaterial(White)
-	score -= b.evaluateMaterial(Black)
+	wMob := b.evaluateMobility(White)
+	bMob := b.evaluateMobility(Black)
 
-	// Mobility - count squares each piece can attack
-	score += b.evaluateMobility(White)
-	score -= b.evaluateMobility(Black)
+	mg := wMG - bMG + wMob - bMob
+	eg := wEG - bEG + wMob - bMob
 
-	return score
-}
-
-// evaluateMaterial returns simple material count for a color
-func (b *Board) evaluateMaterial(color Color) int {
-	score := 0
-
-	score += b.Pieces[pieceOf(WhitePawn, color)].Count() * PawnValue
-	score += b.Pieces[pieceOf(WhiteKnight, color)].Count() * KnightValue
-	score += b.Pieces[pieceOf(WhiteBishop, color)].Count() * BishopValue
-	score += b.Pieces[pieceOf(WhiteRook, color)].Count() * RookValue
-	score += b.Pieces[pieceOf(WhiteQueen, color)].Count() * QueenValue
+	phase := b.computePhase()
+	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
 
 	return score
 }
 
-// EvaluateRelative returns the evaluation from the perspective of the side to move
-// Positive values are good for the side to move
+// EvaluateRelative returns the evaluation from the perspective of the side to move.
+// Positive values are good for the side to move.
 func (b *Board) EvaluateRelative() int {
 	score := b.Evaluate()
 	if b.SideToMove == Black {
@@ -57,7 +37,47 @@ func (b *Board) EvaluateRelative() int {
 	return score
 }
 
-// evaluateMobility calculates mobility bonus for a given color
+// computePhase returns the game phase from 0 (opening/middlegame) to TotalPhase (endgame).
+// Phase increases as pieces are traded off.
+func (b *Board) computePhase() int {
+	phase := TotalPhase
+
+	phase -= (b.Pieces[WhiteKnight].Count() + b.Pieces[BlackKnight].Count()) * KnightPhase
+	phase -= (b.Pieces[WhiteBishop].Count() + b.Pieces[BlackBishop].Count()) * BishopPhase
+	phase -= (b.Pieces[WhiteRook].Count() + b.Pieces[BlackRook].Count()) * RookPhase
+	phase -= (b.Pieces[WhiteQueen].Count() + b.Pieces[BlackQueen].Count()) * QueenPhase
+
+	if phase < 0 {
+		phase = 0
+	}
+	return phase
+}
+
+// evaluatePST returns the middlegame and endgame PST scores for a color.
+// Includes both material values and positional bonuses.
+func (b *Board) evaluatePST(color Color) (mg, eg int) {
+	for pt := WhitePawn; pt <= WhiteKing; pt++ {
+		piece := pieceOf(pt, color)
+		bb := b.Pieces[piece]
+		mgTable := mgPST[pt]
+		egTable := egPST[pt]
+		mgMat := mgMaterial[pt]
+		egMat := egMaterial[pt]
+
+		for bb != 0 {
+			sq := bb.PopLSB()
+			idx := int(sq)
+			if color == Black {
+				idx ^= 56 // Mirror rank for Black
+			}
+			mg += mgMat + mgTable[idx]
+			eg += egMat + egTable[idx]
+		}
+	}
+	return
+}
+
+// evaluateMobility calculates mobility bonus for a given color.
 func (b *Board) evaluateMobility(color Color) int {
 	score := 0
 
