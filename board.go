@@ -103,11 +103,15 @@ type Board struct {
 	HalfmoveClock int
 	FullmoveNum   int
 	HashKey       uint64
+	PawnHashKey   uint64
 
 	// Bitboards for fast move generation
 	Pieces    [13]Bitboard // One bitboard per piece type (index 0 unused)
 	Occupied  [2]Bitboard  // All pieces by color [White], [Black]
 	AllPieces Bitboard     // All pieces on board
+
+	// Pawn hash table for caching pawn structure evaluation
+	PawnTable *PawnTable
 
 	// Undo stack for MakeMove/UnmakeMove (per-board to avoid sharing issues)
 	UndoStack []UndoInfo
@@ -130,6 +134,7 @@ func (b *Board) Clear() {
 	b.HalfmoveClock = 0
 	b.FullmoveNum = 1
 	b.HashKey = 0
+	b.PawnHashKey = 0
 	// Reset undo stack (keep capacity if already allocated)
 	if b.UndoStack == nil {
 		b.UndoStack = make([]UndoInfo, 0, 256)
@@ -211,6 +216,7 @@ func (b *Board) Reset() {
 	b.HalfmoveClock = 0
 	b.FullmoveNum = 1
 	b.HashKey = b.Hash()
+	b.PawnHashKey = b.PawnHash()
 }
 
 // SetFEN parses a FEN string and sets the board position
@@ -292,6 +298,7 @@ func (b *Board) SetFEN(fen string) error {
 	}
 
 	b.HashKey = b.Hash()
+	b.PawnHashKey = b.PawnHash()
 	return nil
 }
 

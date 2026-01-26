@@ -8,6 +8,7 @@ type UndoInfo struct {
 	EnPassant     Square
 	HalfmoveClock int
 	HashKey       uint64
+	PawnHashKey   uint64
 }
 
 // MakeMove makes a move on the board and stores undo information
@@ -26,6 +27,7 @@ func (b *Board) MakeMove(m Move) {
 		EnPassant:     b.EnPassant,
 		HalfmoveClock: b.HalfmoveClock,
 		HashKey:       b.HashKey,
+		PawnHashKey:   b.PawnHashKey,
 	}
 	b.UndoStack = append(b.UndoStack, undo)
 
@@ -41,6 +43,7 @@ func (b *Board) MakeMove(m Move) {
 		// Update hash for captured pawn
 		capturedPawn := b.Squares[capturedSq]
 		b.HashKey ^= Zobrist.Pieces[capturedPawn][capturedSq]
+		b.PawnHashKey ^= Zobrist.Pieces[capturedPawn][capturedSq]
 		b.removePiece(capturedSq)
 	}
 
@@ -48,12 +51,22 @@ func (b *Board) MakeMove(m Move) {
 	if captured != Empty {
 		b.removePiece(to)
 		b.HashKey ^= Zobrist.Pieces[captured][to]
+		// Update pawn hash if a pawn was captured
+		if captured == WhitePawn || captured == BlackPawn {
+			b.PawnHashKey ^= Zobrist.Pieces[captured][to]
+		}
 	}
 
 	// Move the piece
 	b.movePiece(from, to)
 	b.HashKey ^= Zobrist.Pieces[piece][from]
 	b.HashKey ^= Zobrist.Pieces[piece][to]
+
+	// Update pawn hash for pawn moves
+	if piece == WhitePawn || piece == BlackPawn {
+		b.PawnHashKey ^= Zobrist.Pieces[piece][from]
+		b.PawnHashKey ^= Zobrist.Pieces[piece][to]
+	}
 
 	// Handle promotion
 	if flags&FlagPromotion != 0 {
@@ -64,6 +77,8 @@ func (b *Board) MakeMove(m Move) {
 		// Remove the pawn and place the promoted piece
 		b.HashKey ^= Zobrist.Pieces[piece][to]    // Remove pawn from hash
 		b.HashKey ^= Zobrist.Pieces[promoPiece][to] // Add promoted piece to hash
+		// Pawn disappears from pawn hash on promotion
+		b.PawnHashKey ^= Zobrist.Pieces[piece][to]
 		b.removePiece(to)
 		b.putPiece(promoPiece, to)
 	}
@@ -229,6 +244,7 @@ func (b *Board) UnmakeMove(m Move) {
 	b.EnPassant = undo.EnPassant
 	b.HalfmoveClock = undo.HalfmoveClock
 	b.HashKey = undo.HashKey
+	b.PawnHashKey = undo.PawnHashKey
 	if b.SideToMove == White {
 		b.FullmoveNum--
 	}

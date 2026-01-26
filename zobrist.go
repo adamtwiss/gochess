@@ -80,3 +80,17 @@ func (b *Board) Hash() uint64 {
 
 	return hash
 }
+
+// PawnHash computes the Zobrist hash for pawn positions only.
+// Used for pawn structure caching since pawns change infrequently.
+func (b *Board) PawnHash() uint64 {
+	var hash uint64
+	for _, piece := range [2]Piece{WhitePawn, BlackPawn} {
+		bb := b.Pieces[piece]
+		for bb != 0 {
+			sq := bb.PopLSB()
+			hash ^= Zobrist.Pieces[piece][sq]
+		}
+	}
+	return hash
+}

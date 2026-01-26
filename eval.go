@@ -18,8 +18,22 @@ func (b *Board) Evaluate() int {
 	wMob := b.evaluateMobility(White)
 	bMob := b.evaluateMobility(Black)
 
-	mg := wMG - bMG + wMob - bMob
-	eg := wEG - bEG + wMob - bMob
+	// Pawn structure (cached via pawn hash table)
+	if b.PawnTable == nil {
+		b.PawnTable = NewPawnTable(1) // 1 MB default
+	}
+	pawnEntry := b.probePawnEval()
+
+	// King safety (per-node, not cached)
+	wKSmg, wKSeg := b.evaluateKingSafety(White)
+	bKSmg, bKSeg := b.evaluateKingSafety(Black)
+
+	mg := wMG - bMG + wMob - bMob +
+		int(pawnEntry.WhiteMG) - int(pawnEntry.BlackMG) +
+		wKSmg - bKSmg
+	eg := wEG - bEG + wMob - bMob +
+		int(pawnEntry.WhiteEG) - int(pawnEntry.BlackEG) +
+		wKSeg - bKSeg
 
 	phase := b.computePhase()
 	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
