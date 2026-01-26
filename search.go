@@ -65,6 +65,10 @@ type SearchInfo struct {
 	LMRAttempts   uint64 // Times LMR was attempted
 	LMRReSearches uint64 // Times we had to re-search at full depth
 	LMRSavings    uint64 // Successful LMR prunings (no re-search needed)
+
+	// OnDepth is called after each completed iteration of iterative deepening.
+	// Parameters: depth, score, cumulative nodes, PV for this depth.
+	OnDepth func(depth, score int, nodes uint64, pv []Move)
 }
 
 // storeKiller stores a killer move at the given ply
@@ -85,12 +89,18 @@ func (b *Board) Search(maxDepth int, maxTime time.Duration) (Move, SearchInfo) {
 
 // SearchWithTT performs search with an optional transposition table
 func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *TranspositionTable) (Move, SearchInfo) {
-	info := SearchInfo{
+	info := &SearchInfo{
 		StartTime: time.Now(),
 		MaxTime:   maxTime,
 		TT:        tt,
 	}
+	return b.SearchWithInfo(maxDepth, info)
+}
 
+// SearchWithInfo performs search using a caller-provided SearchInfo.
+// The caller may pre-configure fields like TT and OnDepth.
+// StartTime and MaxTime should be set before calling.
+func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo) {
 	// Create a default TT if none provided
 	if info.TT == nil {
 		info.TT = NewTranspositionTable(16) // 16 MB default
@@ -125,7 +135,7 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 			alpha, beta := prevScore-delta, prevScore+delta
 			for {
 				pv = pv[:0]
-				score = b.negamax(depth, 0, alpha, beta, &info, &pv)
+				score = b.negamax(depth, 0, alpha, beta, info, &pv)
 				if info.Stopped {
 					break
 				}
@@ -143,7 +153,7 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 			}
 		} else {
 			pv = pv[:0]
-			score = b.negamax(depth, 0, -Infinity, Infinity, &info, &pv)
+			score = b.negamax(depth, 0, -Infinity, Infinity, info, &pv)
 		}
 
 		// Check if we ran out of time mid-search
@@ -160,14 +170,18 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 			copy(info.PV, pv)
 		}
 
+		if info.OnDepth != nil {
+			info.OnDepth(depth, score, info.Nodes, info.PV)
+		}
+
 		// Check time after completing a depth
-		if maxTime > 0 && time.Since(info.StartTime) > maxTime/2 {
+		if info.MaxTime > 0 && time.Since(info.StartTime) > info.MaxTime/2 {
 			// If we've used more than half our time, unlikely to finish next depth
 			break
 		}
 	}
 
-	return bestMove, info
+	return bestMove, *info
 }
 
 // widenDelta returns the next wider aspiration window delta
