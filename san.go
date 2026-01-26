@@ -205,8 +205,6 @@ func (b *Board) ParseSAN(san string) (Move, error) {
 	if len(candidates) > 1 {
 		return NoMove, fmt.Errorf("ambiguous move: %s (matches %d moves)", san, len(candidates))
 	}
-
-	_ = isCapture // Used for pawn move validation above
 	return candidates[0], nil
 }
 

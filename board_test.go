@@ -17,26 +17,24 @@ func TestZobristIncremental(t *testing.T) {
 		t.Errorf("Initial hash mismatch: stored=%x computed=%x", b.HashKey, b.Hash())
 	}
 
-	// Play some moves and verify hash stays in sync
+	// Play some moves and verify hash stays in sync (Ruy Lopez)
 	moves := []struct {
-		from, to string
-		desc     string
+		move Move
+		desc string
 	}{
-		{"e2", "e4", "e4"},
-		{"e7", "e5", "e5"},
-		{"g1", "f3", "Nf3"},
-		{"b8", "c6", "Nc6"},
-		{"f1", "b5", "Bb5"},
-		{"a7", "a6", "a6"},
-		{"b5", "a4", "Ba4"},
-		{"g8", "f6", "Nf6"},
-		{"e1", "g1", "O-O (kingside castle)"},
+		{NewMove(ParseSquare("e2"), ParseSquare("e4")), "e4"},
+		{NewMove(ParseSquare("e7"), ParseSquare("e5")), "e5"},
+		{NewMove(ParseSquare("g1"), ParseSquare("f3")), "Nf3"},
+		{NewMove(ParseSquare("b8"), ParseSquare("c6")), "Nc6"},
+		{NewMove(ParseSquare("f1"), ParseSquare("b5")), "Bb5"},
+		{NewMove(ParseSquare("a7"), ParseSquare("a6")), "a6"},
+		{NewMove(ParseSquare("b5"), ParseSquare("a4")), "Ba4"},
+		{NewMove(ParseSquare("g8"), ParseSquare("f6")), "Nf6"},
+		{NewMoveFlags(ParseSquare("e1"), ParseSquare("g1"), FlagCastle), "O-O"},
 	}
 
 	for _, m := range moves {
-		from := ParseSquare(m.from)
-		to := ParseSquare(m.to)
-		b.Move(from, to)
+		b.MakeMove(m.move)
 
 		computed := b.Hash()
 		if b.HashKey != computed {
@@ -58,7 +56,7 @@ func TestZobristEnPassant(t *testing.T) {
 	}
 
 	// Capture en passant
-	b.Move(ParseSquare("e5"), ParseSquare("d6"))
+	b.MakeMove(NewMoveFlags(ParseSquare("e5"), ParseSquare("d6"), FlagEnPassant))
 
 	if b.HashKey != b.Hash() {
 		t.Errorf("After en passant: hash mismatch stored=%x computed=%x", b.HashKey, b.Hash())
@@ -110,18 +108,21 @@ func TestBitboardSync(t *testing.T) {
 	verifySync("after Reset")
 
 	// Play some moves
-	moves := []struct{ from, to string }{
-		{"e2", "e4"},
-		{"d7", "d5"},
-		{"e4", "d5"}, // capture
-		{"d8", "d5"}, // capture
-		{"g1", "f3"},
-		{"b8", "c6"},
+	moves := []struct {
+		move Move
+		desc string
+	}{
+		{NewMove(ParseSquare("e2"), ParseSquare("e4")), "e2e4"},
+		{NewMove(ParseSquare("d7"), ParseSquare("d5")), "d7d5"},
+		{NewMove(ParseSquare("e4"), ParseSquare("d5")), "e4d5 (capture)"},
+		{NewMove(ParseSquare("d8"), ParseSquare("d5")), "d8d5 (capture)"},
+		{NewMove(ParseSquare("g1"), ParseSquare("f3")), "g1f3"},
+		{NewMove(ParseSquare("b8"), ParseSquare("c6")), "b8c6"},
 	}
 
 	for _, m := range moves {
-		b.Move(ParseSquare(m.from), ParseSquare(m.to))
-		verifySync("after " + m.from + m.to)
+		b.MakeMove(m.move)
+		verifySync("after " + m.desc)
 	}
 
 	// Test FEN loading
@@ -129,7 +130,7 @@ func TestBitboardSync(t *testing.T) {
 	verifySync("after SetFEN")
 
 	// Test castling
-	b.Move(ParseSquare("e1"), ParseSquare("g1"))
+	b.MakeMove(NewMoveFlags(ParseSquare("e1"), ParseSquare("g1"), FlagCastle))
 	verifySync("after castling")
 }
 

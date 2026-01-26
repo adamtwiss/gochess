@@ -46,16 +46,6 @@ func (m Move) Flags() int {
 	return int(m >> 12)
 }
 
-// IsEnPassant returns true if this is an en passant capture
-func (m Move) IsEnPassant() bool {
-	return m.Flags()&FlagEnPassant != 0
-}
-
-// IsCastle returns true if this is a castling move
-func (m Move) IsCastle() bool {
-	return m.Flags()&FlagCastle != 0
-}
-
 // IsPromotion returns true if this is a pawn promotion
 func (m Move) IsPromotion() bool {
 	return m.Flags()&FlagPromotion != 0

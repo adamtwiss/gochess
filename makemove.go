@@ -108,21 +108,8 @@ func (b *Board) MakeMove(m Move) {
 		b.HashKey ^= Zobrist.EnPassant[b.EnPassant.File()]
 	}
 
-	// Update castling rights in hash (XOR out old rights)
-	if b.Castling&WhiteKingside != 0 {
-		b.HashKey ^= Zobrist.Castling[0]
-	}
-	if b.Castling&WhiteQueenside != 0 {
-		b.HashKey ^= Zobrist.Castling[1]
-	}
-	if b.Castling&BlackKingside != 0 {
-		b.HashKey ^= Zobrist.Castling[2]
-	}
-	if b.Castling&BlackQueenside != 0 {
-		b.HashKey ^= Zobrist.Castling[3]
-	}
-
 	// Update castling rights
+	oldCastling := b.Castling
 	switch from {
 	case NewSquare(4, 0):
 		b.Castling &^= WhiteKingside | WhiteQueenside
@@ -148,22 +135,25 @@ func (b *Board) MakeMove(m Move) {
 		b.Castling &^= BlackKingside
 	}
 
-	// Update castling rights in hash (XOR in new rights)
-	if b.Castling&WhiteKingside != 0 {
-		b.HashKey ^= Zobrist.Castling[0]
-	}
-	if b.Castling&WhiteQueenside != 0 {
-		b.HashKey ^= Zobrist.Castling[1]
-	}
-	if b.Castling&BlackKingside != 0 {
-		b.HashKey ^= Zobrist.Castling[2]
-	}
-	if b.Castling&BlackQueenside != 0 {
-		b.HashKey ^= Zobrist.Castling[3]
+	// Update castling rights in hash (only when changed)
+	if oldCastling != b.Castling {
+		changed := oldCastling ^ b.Castling
+		if changed&WhiteKingside != 0 {
+			b.HashKey ^= Zobrist.Castling[0]
+		}
+		if changed&WhiteQueenside != 0 {
+			b.HashKey ^= Zobrist.Castling[1]
+		}
+		if changed&BlackKingside != 0 {
+			b.HashKey ^= Zobrist.Castling[2]
+		}
+		if changed&BlackQueenside != 0 {
+			b.HashKey ^= Zobrist.Castling[3]
+		}
 	}
 
-	// Update halfmove clock
-	if piece == WhitePawn || piece == BlackPawn || captured != Empty || undo.Captured != Empty {
+	// Update halfmove clock (reset on pawn move or capture)
+	if piece == WhitePawn || piece == BlackPawn || undo.Captured != Empty {
 		b.HalfmoveClock = 0
 	} else {
 		b.HalfmoveClock++

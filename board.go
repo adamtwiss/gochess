@@ -27,6 +27,12 @@ func (p Piece) Color() Color {
 	return White
 }
 
+// pieceOf returns the piece of the given type for the given color.
+// e.g. pieceOf(WhiteKnight, Black) returns BlackKnight.
+func pieceOf(p Piece, c Color) Piece {
+	return p + Piece(c)*6
+}
+
 // Color represents a player color
 type Color int8
 
@@ -287,152 +293,6 @@ func (b *Board) SetFEN(fen string) error {
 
 	b.HashKey = b.Hash()
 	return nil
-}
-
-// Move moves a piece from one square to another
-// This is a basic implementation that doesn't validate legality
-func (b *Board) Move(from, to Square) {
-	piece := b.Squares[from]
-	captured := b.Squares[to]
-	oldCastling := b.Castling
-	oldEnPassant := b.EnPassant
-
-	// Remove captured piece from bitboards (if any)
-	if captured != Empty {
-		b.removePiece(to)
-		b.HashKey ^= Zobrist.Pieces[captured][to]
-	}
-
-	// Move the piece (updates Squares and bitboards)
-	b.movePiece(from, to)
-
-	// Update hash for the move
-	b.HashKey ^= Zobrist.Pieces[piece][from]
-	b.HashKey ^= Zobrist.Pieces[piece][to]
-
-	// Handle en passant capture
-	if (piece == WhitePawn || piece == BlackPawn) && to == oldEnPassant {
-		if piece == WhitePawn {
-			capturedSq := to - 8
-			b.HashKey ^= Zobrist.Pieces[BlackPawn][capturedSq]
-			b.removePiece(capturedSq)
-		} else {
-			capturedSq := to + 8
-			b.HashKey ^= Zobrist.Pieces[WhitePawn][capturedSq]
-			b.removePiece(capturedSq)
-		}
-	}
-
-	// Update en passant square
-	b.EnPassant = NoSquare
-	if piece == WhitePawn && to-from == 16 {
-		b.EnPassant = from + 8
-	} else if piece == BlackPawn && from-to == 16 {
-		b.EnPassant = from - 8
-	}
-
-	// Update castling rights when pieces move
-	switch from {
-	case NewSquare(4, 0): // White king moves
-		b.Castling &^= WhiteKingside | WhiteQueenside
-	case NewSquare(4, 7): // Black king moves
-		b.Castling &^= BlackKingside | BlackQueenside
-	case NewSquare(0, 0): // White queenside rook
-		b.Castling &^= WhiteQueenside
-	case NewSquare(7, 0): // White kingside rook
-		b.Castling &^= WhiteKingside
-	case NewSquare(0, 7): // Black queenside rook
-		b.Castling &^= BlackQueenside
-	case NewSquare(7, 7): // Black kingside rook
-		b.Castling &^= BlackKingside
-	}
-
-	// Update castling rights when rooks are captured
-	switch to {
-	case NewSquare(0, 0):
-		b.Castling &^= WhiteQueenside
-	case NewSquare(7, 0):
-		b.Castling &^= WhiteKingside
-	case NewSquare(0, 7):
-		b.Castling &^= BlackQueenside
-	case NewSquare(7, 7):
-		b.Castling &^= BlackKingside
-	}
-
-	// Handle castling move (move the rook)
-	if piece == WhiteKing && from == NewSquare(4, 0) {
-		if to == NewSquare(6, 0) { // Kingside
-			b.movePiece(NewSquare(7, 0), NewSquare(5, 0))
-			b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(7, 0)]
-			b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(5, 0)]
-		} else if to == NewSquare(2, 0) { // Queenside
-			b.movePiece(NewSquare(0, 0), NewSquare(3, 0))
-			b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(0, 0)]
-			b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(3, 0)]
-		}
-	} else if piece == BlackKing && from == NewSquare(4, 7) {
-		if to == NewSquare(6, 7) { // Kingside
-			b.movePiece(NewSquare(7, 7), NewSquare(5, 7))
-			b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(7, 7)]
-			b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(5, 7)]
-		} else if to == NewSquare(2, 7) { // Queenside
-			b.movePiece(NewSquare(0, 7), NewSquare(3, 7))
-			b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(0, 7)]
-			b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(3, 7)]
-		}
-	}
-
-	// Update hash for castling rights changes
-	if oldCastling != b.Castling {
-		// XOR out old castling rights
-		if oldCastling&WhiteKingside != 0 {
-			b.HashKey ^= Zobrist.Castling[0]
-		}
-		if oldCastling&WhiteQueenside != 0 {
-			b.HashKey ^= Zobrist.Castling[1]
-		}
-		if oldCastling&BlackKingside != 0 {
-			b.HashKey ^= Zobrist.Castling[2]
-		}
-		if oldCastling&BlackQueenside != 0 {
-			b.HashKey ^= Zobrist.Castling[3]
-		}
-		// XOR in new castling rights
-		if b.Castling&WhiteKingside != 0 {
-			b.HashKey ^= Zobrist.Castling[0]
-		}
-		if b.Castling&WhiteQueenside != 0 {
-			b.HashKey ^= Zobrist.Castling[1]
-		}
-		if b.Castling&BlackKingside != 0 {
-			b.HashKey ^= Zobrist.Castling[2]
-		}
-		if b.Castling&BlackQueenside != 0 {
-			b.HashKey ^= Zobrist.Castling[3]
-		}
-	}
-
-	// Update hash for en passant changes
-	if oldEnPassant != NoSquare {
-		b.HashKey ^= Zobrist.EnPassant[oldEnPassant.File()]
-	}
-	if b.EnPassant != NoSquare {
-		b.HashKey ^= Zobrist.EnPassant[b.EnPassant.File()]
-	}
-
-	// Update halfmove clock
-	if piece == WhitePawn || piece == BlackPawn || captured != Empty {
-		b.HalfmoveClock = 0
-	} else {
-		b.HalfmoveClock++
-	}
-
-	// Update fullmove number and side to move
-	if b.SideToMove == Black {
-		b.FullmoveNum++
-	}
-	b.SideToMove = 1 - b.SideToMove
-	b.HashKey ^= Zobrist.SideToMove
 }
 
 // Print outputs the board in a human-readable format

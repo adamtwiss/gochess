@@ -37,13 +37,12 @@ func (b *Board) Evaluate() int {
 // evaluateMaterial returns simple material count for a color
 func (b *Board) evaluateMaterial(color Color) int {
 	score := 0
-	pieceOffset := Piece(color) * 6
 
-	score += b.Pieces[WhitePawn+pieceOffset].Count() * PawnValue
-	score += b.Pieces[WhiteKnight+pieceOffset].Count() * KnightValue
-	score += b.Pieces[WhiteBishop+pieceOffset].Count() * BishopValue
-	score += b.Pieces[WhiteRook+pieceOffset].Count() * RookValue
-	score += b.Pieces[WhiteQueen+pieceOffset].Count() * QueenValue
+	score += b.Pieces[pieceOf(WhitePawn, color)].Count() * PawnValue
+	score += b.Pieces[pieceOf(WhiteKnight, color)].Count() * KnightValue
+	score += b.Pieces[pieceOf(WhiteBishop, color)].Count() * BishopValue
+	score += b.Pieces[pieceOf(WhiteRook, color)].Count() * RookValue
+	score += b.Pieces[pieceOf(WhiteQueen, color)].Count() * QueenValue
 
 	return score
 }
@@ -63,7 +62,7 @@ func (b *Board) evaluateMobility(color Color) int {
 	score := 0
 
 	// Knights
-	knights := b.Pieces[WhiteKnight+Piece(color)*6]
+	knights := b.Pieces[pieceOf(WhiteKnight, color)]
 	for knights != 0 {
 		sq := knights.PopLSB()
 		attacks := KnightAttacks[sq]
@@ -71,7 +70,7 @@ func (b *Board) evaluateMobility(color Color) int {
 	}
 
 	// Bishops
-	bishops := b.Pieces[WhiteBishop+Piece(color)*6]
+	bishops := b.Pieces[pieceOf(WhiteBishop, color)]
 	for bishops != 0 {
 		sq := bishops.PopLSB()
 		attacks := BishopAttacksBB(sq, b.AllPieces)
@@ -79,7 +78,7 @@ func (b *Board) evaluateMobility(color Color) int {
 	}
 
 	// Rooks
-	rooks := b.Pieces[WhiteRook+Piece(color)*6]
+	rooks := b.Pieces[pieceOf(WhiteRook, color)]
 	for rooks != 0 {
 		sq := rooks.PopLSB()
 		attacks := RookAttacksBB(sq, b.AllPieces)
@@ -87,7 +86,7 @@ func (b *Board) evaluateMobility(color Color) int {
 	}
 
 	// Queens
-	queens := b.Pieces[WhiteQueen+Piece(color)*6]
+	queens := b.Pieces[pieceOf(WhiteQueen, color)]
 	for queens != 0 {
 		sq := queens.PopLSB()
 		attacks := QueenAttacksBB(sq, b.AllPieces)

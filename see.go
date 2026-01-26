@@ -48,10 +48,11 @@ func (b *Board) SEE(m Move) int {
 	// Remove the initial attacker from consideration
 	occupied &^= SquareBB(from)
 
-	// Build the gain array
+	// Build the gain array on the stack (max 32 captures on a single square)
 	// gain[i] = material balance after i-th capture, from perspective of side that just captured
-	gain := make([]int, 0, 32)
-	gain = append(gain, SEEPieceValues[captured]) // Initial capture gains the victim
+	var gain [32]int
+	gainLen := 1
+	gain[0] = SEEPieceValues[captured] // Initial capture gains the victim
 
 	// The piece that will be captured next (initially, the attacker that just moved)
 	nextVictimValue := SEEPieceValues[attacker]
@@ -60,7 +61,7 @@ func (b *Board) SEE(m Move) int {
 	sideToMove := 1 - b.SideToMove
 
 	// Find the least valuable attacker for each side alternately
-	for {
+	for gainLen < 32 {
 		// Find least valuable attacker of 'sideToMove' to 'to'
 		lva, lvaValue := b.leastValuableAttacker(to, sideToMove, occupied)
 
@@ -70,7 +71,8 @@ func (b *Board) SEE(m Move) int {
 
 		// The current side captures with their LVA
 		// They gain nextVictimValue but from their perspective, need to negate previous gain
-		gain = append(gain, nextVictimValue-gain[len(gain)-1])
+		gain[gainLen] = nextVictimValue - gain[gainLen-1]
+		gainLen++
 
 		// The piece that just captured becomes the next potential victim
 		nextVictimValue = lvaValue
@@ -84,7 +86,7 @@ func (b *Board) SEE(m Move) int {
 	// Negamax the gain list to find the actual result
 	// Work backwards: at each step, the moving side can choose to capture or stand pat
 	// gain[i] = max(stand_pat, -opponent's_best) = max(gain[i], -gain[i+1])
-	for i := len(gain) - 2; i >= 0; i-- {
+	for i := gainLen - 2; i >= 0; i-- {
 		if -gain[i+1] < gain[i] {
 			gain[i] = -gain[i+1]
 		}
@@ -96,24 +98,22 @@ func (b *Board) SEE(m Move) int {
 // leastValuableAttacker finds the least valuable piece of 'color' attacking 'sq'
 // considering only pieces in 'occupied'. Returns the square and piece value.
 func (b *Board) leastValuableAttacker(sq Square, color Color, occupied Bitboard) (Square, int) {
-	pieceOffset := Piece(color) * 6
-
 	// Check pawns first (least valuable)
-	pawns := b.Pieces[WhitePawn+pieceOffset] & occupied
+	pawns := b.Pieces[pieceOf(WhitePawn, color)] & occupied
 	pawnAttackers := PawnAttacks[1-color][sq] & pawns
 	if pawnAttackers != 0 {
 		return pawnAttackers.LSB(), SEEPieceValues[WhitePawn]
 	}
 
 	// Knights
-	knights := b.Pieces[WhiteKnight+pieceOffset] & occupied
+	knights := b.Pieces[pieceOf(WhiteKnight, color)] & occupied
 	knightAttackers := KnightAttacks[sq] & knights
 	if knightAttackers != 0 {
 		return knightAttackers.LSB(), SEEPieceValues[WhiteKnight]
 	}
 
 	// Bishops
-	bishops := b.Pieces[WhiteBishop+pieceOffset] & occupied
+	bishops := b.Pieces[pieceOf(WhiteBishop, color)] & occupied
 	bishopAttacks := BishopAttacksBB(sq, occupied)
 	bishopAttackers := bishopAttacks & bishops
 	if bishopAttackers != 0 {
@@ -121,7 +121,7 @@ func (b *Board) leastValuableAttacker(sq Square, color Color, occupied Bitboard)
 	}
 
 	// Rooks
-	rooks := b.Pieces[WhiteRook+pieceOffset] & occupied
+	rooks := b.Pieces[pieceOf(WhiteRook, color)] & occupied
 	rookAttacks := RookAttacksBB(sq, occupied)
 	rookAttackers := rookAttacks & rooks
 	if rookAttackers != 0 {
@@ -129,7 +129,7 @@ func (b *Board) leastValuableAttacker(sq Square, color Color, occupied Bitboard)
 	}
 
 	// Queens
-	queens := b.Pieces[WhiteQueen+pieceOffset] & occupied
+	queens := b.Pieces[pieceOf(WhiteQueen, color)] & occupied
 	queenAttacks := bishopAttacks | rookAttacks
 	queenAttackers := queenAttacks & queens
 	if queenAttackers != 0 {
@@ -137,7 +137,7 @@ func (b *Board) leastValuableAttacker(sq Square, color Color, occupied Bitboard)
 	}
 
 	// King (highest value, only if no other attackers)
-	kings := b.Pieces[WhiteKing+pieceOffset] & occupied
+	kings := b.Pieces[pieceOf(WhiteKing, color)] & occupied
 	kingAttackers := KingAttacks[sq] & kings
 	if kingAttackers != 0 {
 		return kingAttackers.LSB(), 20000 // High value, king can capture but is risky

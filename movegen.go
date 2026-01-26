@@ -68,7 +68,7 @@ func (mg *MoveGen) generateAllMoves() {
 	}
 
 	// Knights
-	knights := b.Pieces[WhiteKnight+Piece(us)*6]
+	knights := b.Pieces[pieceOf(WhiteKnight, us)]
 	for knights != 0 {
 		from := knights.PopLSB()
 		attacks := KnightAttacks[from] & ^ourPieces
@@ -76,7 +76,7 @@ func (mg *MoveGen) generateAllMoves() {
 	}
 
 	// Bishops
-	bishops := b.Pieces[WhiteBishop+Piece(us)*6]
+	bishops := b.Pieces[pieceOf(WhiteBishop, us)]
 	for bishops != 0 {
 		from := bishops.PopLSB()
 		attacks := BishopAttacksBB(from, b.AllPieces) & ^ourPieces
@@ -84,7 +84,7 @@ func (mg *MoveGen) generateAllMoves() {
 	}
 
 	// Rooks
-	rooks := b.Pieces[WhiteRook+Piece(us)*6]
+	rooks := b.Pieces[pieceOf(WhiteRook, us)]
 	for rooks != 0 {
 		from := rooks.PopLSB()
 		attacks := RookAttacksBB(from, b.AllPieces) & ^ourPieces
@@ -92,7 +92,7 @@ func (mg *MoveGen) generateAllMoves() {
 	}
 
 	// Queens
-	queens := b.Pieces[WhiteQueen+Piece(us)*6]
+	queens := b.Pieces[pieceOf(WhiteQueen, us)]
 	for queens != 0 {
 		from := queens.PopLSB()
 		attacks := QueenAttacksBB(from, b.AllPieces) & ^ourPieces
@@ -100,7 +100,7 @@ func (mg *MoveGen) generateAllMoves() {
 	}
 
 	// King
-	king := b.Pieces[WhiteKing+Piece(us)*6]
+	king := b.Pieces[pieceOf(WhiteKing, us)]
 	if king != 0 {
 		from := king.LSB()
 		attacks := KingAttacks[from] & ^ourPieces
@@ -352,28 +352,28 @@ func (mg *MoveGen) addMoves(from Square, targets Bitboard) {
 // IsAttacked returns true if the square is attacked by the given color
 func (b *Board) IsAttacked(sq Square, by Color) bool {
 	// Pawn attacks
-	if PawnAttacks[1-by][sq]&b.Pieces[WhitePawn+Piece(by)*6] != 0 {
+	if PawnAttacks[1-by][sq]&b.Pieces[pieceOf(WhitePawn, by)] != 0 {
 		return true
 	}
 
 	// Knight attacks
-	if KnightAttacks[sq]&b.Pieces[WhiteKnight+Piece(by)*6] != 0 {
+	if KnightAttacks[sq]&b.Pieces[pieceOf(WhiteKnight, by)] != 0 {
 		return true
 	}
 
 	// King attacks
-	if KingAttacks[sq]&b.Pieces[WhiteKing+Piece(by)*6] != 0 {
+	if KingAttacks[sq]&b.Pieces[pieceOf(WhiteKing, by)] != 0 {
 		return true
 	}
 
 	// Bishop/Queen attacks (diagonals)
-	bishopsQueens := b.Pieces[WhiteBishop+Piece(by)*6] | b.Pieces[WhiteQueen+Piece(by)*6]
+	bishopsQueens := b.Pieces[pieceOf(WhiteBishop, by)] | b.Pieces[pieceOf(WhiteQueen, by)]
 	if BishopAttacksBB(sq, b.AllPieces)&bishopsQueens != 0 {
 		return true
 	}
 
 	// Rook/Queen attacks (ranks/files)
-	rooksQueens := b.Pieces[WhiteRook+Piece(by)*6] | b.Pieces[WhiteQueen+Piece(by)*6]
+	rooksQueens := b.Pieces[pieceOf(WhiteRook, by)] | b.Pieces[pieceOf(WhiteQueen, by)]
 	if RookAttacksBB(sq, b.AllPieces)&rooksQueens != 0 {
 		return true
 	}
@@ -384,7 +384,7 @@ func (b *Board) IsAttacked(sq Square, by Color) bool {
 // InCheck returns true if the side to move is in check
 func (b *Board) InCheck() bool {
 	us := b.SideToMove
-	kingSq := b.Pieces[WhiteKing+Piece(us)*6].LSB()
+	kingSq := b.Pieces[pieceOf(WhiteKing, us)].LSB()
 	return b.IsAttacked(kingSq, 1-us)
 }
 
@@ -396,7 +396,7 @@ func (b *Board) IsLegal(m Move) bool {
 	b.MakeMove(m)
 
 	// Check if our king is in check
-	kingSq := b.Pieces[WhiteKing+Piece(us)*6].LSB()
+	kingSq := b.Pieces[pieceOf(WhiteKing, us)].LSB()
 	inCheck := b.IsAttacked(kingSq, 1-us)
 
 	// Unmake the move
@@ -543,7 +543,7 @@ func (b *Board) GenerateCaptures() []Move {
 	}
 
 	// Knight captures
-	knights := b.Pieces[WhiteKnight+Piece(us)*6]
+	knights := b.Pieces[pieceOf(WhiteKnight, us)]
 	for knights != 0 {
 		from := knights.PopLSB()
 		attacks := KnightAttacks[from] & theirPieces
@@ -554,7 +554,7 @@ func (b *Board) GenerateCaptures() []Move {
 	}
 
 	// Bishop captures
-	bishops := b.Pieces[WhiteBishop+Piece(us)*6]
+	bishops := b.Pieces[pieceOf(WhiteBishop, us)]
 	for bishops != 0 {
 		from := bishops.PopLSB()
 		attacks := BishopAttacksBB(from, b.AllPieces) & theirPieces
@@ -565,7 +565,7 @@ func (b *Board) GenerateCaptures() []Move {
 	}
 
 	// Rook captures
-	rooks := b.Pieces[WhiteRook+Piece(us)*6]
+	rooks := b.Pieces[pieceOf(WhiteRook, us)]
 	for rooks != 0 {
 		from := rooks.PopLSB()
 		attacks := RookAttacksBB(from, b.AllPieces) & theirPieces
@@ -576,7 +576,7 @@ func (b *Board) GenerateCaptures() []Move {
 	}
 
 	// Queen captures
-	queens := b.Pieces[WhiteQueen+Piece(us)*6]
+	queens := b.Pieces[pieceOf(WhiteQueen, us)]
 	for queens != 0 {
 		from := queens.PopLSB()
 		attacks := QueenAttacksBB(from, b.AllPieces) & theirPieces
@@ -587,7 +587,7 @@ func (b *Board) GenerateCaptures() []Move {
 	}
 
 	// King captures
-	king := b.Pieces[WhiteKing+Piece(us)*6]
+	king := b.Pieces[pieceOf(WhiteKing, us)]
 	if king != 0 {
 		from := king.LSB()
 		attacks := KingAttacks[from] & theirPieces & ^ourPieces
@@ -644,7 +644,7 @@ func (b *Board) GenerateQuiets() []Move {
 	}
 
 	// Knight quiets
-	knights := b.Pieces[WhiteKnight+Piece(us)*6]
+	knights := b.Pieces[pieceOf(WhiteKnight, us)]
 	for knights != 0 {
 		from := knights.PopLSB()
 		attacks := KnightAttacks[from] & empty
@@ -655,7 +655,7 @@ func (b *Board) GenerateQuiets() []Move {
 	}
 
 	// Bishop quiets
-	bishops := b.Pieces[WhiteBishop+Piece(us)*6]
+	bishops := b.Pieces[pieceOf(WhiteBishop, us)]
 	for bishops != 0 {
 		from := bishops.PopLSB()
 		attacks := BishopAttacksBB(from, b.AllPieces) & empty
@@ -666,7 +666,7 @@ func (b *Board) GenerateQuiets() []Move {
 	}
 
 	// Rook quiets
-	rooks := b.Pieces[WhiteRook+Piece(us)*6]
+	rooks := b.Pieces[pieceOf(WhiteRook, us)]
 	for rooks != 0 {
 		from := rooks.PopLSB()
 		attacks := RookAttacksBB(from, b.AllPieces) & empty
@@ -677,7 +677,7 @@ func (b *Board) GenerateQuiets() []Move {
 	}
 
 	// Queen quiets
-	queens := b.Pieces[WhiteQueen+Piece(us)*6]
+	queens := b.Pieces[pieceOf(WhiteQueen, us)]
 	for queens != 0 {
 		from := queens.PopLSB()
 		attacks := QueenAttacksBB(from, b.AllPieces) & empty
@@ -688,7 +688,7 @@ func (b *Board) GenerateQuiets() []Move {
 	}
 
 	// King quiets and castling
-	king := b.Pieces[WhiteKing+Piece(us)*6]
+	king := b.Pieces[pieceOf(WhiteKing, us)]
 	if king != 0 {
 		from := king.LSB()
 		attacks := KingAttacks[from] & empty
