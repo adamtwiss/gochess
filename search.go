@@ -15,7 +15,12 @@ const (
 var LMREnabled = true
 
 // LMPEnabled controls whether Late Move Pruning is used
-var LMPEnabled = true
+// Currently disabled as Adam thinks this may hurt performance.
+var LMPEnabled = false
+
+// SingularExtEnabled controls whether Singular Extensions are used
+// Currently disabled as Adam thinks this may hurt performance.
+var SingularExtEnabled = false
 
 // Late Move Pruning: at shallow depths, skip quiet moves past this move count.
 // Indexed by depth (0 unused). Roughly 3 + depth*depth.
@@ -62,7 +67,7 @@ type SearchInfo struct {
 	MaxTime   time.Duration
 	// Stopped indicates the search should abort. Accessed atomically (0=running, 1=stopped).
 	Stopped int32
-	TT        *TranspositionTable
+	TT      *TranspositionTable
 
 	// Deadline is the absolute time (UnixNano) after which the search must stop.
 	// Accessed atomically. 0 means no deadline (use MaxTime/StartTime fallback).
@@ -74,6 +79,9 @@ type SearchInfo struct {
 	// History table: indexed by [from][to], stores cutoff counts
 	History [64][64]int
 
+	// Counter-move heuristic: indexed by [piece][toSquare] of the previous move
+	CounterMoves [13][64]Move
+
 	// LMR statistics (for debugging/analysis)
 	LMRAttempts   uint64 // Times LMR was attempted
 	LMRReSearches uint64 // Times we had to re-search at full depth
@@ -81,6 +89,13 @@ type SearchInfo struct {
 
 	// LMP statistics
 	LMPPrunes uint64 // Moves pruned by late move pruning
+
+	// Singular extension: excluded move per ply for verification search
+	ExcludedMove [64]Move
+
+	// Singular extension statistics
+	SingularTests      uint64
+	SingularExtensions uint64
 
 	// OnDepth is called after each completed iteration of iterative deepening.
 	// Parameters: depth, score, cumulative nodes, PV for this depth.
@@ -133,6 +148,18 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 	for i := range info.Killers {
 		info.Killers[i][0] = NoMove
 		info.Killers[i][1] = NoMove
+	}
+
+	// Clear counter-moves
+	for i := range info.CounterMoves {
+		for j := range info.CounterMoves[i] {
+			info.CounterMoves[i][j] = NoMove
+		}
+	}
+
+	// Clear excluded moves
+	for i := range info.ExcludedMove {
+		info.ExcludedMove[i] = NoMove
 	}
 
 	// Initialize Deadline from MaxTime if not already set (backward compat for Search/SearchWithTT/EPD callers)
@@ -247,11 +274,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 	// Probe transposition table
 	ttMove := NoMove
 	alphaOrig := alpha
+	var ttHit bool
+	var ttEntry TTEntry
 
 	if entry, found := info.TT.Probe(b.HashKey); found {
+		ttHit = true
+		ttEntry = entry
 		ttMove = entry.Move
 
-		if int(entry.Depth) >= depth {
+		if info.ExcludedMove[ply] == NoMove && int(entry.Depth) >= depth {
 			score := int(entry.Score)
 			// Adjust mate scores for distance from root
 			if score > MateScore-100 {
@@ -326,6 +357,19 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		killers = info.Killers[ply]
 	}
 
+	// Counter-move lookup: what move refuted the opponent's last move?
+	var counterMove Move
+	if len(b.UndoStack) > 0 {
+		undo := b.UndoStack[len(b.UndoStack)-1]
+		pm := undo.Move
+		if pm != NoMove {
+			prevPiece := b.Squares[pm.To()]
+			if prevPiece != Empty {
+				counterMove = info.CounterMoves[prevPiece][pm.To()]
+			}
+		}
+	}
+
 	// Prefer TT move, fall back to PV move
 	pvMove := ttMove
 	if pvMove == NoMove && len(*pv) > 0 {
@@ -333,7 +377,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 	}
 
 	// Use MovePicker for staged move generation
-	picker := NewMovePicker(b, pvMove, ply, killers, &info.History)
+	picker := NewMovePicker(b, pvMove, ply, killers, &info.History, counterMove)
 
 	// Clear PV for this node
 	localPV := make([]Move, 0, depth)
@@ -347,6 +391,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		move := picker.Next()
 		if move == NoMove {
 			break
+		}
+
+		// Skip excluded move (singular extension verification search)
+		if move == info.ExcludedMove[ply] {
+			continue
 		}
 
 		// Check legality (MovePicker returns pseudo-legal moves)
@@ -368,6 +417,49 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 			continue
 		}
 
+		// Singular extension: if TT move is significantly better than alternatives, extend it
+		singularExtension := 0
+		if SingularExtEnabled &&
+			move == ttMove &&
+			ttMove != NoMove &&
+			ply > 0 &&
+			depth >= 8 &&
+			!inCheck &&
+			info.ExcludedMove[ply] == NoMove &&
+			ttHit &&
+			ttEntry.Flag != TTUpper &&
+			int(ttEntry.Depth) >= depth-3 {
+
+			ttScore := int(ttEntry.Score)
+			if ttScore > MateScore-100 {
+				ttScore -= ply
+			} else if ttScore < -MateScore+100 {
+				ttScore += ply
+			}
+
+			// Skip singular extension for mate scores — margin comparison is meaningless
+			if ttScore <= MateScore-100 && ttScore >= -MateScore+100 {
+				singularBeta := ttScore - depth*2
+				singularDepth := (depth - 1) / 2
+
+				info.ExcludedMove[ply] = ttMove
+				var singularPV []Move
+				singularScore := b.negamax(singularDepth, ply, singularBeta-1, singularBeta, info, &singularPV)
+				info.ExcludedMove[ply] = NoMove
+
+				if atomic.LoadInt32(&info.Stopped) != 0 {
+					return 0
+				}
+
+				info.SingularTests++
+
+				if singularScore < singularBeta {
+					singularExtension = 1
+					info.SingularExtensions++
+				}
+			}
+		}
+
 		b.MakeMove(move)
 
 		// Check extension: extend search by 1 ply when move gives check
@@ -375,6 +467,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		extension := 0
 		if givesCheck {
 			extension = 1
+		}
+		if singularExtension > 0 && extension == 0 {
+			extension = singularExtension
 		}
 		newDepth := depth - 1 + extension
 
@@ -450,10 +545,22 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 				*pv = localPV
 
 				if alpha >= beta {
-					// Beta cutoff - update killer moves and history for quiet moves
+					// Beta cutoff - update killer moves, history, and counter-move for quiet moves
 					if !isCap {
 						info.storeKiller(ply, move)
 						info.History[move.From()][move.To()] += depth * depth
+
+						// Store counter-move
+						if len(b.UndoStack) > 0 {
+							undo := b.UndoStack[len(b.UndoStack)-1]
+							pm := undo.Move
+							if pm != NoMove {
+								prevPiece := b.Squares[pm.To()]
+								if prevPiece != Empty {
+									info.CounterMoves[prevPiece][pm.To()] = move
+								}
+							}
+						}
 					}
 					break
 				}
@@ -463,6 +570,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 	// Check for checkmate or stalemate
 	if moveCount == 0 {
+		if info.ExcludedMove[ply] != NoMove {
+			// Singular verification: no alternative found, return alpha
+			return alpha
+		}
 		if inCheck {
 			// Checkmate - return negative mate score adjusted for ply
 			return -MateScore + ply
@@ -471,25 +582,27 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		return 0
 	}
 
-	// Store in transposition table
-	var flag TTFlag
-	if bestScore <= alphaOrig {
-		flag = TTUpper
-	} else if bestScore >= beta {
-		flag = TTLower
-	} else {
-		flag = TTExact
-	}
+	// Store in transposition table (skip during singular verification)
+	if info.ExcludedMove[ply] == NoMove {
+		var flag TTFlag
+		if bestScore <= alphaOrig {
+			flag = TTUpper
+		} else if bestScore >= beta {
+			flag = TTLower
+		} else {
+			flag = TTExact
+		}
 
-	// Adjust mate score for storage (relative to this position)
-	storeScore := bestScore
-	if storeScore > MateScore-100 {
-		storeScore += ply
-	} else if storeScore < -MateScore+100 {
-		storeScore -= ply
-	}
+		// Adjust mate score for storage (relative to this position)
+		storeScore := bestScore
+		if storeScore > MateScore-100 {
+			storeScore += ply
+		} else if storeScore < -MateScore+100 {
+			storeScore -= ply
+		}
 
-	info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove)
+		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove)
+	}
 
 	return bestScore
 }
@@ -557,4 +670,3 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 func isCapture(m Move, b *Board) bool {
 	return b.Squares[m.To()] != Empty || m.Flags() == FlagEnPassant
 }
-

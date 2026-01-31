@@ -8,16 +8,17 @@ package chess
 // 4. Quiet moves ordered by history
 // 5. Bad captures (SEE < 0)
 type MovePicker struct {
-	board     *Board
-	ttMove    Move
-	killers   [2]Move
-	history   *[64][64]int
-	stage     int
-	moves     []Move
-	scores    []int
-	index     int
-	ply       int
-	skipQuiet bool // For quiescence search
+	board       *Board
+	ttMove      Move
+	killers     [2]Move
+	counterMove Move
+	history     *[64][64]int
+	stage       int
+	moves       []Move
+	scores      []int
+	index       int
+	ply         int
+	skipQuiet   bool // For quiescence search
 }
 
 // MovePicker stages
@@ -27,6 +28,7 @@ const (
 	stageGoodCaptures
 	stageKiller1
 	stageKiller2
+	stageCounterMove
 	stageGenerateQuiets
 	stageQuiets
 	stageBadCaptures
@@ -34,16 +36,17 @@ const (
 )
 
 // NewMovePicker creates a new move picker for the main search
-func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int) *MovePicker {
+func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int, counterMove Move) *MovePicker {
 	return &MovePicker{
-		board:   b,
-		ttMove:  ttMove,
-		killers: killers,
-		history: history,
-		ply:     ply,
-		stage:   stageTTMove,
-		moves:   make([]Move, 0, 64),
-		scores:  make([]int, 0, 64),
+		board:       b,
+		ttMove:      ttMove,
+		killers:     killers,
+		counterMove: counterMove,
+		history:     history,
+		ply:         ply,
+		stage:       stageTTMove,
+		moves:       make([]Move, 0, 64),
+		scores:      make([]int, 0, 64),
 	}
 }
 
@@ -107,10 +110,21 @@ func (mp *MovePicker) Next() Move {
 			}
 
 		case stageKiller2:
-			mp.stage = stageGenerateQuiets
+			mp.stage = stageCounterMove
 			if mp.killers[1] != NoMove && mp.killers[1] != mp.ttMove && mp.killers[1] != mp.killers[0] {
 				if mp.board.IsPseudoLegal(mp.killers[1]) && !mp.isCapture(mp.killers[1]) {
 					return mp.killers[1]
+				}
+			}
+
+		case stageCounterMove:
+			mp.stage = stageGenerateQuiets
+			if mp.counterMove != NoMove &&
+				mp.counterMove != mp.ttMove &&
+				mp.counterMove != mp.killers[0] &&
+				mp.counterMove != mp.killers[1] {
+				if mp.board.IsPseudoLegal(mp.counterMove) && !mp.isCapture(mp.counterMove) {
+					return mp.counterMove
 				}
 			}
 
@@ -121,7 +135,7 @@ func (mp *MovePicker) Next() Move {
 		case stageQuiets:
 			for mp.index < len(mp.moves) {
 				move := mp.pickBest()
-				if move == mp.ttMove || move == mp.killers[0] || move == mp.killers[1] {
+				if move == mp.ttMove || move == mp.killers[0] || move == mp.killers[1] || move == mp.counterMove {
 					continue // Already tried
 				}
 				return move
