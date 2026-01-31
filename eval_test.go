@@ -793,3 +793,33 @@ func TestPawnBackward(t *testing.T) {
 	}
 	t.Logf("Backward: %d, Free: %d, diff: %d", backwardScore, freeScore, backwardScore-freeScore)
 }
+
+func TestTrappedRook(t *testing.T) {
+	var b Board
+
+	// Black king on f8, rook on h8 — rook is trapped
+	b.SetFEN("r2q1k1r/pppb1ppp/2nbpn2/8/2QP4/2N2NP1/PP2PPBP/R1B2RK1 w - - 3 10")
+	trapped := b.Evaluate()
+
+	// Same but Black has castled (king g8, rook f8) — rook is NOT trapped
+	b.SetFEN("r2q1rk1/pppb1ppp/2nbpn2/8/2QP4/2N2NP1/PP2PPBP/R1B2RK1 w - - 3 10")
+	castled := b.Evaluate()
+
+	// White should prefer facing the trapped-rook position (higher eval)
+	if trapped <= castled {
+		t.Errorf("Trapped rook position (%d) should score higher for White than castled (%d)", trapped, castled)
+	}
+	t.Logf("Trapped rook: %d, Castled: %d, diff: %d", trapped, castled, trapped-castled)
+}
+
+func TestCastlingPreferred(t *testing.T) {
+	var b Board
+	b.SetFEN("r2qk2r/pppb1ppp/2nbpn2/8/2QP4/2N2NP1/PP2PPBP/R1B2RK1 b kq - 2 9")
+	tt := NewTranspositionTable(16)
+	move, _ := b.SearchWithTT(10, 0, tt)
+	// Engine should NOT play Kf8 (e8f8) which traps the h-rook
+	if move.From() == NewSquare(4, 7) && move.To() == NewSquare(5, 7) && move.Flags() == FlagNone {
+		t.Errorf("Engine played Kf8 which traps the rook — expected O-O or other developing move, got %s", move.String())
+	}
+	t.Logf("Best move: %s (flags=%d)", move.String(), move.Flags())
+}

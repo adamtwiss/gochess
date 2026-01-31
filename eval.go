@@ -29,6 +29,10 @@ var (
 	RookOn7thMG        = 20
 	RookOn7thEG        = 30
 
+	// Trapped rook: rook on back-rank corner with king blocking escape
+	TrappedRookPenaltyMG = -40
+	TrappedRookPenaltyEG = -20
+
 	BishopOpenPositionMG = 3
 	BishopOpenPositionEG = 3
 
@@ -63,7 +67,7 @@ var (
 	QueenKingAttack  = 5
 
 	// Castling rights bonus (MG only, per retained right)
-	CastlingRightsMG = 5
+	CastlingRightsMG = 10
 
 	// Space evaluation (per safe square in center files, ranks 4-6 relative)
 	SpaceBonusMG = 2
@@ -426,6 +430,30 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 				if rank > passerSq.Rank() {
 					mg += RookBehindPassedMG
 					eg += RookBehindPassedEG
+				}
+			}
+		}
+
+		// Trapped rook: corner rook with king blocking escape route
+		backRank := 0
+		if color == Black {
+			backRank = 7
+		}
+		if rank == backRank {
+			kingSq := b.Pieces[pieceOf(WhiteKing, color)].LSB()
+			kingFile := kingSq.File()
+			kingRank := kingSq.Rank()
+			if kingRank == backRank {
+				rookFile := sq.File()
+				// Kingside trap: rook on h-file, king on f/g-file
+				if rookFile == 7 && (kingFile == 5 || kingFile == 6) {
+					mg += TrappedRookPenaltyMG
+					eg += TrappedRookPenaltyEG
+				}
+				// Queenside trap: rook on a-file, king on b/c-file
+				if rookFile == 0 && (kingFile == 1 || kingFile == 2) {
+					mg += TrappedRookPenaltyMG
+					eg += TrappedRookPenaltyEG
 				}
 			}
 		}
