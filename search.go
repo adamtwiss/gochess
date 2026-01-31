@@ -416,15 +416,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		// Check if capture BEFORE making the move
 		isCap := isCapture(move, b)
 
-		// Late Move Pruning: at shallow depths, skip late quiet moves
-		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
-			!isCap && !move.IsPromotion() &&
-			moveCount > lmpThreshold[depth] &&
-			bestScore > -MateScore+100 {
-			info.LMPPrunes++
-			continue
-		}
-
 		// Singular extension: if TT move is significantly better than alternatives, extend it
 		singularExtension := 0
 		if SingularExtEnabled &&
@@ -472,6 +463,18 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 		// Check extension: extend search by 1 ply when move gives check
 		givesCheck := b.InCheck()
+
+		// Late Move Pruning: at shallow depths, skip late quiet moves
+		// Placed after MakeMove so we can exempt check-giving moves
+		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
+			!isCap && !move.IsPromotion() && !givesCheck &&
+			moveCount > lmpThreshold[depth] &&
+			bestScore > -MateScore+100 {
+			info.LMPPrunes++
+			b.UnmakeMove(move)
+			continue
+		}
+
 		extension := 0
 		if givesCheck {
 			extension = 1
