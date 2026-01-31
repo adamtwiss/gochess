@@ -118,6 +118,9 @@ type Board struct {
 	// Pawn hash table for caching pawn structure evaluation
 	PawnTable *PawnTable
 
+	// Eval cache for caching Evaluate() results
+	EvalTable *EvalTable
+
 	// Undo stack for MakeMove/UnmakeMove (per-board to avoid sharing issues)
 	UndoStack []UndoInfo
 }

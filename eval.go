@@ -57,10 +57,45 @@ var (
 	RookBehindPassedEG = 25
 )
 
+// EvalEntry is a single eval cache entry.
+type EvalEntry struct {
+	Key   uint64
+	Score int16
+}
+
+// EvalTable caches Evaluate() results keyed by Zobrist hash.
+type EvalTable struct {
+	entries []EvalEntry
+	mask    uint64
+}
+
+// NewEvalTable creates a new eval cache with the given size in MB.
+func NewEvalTable(sizeMB int) *EvalTable {
+	entrySize := uint64(16) // sizeof(EvalEntry) with padding
+	numEntries := uint64(sizeMB*1024*1024) / entrySize
+	size := uint64(1)
+	for size*2 <= numEntries {
+		size *= 2
+	}
+	return &EvalTable{
+		entries: make([]EvalEntry, size),
+		mask:    size - 1,
+	}
+}
+
 // Evaluate returns a static evaluation of the position in centipawns.
 // Positive values favor White, negative values favor Black.
 // Uses tapered evaluation blending middlegame and endgame PST scores.
 func (b *Board) Evaluate() int {
+	// Eval cache probe
+	if b.EvalTable == nil {
+		b.EvalTable = NewEvalTable(1)
+	}
+	idx := b.HashKey & b.EvalTable.mask
+	if e := b.EvalTable.entries[idx]; e.Key == b.HashKey {
+		return int(e.Score)
+	}
+
 	wMG, wEG := b.evaluatePST(White)
 	bMG, bEG := b.evaluatePST(Black)
 
@@ -95,6 +130,9 @@ func (b *Board) Evaluate() int {
 
 	phase := b.computePhase()
 	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
+
+	// Eval cache store
+	b.EvalTable.entries[idx] = EvalEntry{Key: b.HashKey, Score: int16(score)}
 
 	return score
 }

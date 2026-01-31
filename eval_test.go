@@ -723,3 +723,28 @@ func TestPassedPawnConnected(t *testing.T) {
 	}
 	t.Logf("Connected: %d, Separated: %d, diff: %d", connectedScore, separatedScore, connectedScore-separatedScore)
 }
+
+func TestEvalCache(t *testing.T) {
+	// Verify cached eval matches fresh eval
+	var b Board
+	b.Reset()
+	b.EvalTable = NewEvalTable(1)
+
+	score1 := b.Evaluate()
+	score2 := b.Evaluate() // should hit cache
+	if score1 != score2 {
+		t.Errorf("Cached eval %d != fresh eval %d", score2, score1)
+	}
+
+	// After a move, eval should change
+	moves := b.GenerateLegalMoves()
+	b.MakeMove(moves[0])
+	score3 := b.Evaluate()
+	_ = score3 // just verify no panic
+
+	b.UnmakeMove(moves[0])
+	score4 := b.Evaluate() // should hit original cache entry
+	if score4 != score1 {
+		t.Errorf("Eval after unmake %d != original %d", score4, score1)
+	}
+}

@@ -33,7 +33,7 @@ type TranspositionTable struct {
 // NewTranspositionTable creates a new TT with the given size in MB
 func NewTranspositionTable(sizeMB int) *TranspositionTable {
 	// Calculate number of entries
-	entrySize := uint64(24) // approximate size of TTEntry
+	entrySize := uint64(16) // sizeof(TTEntry): uint64 + int8 + pad + int16 + uint8 + pad + uint16
 	numEntries := uint64(sizeMB*1024*1024) / entrySize
 
 	// Round down to power of 2 for fast indexing
