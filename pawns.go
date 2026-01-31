@@ -20,7 +20,7 @@ type PawnTable struct {
 
 // NewPawnTable creates a new pawn hash table with the given size in MB.
 func NewPawnTable(sizeMB int) *PawnTable {
-	entrySize := uint64(48) // approximate size of PawnEntry
+	entrySize := uint64(32) // sizeof(PawnEntry): uint64 + 4×int16 + [2]uint64
 	numEntries := uint64(sizeMB*1024*1024) / entrySize
 
 	// Round down to power of 2
@@ -95,8 +95,6 @@ func init() {
 		ForwardFileMask[Black][sq] = forwardBlack
 
 		// Passed pawn mask for White: no enemy pawns ahead on same or adjacent files
-		PassedPawnMask[White][sq] = forwardWhite | (forwardWhite.East() & ^FileA) | (forwardWhite.West() & ^FileH)
-		// Simpler: use adjacent files directly
 		PassedPawnMask[White][sq] = Bitboard(0)
 		for r := rank + 1; r < 8; r++ {
 			PassedPawnMask[White][sq] |= SquareBB(Square(r*8 + file))
