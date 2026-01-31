@@ -159,6 +159,11 @@ const (
 	connectedPawnEG = 5
 )
 
+// Pawn advancement bonus by relative rank (index 0=rank1, 7=rank8).
+// Rewards pawns that have advanced beyond their starting squares.
+var pawnAdvancementMG = [8]int{0, 0, 0, 5, 15, 25, 40, 0}
+var pawnAdvancementEG = [8]int{0, 0, 0, 5, 10, 20, 35, 0}
+
 // evaluatePawnStructure evaluates pawn structure for one color.
 // Returns mg and eg scores and a bitboard of passed pawns.
 func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) {
@@ -209,6 +214,10 @@ func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) 
 			mg += connectedPawnMG
 			eg += connectedPawnEG
 		}
+
+		// Pawn advancement bonus
+		mg += pawnAdvancementMG[relativeRank]
+		eg += pawnAdvancementEG[relativeRank]
 	}
 
 	return

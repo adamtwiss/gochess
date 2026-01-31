@@ -154,6 +154,13 @@ var egKingTable = [64]int{
 var mgMaterial = [7]int{0, 82, 337, 365, 477, 1025, 0}
 var egMaterial = [7]int{0, 94, 281, 297, 512, 936, 0}
 
+// PST positional scale factors (percentage, 100 = unscaled PeSTO values).
+// Only the positional component is scaled; material values are unchanged.
+var (
+	PSTScaleMG = 50 // Halve middlegame positional component
+	PSTScaleEG = 75 // Gentler reduction for endgame
+)
+
 // Lookup tables indexed by white piece type (1-6)
 var mgPST [7]*[64]int
 var egPST [7]*[64]int

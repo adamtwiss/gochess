@@ -64,6 +64,24 @@ var (
 
 	// Castling rights bonus (MG only, per retained right)
 	CastlingRightsMG = 5
+
+	// Space evaluation (per safe square in center files, ranks 4-6 relative)
+	SpaceBonusMG = 2
+	SpaceBonusEG = 0
+
+	// Minor piece centralization (by center distance 0-3)
+	KnightCentralityMG = [4]int{8, 4, 0, -4}
+	KnightCentralityEG = [4]int{4, 2, 0, -2}
+	BishopCentralityMG = [4]int{4, 2, 0, -2}
+	BishopCentralityEG = [4]int{2, 1, 0, -1}
+
+	// Pawn threat bonuses (pawns attacking enemy pieces)
+	PawnThreatMinorMG = 15
+	PawnThreatMinorEG = 10
+	PawnThreatRookMG  = 25
+	PawnThreatRookEG  = 15
+	PawnThreatQueenMG = 30
+	PawnThreatQueenEG = 20
 )
 
 // EvalEntry is a single eval cache entry.
@@ -126,6 +144,14 @@ func (b *Board) Evaluate() int {
 	wKSmg, wKSeg := b.evaluateKingSafety(White)
 	bKSmg, bKSeg := b.evaluateKingSafety(Black)
 
+	// Space evaluation
+	wSPmg, wSPeg := b.evaluateSpace(White)
+	bSPmg, bSPeg := b.evaluateSpace(Black)
+
+	// Pawn threats
+	wTmg, wTeg := b.evaluateThreats(White)
+	bTmg, bTeg := b.evaluateThreats(Black)
+
 	// Castling rights bonus (middlegame only)
 	castlingMG := 0
 	if b.Castling&WhiteKingside != 0 {
@@ -146,12 +172,16 @@ func (b *Board) Evaluate() int {
 		int(pawnEntry.WhiteMG) - int(pawnEntry.BlackMG) +
 		wPPmg - bPPmg +
 		wKSmg - bKSmg +
+		wSPmg - bSPmg +
+		wTmg - bTmg +
 		castlingMG
 	eg := wEG - bEG +
 		wPeg - bPeg +
 		int(pawnEntry.WhiteEG) - int(pawnEntry.BlackEG) +
 		wPPeg - bPPeg +
-		wKSeg - bKSeg
+		wKSeg - bKSeg +
+		wSPeg - bSPeg +
+		wTeg - bTeg
 
 	phase := b.computePhase()
 	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
@@ -205,8 +235,8 @@ func (b *Board) evaluatePST(color Color) (mg, eg int) {
 			if color == Black {
 				idx ^= 56 // Mirror rank for Black
 			}
-			mg += mgMat + mgTable[idx]
-			eg += egMat + egTable[idx]
+			mg += mgMat + mgTable[idx]*PSTScaleMG/100
+			eg += egMat + egTable[idx]*PSTScaleEG/100
 		}
 	}
 	return
@@ -251,6 +281,11 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 			attackWeight += KnightKingAttack * kzAttacks.Count()
 		}
 
+		// Centralization bonus
+		cd := centerDistance(sq)
+		mg += KnightCentralityMG[cd]
+		eg += KnightCentralityEG[cd]
+
 		// Outpost: relative rank 4-6 (ranks 3-5 zero-indexed for White, 2-4 for Black)
 		rank := sq.Rank()
 		relRank := rank
@@ -292,6 +327,11 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 			attackerCount++
 			attackWeight += BishopKingAttack * kzAttacks.Count()
 		}
+
+		// Centralization bonus
+		cd := centerDistance(sq)
+		mg += BishopCentralityMG[cd]
+		eg += BishopCentralityEG[cd]
 
 		// Open position bonus: more valuable with fewer pawns
 		missingPawns := 16 - totalPawns
@@ -382,6 +422,35 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	return
 }
 
+// centerDistance returns the Chebyshev distance from a square to the
+// center (d4/d5/e4/e5). Returns 0-3.
+func centerDistance(sq Square) int {
+	file := sq.File()
+	rank := sq.Rank()
+	fd := file - 3
+	if file >= 4 {
+		fd = file - 4
+	}
+	if fd < 0 {
+		fd = -fd
+	}
+	rd := rank - 3
+	if rank >= 4 {
+		rd = rank - 4
+	}
+	if rd < 0 {
+		rd = -rd
+	}
+	d := fd
+	if rd > d {
+		d = rd
+	}
+	if d > 3 {
+		d = 3
+	}
+	return d
+}
+
 // chebyshevDistance returns the Chebyshev (king) distance between two squares.
 func chebyshevDistance(sq1, sq2 Square) int {
 	fd := sq1.File() - sq2.File()
@@ -465,5 +534,57 @@ func (b *Board) evaluatePassedPawns(color Color, pawnEntry *PawnEntry) (mg, eg i
 		}
 	}
 
+	return
+}
+
+// evaluateSpace rewards controlling territory in the opponent's half.
+// Uses only pawn bitboards (cheap). Counts safe squares in center files, ranks 4-6 relative.
+func (b *Board) evaluateSpace(color Color) (mg, eg int) {
+	enemyPawns := b.Pieces[pieceOf(WhitePawn, 1-color)]
+
+	// Enemy pawn attacks
+	var enemyPawnAttacks Bitboard
+	if color == White {
+		enemyPawnAttacks = enemyPawns.SouthWest() | enemyPawns.SouthEast()
+	} else {
+		enemyPawnAttacks = enemyPawns.NorthWest() | enemyPawns.NorthEast()
+	}
+
+	// Space region: ranks 4-6 (relative), center files (c-f)
+	centerFiles := FileC | FileD | FileE | FileF
+	var spaceRegion Bitboard
+	if color == White {
+		spaceRegion = (Rank4 | Rank5 | Rank6) & centerFiles
+	} else {
+		spaceRegion = (Rank3 | Rank4 | Rank5) & centerFiles
+	}
+
+	// Safe space: in region, not attacked by enemy pawns
+	safeSpace := spaceRegion &^ enemyPawnAttacks
+	count := safeSpace.Count()
+	mg += count * SpaceBonusMG
+	eg += count * SpaceBonusEG
+	return
+}
+
+// evaluateThreats rewards pawns attacking enemy pieces.
+func (b *Board) evaluateThreats(color Color) (mg, eg int) {
+	friendlyPawns := b.Pieces[pieceOf(WhitePawn, color)]
+	enemy := color ^ 1
+
+	var pawnAttacks Bitboard
+	if color == White {
+		pawnAttacks = friendlyPawns.NorthWest() | friendlyPawns.NorthEast()
+	} else {
+		pawnAttacks = friendlyPawns.SouthWest() | friendlyPawns.SouthEast()
+	}
+
+	minors := b.Pieces[pieceOf(WhiteKnight, enemy)] | b.Pieces[pieceOf(WhiteBishop, enemy)]
+	mg += (pawnAttacks & minors).Count() * PawnThreatMinorMG
+	eg += (pawnAttacks & minors).Count() * PawnThreatMinorEG
+	mg += (pawnAttacks & b.Pieces[pieceOf(WhiteRook, enemy)]).Count() * PawnThreatRookMG
+	eg += (pawnAttacks & b.Pieces[pieceOf(WhiteRook, enemy)]).Count() * PawnThreatRookEG
+	mg += (pawnAttacks & b.Pieces[pieceOf(WhiteQueen, enemy)]).Count() * PawnThreatQueenMG
+	eg += (pawnAttacks & b.Pieces[pieceOf(WhiteQueen, enemy)]).Count() * PawnThreatQueenEG
 	return
 }

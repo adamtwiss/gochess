@@ -724,6 +724,34 @@ func TestPassedPawnConnected(t *testing.T) {
 	t.Logf("Connected: %d, Separated: %d, diff: %d", connectedScore, separatedScore, connectedScore-separatedScore)
 }
 
+func TestEvalCalibration(t *testing.T) {
+	positions := []struct {
+		name    string
+		fen     string
+		humanCP int // approximate White-relative human eval
+	}{
+		{"Move19_BishopPairPlusPawn", "r1bqr1k1/ppnp1ppp/2p1p3/2Pn4/P1NP4/2P2BP1/2Q1PP1P/1RB2RK1 b - - 4 19", 125},
+		{"Move24_EqualMaterial", "r3r1k1/pp3ppp/1np2n2/4b2b/1P2P2N/P1NRBPP1/6BP/R5K1 w - - 3 24", 0},
+		{"Move34_BNvsB", "5k2/1p3ppp/1pp5/4b3/1P2P3/P6P/5KB1/3N4 w - - 1 34", 75},
+	}
+
+	for _, pos := range positions {
+		var b Board
+		b.SetFEN(pos.fen)
+		score := b.Evaluate()
+		t.Logf("%s: eval=%d, human~%d, error=%d", pos.name, score, pos.humanCP, score-pos.humanCP)
+	}
+
+	// Starting position should be near zero
+	var b Board
+	b.Reset()
+	startScore := b.Evaluate()
+	t.Logf("Starting position: %d", startScore)
+	if startScore > 50 || startScore < -50 {
+		t.Errorf("Starting position eval %d too far from 0", startScore)
+	}
+}
+
 func TestEvalCache(t *testing.T) {
 	// Verify cached eval matches fresh eval
 	var b Board
