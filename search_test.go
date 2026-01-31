@@ -615,3 +615,71 @@ func TestSingularExtensionComparison(t *testing.T) {
 	t.Logf("Total time with SE:     %v", totalTimeWith)
 	t.Logf("Total time without SE:  %v", totalTimeWithout)
 }
+
+// TestNoMoveAfterPonder reproduces a bug where the engine returned NoMove (0000)
+// when pondering on a position with deep TT entries from a prior search.
+// The TT TTLower entry raised alpha at the root, preventing PV updates.
+func TestNoMoveAfterPonder(t *testing.T) {
+	// Game position: 1.e4 c5 2.Nf3 Nc6 3.Nc3 g6 4.d4 cxd4 5.Nxd4 Bg7
+	// 6.Nxc6 Bxc3+ 7.bxc3 dxc6 8.Qxd8+ Kxd8 9.Bc4 Nf6 10.Bxf7 Rf8 11.Bb3 Nxe4
+	// White to move — should find a valid move
+	moves := []string{
+		"e2e4", "c7c5", "g1f3", "b8c6", "b1c3", "g7g6",
+		"d2d4", "c5d4", "f3d4", "f8g7", "d4c6", "g7c3",
+		"b2c3", "d7c6", "d1d8", "e8d8", "f1c4", "g8f6",
+		"c4f7", "h8f8", "f7b3", "f6e4",
+	}
+
+	tt := NewTranspositionTable(64)
+
+	// Phase 1: Search position BEFORE the last move (Bb3) to fill TT deeply
+	// This simulates what happened before the ponder started
+	var b1 Board
+	b1.Reset()
+	for _, ms := range moves[:20] { // up to "f7b3" (Bb3)
+		m, err := b1.ParseUCIMove(ms)
+		if err != nil {
+			t.Fatalf("ParseUCIMove(%s): %v", ms, err)
+		}
+		b1.MakeMove(m)
+	}
+	info1 := &SearchInfo{
+		StartTime: time.Now(),
+		TT:        tt,
+	}
+	bestMove1, _ := b1.SearchWithInfo(12, info1)
+	t.Logf("Phase 1 (Bb3 position): bestmove=%s", bestMove1)
+
+	// Phase 2: Now search the position after Nxe4 (using same TT)
+	// This is the pondering position where the bug occurred
+	var b2 Board
+	b2.Reset()
+	for _, ms := range moves {
+		m, err := b2.ParseUCIMove(ms)
+		if err != nil {
+			t.Fatalf("ParseUCIMove(%s): %v", ms, err)
+		}
+		b2.MakeMove(m)
+	}
+
+	// Create a fresh search board with empty UndoStack (like UCI does)
+	var searchBoard Board
+	searchBoard = b2
+	searchBoard.UndoStack = make([]UndoInfo, 0, 256)
+
+	info2 := &SearchInfo{
+		StartTime: time.Now(),
+		TT:        tt,
+	}
+	bestMove2, searchResult := searchBoard.SearchWithInfo(14, info2)
+
+	t.Logf("Phase 2 (after Nxe4): bestmove=%s, score=%d, nodes=%d, PV=%v",
+		bestMove2, searchResult.Score, searchResult.Nodes, movesToStrings(searchResult.PV))
+
+	if bestMove2 == NoMove {
+		t.Error("BUG: Search returned NoMove (0000) — TT bounds prevented PV update at root")
+	}
+	if len(searchResult.PV) == 0 {
+		t.Error("BUG: PV is empty — root search failed to record best move")
+	}
+}

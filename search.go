@@ -280,7 +280,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		ttEntry = entry
 		ttMove = entry.Move
 
-		if info.ExcludedMove[ply] == NoMove && int(entry.Depth) >= depth {
+		if info.ExcludedMove[ply] == NoMove && int(entry.Depth) >= depth && ply > 0 {
 			score := int(entry.Score)
 			// Adjust mate scores for distance from root
 			if score > MateScore-100 {
