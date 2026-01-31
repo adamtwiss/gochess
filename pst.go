@@ -30,8 +30,8 @@ var mgPawnTable = [64]int{
 
 var egPawnTable = [64]int{
 	0, 0, 0, 0, 0, 0, 0, 0,
-	94, 100, 85, 67, 56, 53, 82, 84, // flattened: was 134-187, now matches rank 3
-	94, 100, 85, 67, 56, 53, 82, 84,
+	34, 40, 25, 7, -4, -7, 22, 24, // rank 2: subtracted 60 to remove implicit material bias
+	34, 40, 25, 7, -4, -7, 22, 24, // rank 3: same treatment
 	32, 24, 13, 5, -2, 4, 17, 17,
 	13, 9, -3, -7, -7, -8, 3, -1,
 	4, 7, -6, 1, 0, -5, -1, -8,
@@ -160,7 +160,7 @@ var egMaterial = [7]int{0, 94, 281, 297, 512, 936, 0}
 // Pieces need stronger signals for placement quality differentiation.
 var (
 	PawnPSTScaleMG  = 35 // Pawn rank-2 values 98-134 become 34-47
-	PawnPSTScaleEG  = 65 // EG pawn placement matters but values are smaller
+	PawnPSTScaleEG  = 65 // Gentle scaling on de-biased table
 	PiecePSTScaleMG = 70 // Preserve piece placement signals
 	PiecePSTScaleEG = 80 // Preserve endgame piece activity
 	KingPSTScaleMG  = 60 // Castled vs center king distinction
