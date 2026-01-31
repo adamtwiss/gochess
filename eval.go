@@ -342,8 +342,13 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		sq := bishops.PopLSB()
 		attacks := BishopAttacksBB(sq, b.AllPieces) &^ friendly
 		count := attacks.Count()
-		mg += count * BishopMobilityMG
-		eg += count * BishopMobilityEG
+		// Diminishing returns: first 7 squares at full rate, excess at half
+		effective := count
+		if count > 7 {
+			effective = 7 + (count-7)/2
+		}
+		mg += effective * BishopMobilityMG
+		eg += effective * BishopMobilityEG
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
@@ -367,8 +372,13 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		sq := rooks.PopLSB()
 		attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
 		count := attacks.Count()
-		mg += count * RookMobilityMG
-		eg += count * RookMobilityEG
+		// Diminishing returns: first 7 squares at full rate, excess at half
+		effective := count
+		if count > 7 {
+			effective = 7 + (count-7)/2
+		}
+		mg += effective * RookMobilityMG
+		eg += effective * RookMobilityEG
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
