@@ -55,6 +55,15 @@ var (
 
 	RookBehindPassedMG = 15
 	RookBehindPassedEG = 25
+
+	// King attack weights per attacked square in king zone (MG only)
+	KnightKingAttack = 2
+	BishopKingAttack = 2
+	RookKingAttack   = 3
+	QueenKingAttack  = 5
+
+	// Castling rights bonus (MG only, per retained right)
+	CastlingRightsMG = 5
 )
 
 // EvalEntry is a single eval cache entry.
@@ -117,11 +126,27 @@ func (b *Board) Evaluate() int {
 	wKSmg, wKSeg := b.evaluateKingSafety(White)
 	bKSmg, bKSeg := b.evaluateKingSafety(Black)
 
+	// Castling rights bonus (middlegame only)
+	castlingMG := 0
+	if b.Castling&WhiteKingside != 0 {
+		castlingMG += CastlingRightsMG
+	}
+	if b.Castling&WhiteQueenside != 0 {
+		castlingMG += CastlingRightsMG
+	}
+	if b.Castling&BlackKingside != 0 {
+		castlingMG -= CastlingRightsMG
+	}
+	if b.Castling&BlackQueenside != 0 {
+		castlingMG -= CastlingRightsMG
+	}
+
 	mg := wMG - bMG +
 		wPmg - bPmg +
 		int(pawnEntry.WhiteMG) - int(pawnEntry.BlackMG) +
 		wPPmg - bPPmg +
-		wKSmg - bKSmg
+		wKSmg - bKSmg +
+		castlingMG
 	eg := wEG - bEG +
 		wPeg - bPeg +
 		int(pawnEntry.WhiteEG) - int(pawnEntry.BlackEG) +
@@ -191,9 +216,15 @@ func (b *Board) evaluatePST(color Color) (mg, eg int) {
 // rooks, and queens in a single pass. Replaces the old evaluateMobility().
 func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	friendly := b.Occupied[color]
-	enemyPawns := b.Pieces[pieceOf(WhitePawn, 1-color)]
+	enemy := color ^ 1
+	enemyPawns := b.Pieces[pieceOf(WhitePawn, enemy)]
 	friendlyPawns := b.Pieces[pieceOf(WhitePawn, color)]
 	totalPawns := b.Pieces[WhitePawn].Count() + b.Pieces[BlackPawn].Count()
+
+	// King attack tracking
+	enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
+	kingZone := KingAttacks[enemyKingSq]
+	var attackerCount, attackWeight int
 
 	// Precompute friendly pawn attacks for outpost support detection
 	var friendlyPawnAttacks Bitboard
@@ -214,6 +245,11 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		count := attacks.Count()
 		mg += count * KnightMobilityMG
 		eg += count * KnightMobilityEG
+
+		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
+			attackerCount++
+			attackWeight += KnightKingAttack * kzAttacks.Count()
+		}
 
 		// Outpost: relative rank 4-6 (ranks 3-5 zero-indexed for White, 2-4 for Black)
 		rank := sq.Rank()
@@ -252,6 +288,11 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		mg += count * BishopMobilityMG
 		eg += count * BishopMobilityEG
 
+		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
+			attackerCount++
+			attackWeight += BishopKingAttack * kzAttacks.Count()
+		}
+
 		// Open position bonus: more valuable with fewer pawns
 		missingPawns := 16 - totalPawns
 		mg += missingPawns * BishopOpenPositionMG
@@ -266,6 +307,11 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		count := attacks.Count()
 		mg += count * RookMobilityMG
 		eg += count * RookMobilityEG
+
+		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
+			attackerCount++
+			attackWeight += RookKingAttack * kzAttacks.Count()
+		}
 
 		file := sq.File()
 		fileMask := FileMasks[file]
@@ -321,6 +367,16 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		count := attacks.Count()
 		mg += count * QueenMobilityMG
 		eg += count * QueenMobilityEG
+
+		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
+			attackerCount++
+			attackWeight += QueenKingAttack * kzAttacks.Count()
+		}
+	}
+
+	// King attack penalty (quadratic scaling, MG only)
+	if attackerCount >= 2 {
+		mg += attackWeight * attackWeight / 4
 	}
 
 	return

@@ -723,3 +723,31 @@ func TestRepetitionDetection(t *testing.T) {
 		t.Error("Engine played Ka6 — repetition detection not working (draws by cycling)")
 	}
 }
+
+func TestKingAttackAndCastlingRights(t *testing.T) {
+	var b Board
+
+	// Test 1: castled position should be better for White (equal material)
+	// Before castling: Italian-style, Bc4+Nf3 developed, king on e1
+	b.SetFEN("rnbqk2r/ppppbppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+	score1 := b.Evaluate()
+
+	// After White castles: king on g1, rook on f1 (same material)
+	b.SetFEN("rnbqk2r/ppppbppp/5n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 5 4")
+	score2 := b.Evaluate()
+
+	t.Logf("Before castling: %d, After castling: %d, diff: %d", score1, score2, score2-score1)
+	if score2 <= score1 {
+		t.Error("Castled position should evaluate better than uncastled")
+	}
+
+	// Test 2: castling rights have value (only White has rights vs no rights)
+	b.SetFEN("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQ - 0 1")
+	withRights := b.Evaluate()
+	b.SetFEN("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b - - 0 1")
+	withoutRights := b.Evaluate()
+	t.Logf("With White castling rights: %d, Without: %d, diff: %d", withRights, withoutRights, withRights-withoutRights)
+	if withRights <= withoutRights {
+		t.Error("Position with White castling rights should evaluate better for White")
+	}
+}
