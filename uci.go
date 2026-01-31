@@ -29,11 +29,12 @@ type UCIEngine struct {
 	input        *bufio.Scanner
 	output       io.Writer
 	book         *OpeningBook
-	pondering    bool
-	ponderDone   chan struct{}
-	ponderParams goParams
-	ponderSide   Color
-	ponderOpt    bool
+	pondering      bool
+	ponderDone     chan struct{}
+	ponderParams   goParams
+	ponderSide     Color
+	ponderOpt      bool
+	ponderBookMove string // set by cmdPonderhit when book has a move
 }
 
 // NewUCIEngine creates a UCI engine reading from stdin and writing to stdout.
@@ -307,10 +308,21 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			e.searchMu.Unlock()
 		}
 
+		// Check if ponderhit found a book move
+		e.searchMu.Lock()
+		bookResult := e.ponderBookMove
+		e.ponderBookMove = ""
+		e.searchMu.Unlock()
+
 		// Build bestmove string
-		result := bestMove.String()
-		if e.ponderOpt && len(searchResult.PV) >= 2 {
-			result += " ponder " + searchResult.PV[1].String()
+		var result string
+		if bookResult != "" {
+			result = bookResult
+		} else {
+			result = bestMove.String()
+			if e.ponderOpt && len(searchResult.PV) >= 2 {
+				result += " ponder " + searchResult.PV[1].String()
+			}
 		}
 		e.send("bestmove %s", result)
 
@@ -342,6 +354,35 @@ func (e *UCIEngine) cmdPonderhit() {
 	if !e.pondering || e.searchInfo == nil {
 		return
 	}
+
+	// Check book now that the ponder position is confirmed real
+	if e.book != nil {
+		if move, name, ok := e.book.PickMove(e.board.HashKey); ok {
+			if name != "" {
+				e.send("info string book: %s", name)
+			}
+			result := move.String()
+			if e.ponderOpt {
+				var tmpBoard Board
+				tmpBoard = e.board
+				tmpBoard.UndoStack = make([]UndoInfo, 0, 8)
+				tmpBoard.MakeMove(move)
+				if pm, _, pok := e.book.PickMove(tmpBoard.HashKey); pok {
+					result += " ponder " + pm.String()
+				}
+			}
+			e.ponderBookMove = result
+			// Stop the running search; goroutine will use ponderBookMove
+			atomic.StoreInt32(&e.searchInfo.Stopped, 1)
+			e.pondering = false
+			if e.ponderDone != nil {
+				close(e.ponderDone)
+				e.ponderDone = nil
+			}
+			return
+		}
+	}
+
 	p := e.ponderParams
 	allocMS := computeSearchTime(p.movetime, p.wtime, p.btime,
 		p.winc, p.binc, p.movestogo, p.infinite, e.ponderSide)
