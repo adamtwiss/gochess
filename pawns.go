@@ -333,7 +333,7 @@ func (b *Board) evaluateKingSafety(color Color) (mg, eg int) {
 		// Check for shield pawns on ranks 2 and 3 relative to the king's side
 		foundShield := false
 		if color == White {
-			// White king: shield pawns on ranks 1-2 (indices 1, 2)
+			// White king: shield pawns on ranks 2-3
 			if filePawns&Rank2 != 0 {
 				mg += shieldPawnRank2MG
 				foundShield = true
@@ -342,7 +342,7 @@ func (b *Board) evaluateKingSafety(color Color) (mg, eg int) {
 				foundShield = true
 			}
 		} else {
-			// Black king: shield pawns on ranks 7-6 (indices 6, 5)
+			// Black king: shield pawns on ranks 7-6
 			if filePawns&Rank7 != 0 {
 				mg += shieldPawnRank2MG
 				foundShield = true
@@ -353,7 +353,14 @@ func (b *Board) evaluateKingSafety(color Color) (mg, eg int) {
 		}
 
 		if !foundShield {
-			mg += missingShieldPawnMG
+			// Reduced penalty if pawn is on rank 4 (advanced but still present)
+			hasAdvancedPawn := (color == White && filePawns&Rank4 != 0) ||
+				(color == Black && filePawns&Rank5 != 0)
+			if hasAdvancedPawn {
+				mg += missingShieldPawnMG / 2
+			} else {
+				mg += missingShieldPawnMG
+			}
 		}
 	}
 
