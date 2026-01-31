@@ -15,7 +15,7 @@ import (
 // goParams holds parsed "go" command parameters.
 type goParams struct {
 	depth, movetime, wtime, btime, winc, binc, movestogo int
-	infinite, ponder                                      bool
+	infinite, ponder                                     bool
 }
 
 // UCIEngine implements the UCI protocol for the chess engine.
@@ -104,7 +104,7 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("id name GoChess")
 	e.send("id author Adam")
 	e.send("option name Hash type spin default 64 min 1 max 4096")
-	e.send("option name UCI_Ponder type check default true")
+	e.send("option name Ponder type check default true")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
 	e.send("uciok")
@@ -389,7 +389,7 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.hashSizeMB = mb
 		e.tt = NewTranspositionTable(mb)
-	} else if strings.EqualFold(name, "UCI_Ponder") {
+	} else if strings.EqualFold(name, "Ponder") {
 		e.ponderOpt = strings.EqualFold(tokens[valueIdx], "true")
 	} else if strings.EqualFold(name, "OwnBook") {
 		if e.book != nil {
