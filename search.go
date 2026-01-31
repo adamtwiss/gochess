@@ -269,6 +269,16 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 	info.Nodes++
 
+	// Draw detection: repetition and 50-move rule
+	if ply > 0 {
+		if b.HalfmoveClock >= 100 {
+			return 0
+		}
+		if b.IsRepetition() {
+			return 0
+		}
+	}
+
 	// Probe transposition table
 	ttMove := NoMove
 	alphaOrig := alpha

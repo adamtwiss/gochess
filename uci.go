@@ -243,10 +243,12 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove)
 	}
 
-	// Copy board for search goroutine (fresh UndoStack)
+	// Copy board for search goroutine (preserve game history for repetition detection)
 	var searchBoard Board
 	searchBoard = e.board
-	searchBoard.UndoStack = make([]UndoInfo, 0, 256)
+	gameHistory := len(e.board.UndoStack)
+	searchBoard.UndoStack = make([]UndoInfo, gameHistory, gameHistory+256)
+	copy(searchBoard.UndoStack, e.board.UndoStack)
 	searchBoard.PawnTable = NewPawnTable(1)
 
 	e.searchMu.Lock()

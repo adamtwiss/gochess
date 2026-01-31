@@ -536,3 +536,20 @@ func pieceToChar(p Piece) string {
 		return " "
 	}
 }
+
+// IsRepetition checks if the current position has occurred before
+// in the game history (UndoStack). Returns true for 2-fold repetition
+// (sufficient for search — avoids cycling).
+func (b *Board) IsRepetition() bool {
+	n := len(b.UndoStack)
+	limit := b.HalfmoveClock
+	if limit > n {
+		limit = n
+	}
+	for i := 2; i <= limit; i += 2 {
+		if b.UndoStack[n-i].HashKey == b.HashKey {
+			return true
+		}
+	}
+	return false
+}

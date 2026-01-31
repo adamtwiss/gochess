@@ -683,3 +683,43 @@ func TestNoMoveAfterPonder(t *testing.T) {
 		t.Error("BUG: PV is empty — root search failed to record best move")
 	}
 }
+
+// TestRepetitionDetection verifies the engine detects draw by repetition
+func TestRepetitionDetection(t *testing.T) {
+	// Test IsRepetition directly: make moves that create a cycle
+	// Use a position without castling rights so the hash matches after the cycle
+	var b Board
+	b.SetFEN("8/8/8/8/8/5k2/8/4K3 w - - 0 1")
+
+	// Ke1-f1, Kf3-e3, Kf1-e1, Ke3-f3 → back to original position
+	moves := []string{"e1f1", "f3e3", "f1e1", "e3f3"}
+	for _, ms := range moves {
+		m, err := b.ParseUCIMove(ms)
+		if err != nil {
+			t.Fatalf("ParseUCIMove(%s): %v", ms, err)
+		}
+		b.MakeMove(m)
+	}
+	if !b.IsRepetition() {
+		t.Error("IsRepetition() should return true after returning to the same position")
+	}
+
+	// Make one more move — repetition should no longer be detected for the new position
+	m, _ := b.ParseUCIMove("e1d1")
+	b.MakeMove(m)
+	if b.IsRepetition() {
+		t.Error("IsRepetition() should return false for a new position")
+	}
+
+	// Test WAC.041: engine should not play Ka6 (cycling move)
+	var b2 Board
+	b2.SetFEN("1k6/5RP1/1P6/1K6/6r1/8/8/8 w - - 0 1")
+	move, info := b2.Search(12, 0)
+
+	t.Logf("WAC.041: bestmove=%s, score=%d, depth=%d, nodes=%d",
+		move, info.Score, info.Depth, info.Nodes)
+
+	if move.String() == "b5a6" {
+		t.Error("Engine played Ka6 — repetition detection not working (draws by cycling)")
+	}
+}
