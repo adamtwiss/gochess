@@ -32,7 +32,26 @@ var (
 	BishopOpenPositionMG = 3
 	BishopOpenPositionEG = 3
 
-	PassedPawnNotBlockedEG = 10
+	// Passed pawn: not-blocked bonus scaled by relative rank
+	PassedPawnNotBlockedMG = [8]int{0, 0, 0, 5, 8, 12, 20, 0}
+	PassedPawnNotBlockedEG = [8]int{0, 5, 5, 10, 15, 25, 40, 0}
+
+	// Passed pawn: entire path to promotion clear
+	PassedPawnFreePathMG = [8]int{0, 0, 0, 0, 5, 10, 20, 0}
+	PassedPawnFreePathEG = [8]int{0, 0, 0, 5, 15, 30, 60, 0}
+
+	// King proximity (EG only, per Chebyshev distance unit)
+	PassedPawnFriendlyKingDistEG = -5 // closer = better
+	PassedPawnEnemyKingDistEG    = 5  // farther = better
+	PassedPawnKingScale          = [8]int{0, 0, 0, 1, 2, 3, 4, 0}
+
+	// Protected passer (defended by own pawn)
+	PassedPawnProtectedMG = 10
+	PassedPawnProtectedEG = 15
+
+	// Connected passers (friendly passer on adjacent file)
+	PassedPawnConnectedMG = 10
+	PassedPawnConnectedEG = 20
 
 	RookBehindPassedMG = 15
 	RookBehindPassedEG = 25
@@ -269,15 +288,57 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	return
 }
 
+// chebyshevDistance returns the Chebyshev (king) distance between two squares.
+func chebyshevDistance(sq1, sq2 Square) int {
+	fd := sq1.File() - sq2.File()
+	if fd < 0 {
+		fd = -fd
+	}
+	rd := sq1.Rank() - sq2.Rank()
+	if rd < 0 {
+		rd = -rd
+	}
+	if fd > rd {
+		return fd
+	}
+	return rd
+}
+
 // evaluatePassedPawns computes piece-dependent passed pawn bonuses.
 // These depend on piece positions so they cannot be cached in the pawn table.
 func (b *Board) evaluatePassedPawns(color Color, pawnEntry *PawnEntry) (mg, eg int) {
-	passed := pawnEntry.Passed[color]
+	allPassed := pawnEntry.Passed[color]
+	passed := allPassed
+	friendlyPawns := b.Pieces[pieceOf(WhitePawn, color)]
+	friendlyKingSq := b.Pieces[pieceOf(WhiteKing, color)].LSB()
+	enemyKingSq := b.Pieces[pieceOf(WhiteKing, 1-color)].LSB()
+
+	// Precompute friendly pawn attacks for protected passer detection
+	var friendlyPawnAttacks Bitboard
+	if color == White {
+		friendlyPawnAttacks = friendlyPawns.NorthWest() | friendlyPawns.NorthEast()
+	} else {
+		friendlyPawnAttacks = friendlyPawns.SouthWest() | friendlyPawns.SouthEast()
+	}
 
 	for passed != 0 {
 		sq := passed.PopLSB()
+		rank := sq.Rank()
+		file := sq.File()
+		relRank := rank
+		if color == Black {
+			relRank = 7 - rank
+		}
 
-		// Check if the square directly ahead is empty (not blocked by any piece)
+		// 1. King proximity (EG only)
+		scale := PassedPawnKingScale[relRank]
+		if scale > 0 {
+			friendlyDist := chebyshevDistance(friendlyKingSq, sq)
+			enemyDist := chebyshevDistance(enemyKingSq, sq)
+			eg += scale * (enemyDist*PassedPawnEnemyKingDistEG + friendlyDist*PassedPawnFriendlyKingDistEG)
+		}
+
+		// 2. Not blocked (rank-scaled)
 		var aheadSq Square
 		if color == White {
 			aheadSq = sq + 8
@@ -285,10 +346,28 @@ func (b *Board) evaluatePassedPawns(color Color, pawnEntry *PawnEntry) (mg, eg i
 			aheadSq = sq - 8
 		}
 
-		if aheadSq >= 0 && aheadSq < 64 {
-			if !b.AllPieces.IsSet(aheadSq) {
-				eg += PassedPawnNotBlockedEG
+		notBlocked := aheadSq >= 0 && aheadSq < 64 && !b.AllPieces.IsSet(aheadSq)
+		if notBlocked {
+			mg += PassedPawnNotBlockedMG[relRank]
+			eg += PassedPawnNotBlockedEG[relRank]
+
+			// 3. Free path: entire path to promotion is clear
+			if ForwardFileMask[color][sq]&b.AllPieces == 0 {
+				mg += PassedPawnFreePathMG[relRank]
+				eg += PassedPawnFreePathEG[relRank]
 			}
+		}
+
+		// 4. Protected passer (defended by own pawn)
+		if SquareBB(sq)&friendlyPawnAttacks != 0 {
+			mg += PassedPawnProtectedMG
+			eg += PassedPawnProtectedEG
+		}
+
+		// 5. Connected passers (friendly passer on adjacent file)
+		if allPassed&AdjacentFiles[file] != 0 {
+			mg += PassedPawnConnectedMG
+			eg += PassedPawnConnectedEG
 		}
 	}
 

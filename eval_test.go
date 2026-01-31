@@ -310,11 +310,12 @@ func TestPawnPassedRankBonus(t *testing.T) {
 	var b Board
 
 	// Passed pawn on rank 6 (more advanced)
-	b.SetFEN("4k3/8/4P3/8/8/8/8/4K3 w - - 0 1")
+	// Friendly king near passer, enemy king far, so king proximity helps
+	b.SetFEN("k7/8/4P3/8/4K3/8/8/8 w - - 0 1")
 	advancedScore := b.Evaluate()
 
 	// Passed pawn on rank 3 (less advanced)
-	b.SetFEN("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1")
+	b.SetFEN("k7/8/8/8/4K3/4P3/8/8 w - - 0 1")
 	earlyScore := b.Evaluate()
 
 	if advancedScore <= earlyScore {
@@ -609,4 +610,116 @@ func TestOutpostMask(t *testing.T) {
 	if mask.Count() != 5 {
 		t.Errorf("OutpostMask[White][a4] should have 5 squares (b4-b8), got %d", mask.Count())
 	}
+}
+
+func TestChebyshevDistance(t *testing.T) {
+	tests := []struct {
+		sq1, sq2 Square
+		want     int
+	}{
+		{NewSquare(0, 0), NewSquare(0, 0), 0}, // same square
+		{NewSquare(0, 0), NewSquare(1, 0), 1}, // adjacent horizontal
+		{NewSquare(0, 0), NewSquare(0, 1), 1}, // adjacent vertical
+		{NewSquare(0, 0), NewSquare(1, 1), 1}, // adjacent diagonal
+		{NewSquare(0, 0), NewSquare(7, 7), 7}, // a1-h8
+		{NewSquare(3, 3), NewSquare(6, 5), 3}, // d4-g6
+	}
+	for _, tt := range tests {
+		got := chebyshevDistance(tt.sq1, tt.sq2)
+		if got != tt.want {
+			t.Errorf("chebyshevDistance(%s, %s) = %d, want %d", tt.sq1, tt.sq2, got, tt.want)
+		}
+	}
+}
+
+func TestPassedPawnKingProximity(t *testing.T) {
+	var b Board
+
+	// White king close to passed pawn on e5
+	b.SetFEN("7k/8/8/4P3/8/4K3/8/8 w - - 0 1")
+	closeScore := b.Evaluate()
+
+	// White king far from passed pawn on e5
+	b.SetFEN("7k/8/8/4P3/8/8/8/K7 w - - 0 1")
+	farScore := b.Evaluate()
+
+	if closeScore <= farScore {
+		t.Errorf("Friendly king close to passer (%d) should score higher than far (%d)", closeScore, farScore)
+	}
+	t.Logf("King close: %d, King far: %d, diff: %d", closeScore, farScore, closeScore-farScore)
+}
+
+func TestPassedPawnEnemyKingFar(t *testing.T) {
+	var b Board
+
+	// Enemy king far from white passed pawn on e5
+	b.SetFEN("k7/8/8/4P3/8/4K3/8/8 w - - 0 1")
+	farScore := b.Evaluate()
+
+	// Enemy king close to white passed pawn on e5
+	b.SetFEN("4k3/8/8/4P3/8/4K3/8/8 w - - 0 1")
+	closeScore := b.Evaluate()
+
+	if farScore <= closeScore {
+		t.Errorf("Enemy king far from passer (%d) should score higher than close (%d)", farScore, closeScore)
+	}
+	t.Logf("Enemy far: %d, Enemy close: %d, diff: %d", farScore, closeScore, farScore-closeScore)
+}
+
+func TestPassedPawnFreePath(t *testing.T) {
+	var b Board
+
+	// Passed pawn on e5, entire path (e6, e7, e8) clear
+	b.SetFEN("4k3/8/8/4P3/8/8/8/4K3 w - - 0 1")
+	freeScore := b.Evaluate()
+
+	// Passed pawn on e5, path blocked by piece on e7 (not directly ahead)
+	b.SetFEN("4k3/4n3/8/4P3/8/8/8/4K3 w - - 0 1")
+	blockedPathScore := b.Evaluate()
+
+	if freeScore <= blockedPathScore {
+		t.Errorf("Free path passer (%d) should score higher than blocked path (%d)", freeScore, blockedPathScore)
+	}
+	t.Logf("Free path: %d, Blocked path: %d, diff: %d", freeScore, blockedPathScore, freeScore-blockedPathScore)
+}
+
+func TestPassedPawnProtected(t *testing.T) {
+	var b Board
+
+	// Test evaluatePassedPawns directly to isolate the protection feature
+	// e5 passer protected by f4 pawn (f4 NorthWest = e5)
+	b.SetFEN("k7/8/8/4P3/5P2/8/8/K7 w - - 0 1")
+	if b.PawnTable == nil {
+		b.PawnTable = NewPawnTable(1)
+	}
+	entry := b.probePawnEval()
+	protMG, protEG := b.evaluatePassedPawns(White, &entry)
+
+	// e5 passer, f3 pawn does NOT defend e5 (f3 attacks e4/g4)
+	b.SetFEN("k7/8/8/4P3/8/5P2/8/K7 w - - 0 1")
+	entry = b.probePawnEval()
+	unprotMG, unprotEG := b.evaluatePassedPawns(White, &entry)
+
+	if protMG+protEG <= unprotMG+unprotEG {
+		t.Errorf("Protected passer (MG=%d, EG=%d) should score higher than unprotected (MG=%d, EG=%d)",
+			protMG, protEG, unprotMG, unprotEG)
+	}
+	t.Logf("Protected: MG=%d EG=%d, Unprotected: MG=%d EG=%d", protMG, protEG, unprotMG, unprotEG)
+}
+
+func TestPassedPawnConnected(t *testing.T) {
+	var b Board
+
+	// Connected passers on d5 and e5 (adjacent files, both passed)
+	b.SetFEN("4k3/8/8/3PP3/8/8/8/4K3 w - - 0 1")
+	connectedScore := b.Evaluate()
+
+	// Separated passers on a5 and h5 (far apart, not connected)
+	b.SetFEN("4k3/8/8/P6P/8/8/8/4K3 w - - 0 1")
+	separatedScore := b.Evaluate()
+
+	if connectedScore <= separatedScore {
+		t.Errorf("Connected passers (%d) should score higher than separated (%d)", connectedScore, separatedScore)
+	}
+	t.Logf("Connected: %d, Separated: %d, diff: %d", connectedScore, separatedScore, connectedScore-separatedScore)
 }
