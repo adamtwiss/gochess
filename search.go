@@ -15,12 +15,10 @@ const (
 var LMREnabled = true
 
 // LMPEnabled controls whether Late Move Pruning is used
-// Currently disabled as Adam thinks this may hurt performance.
-var LMPEnabled = false
+var LMPEnabled = true
 
 // SingularExtEnabled controls whether Singular Extensions are used
-// Currently disabled as Adam thinks this may hurt performance.
-var SingularExtEnabled = false
+var SingularExtEnabled = true
 
 // Late Move Pruning: at shallow depths, skip quiet moves past this move count.
 // Indexed by depth (0 unused). Roughly 3 + depth*depth.
@@ -423,7 +421,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 			move == ttMove &&
 			ttMove != NoMove &&
 			ply > 0 &&
-			depth >= 8 &&
+			depth >= 10 &&
 			!inCheck &&
 			info.ExcludedMove[ply] == NoMove &&
 			ttHit &&
@@ -439,7 +437,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 			// Skip singular extension for mate scores — margin comparison is meaningless
 			if ttScore <= MateScore-100 && ttScore >= -MateScore+100 {
-				singularBeta := ttScore - depth*2
+				singularBeta := ttScore - depth*3
 				singularDepth := (depth - 1) / 2
 
 				info.ExcludedMove[ply] = ttMove

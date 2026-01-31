@@ -564,7 +564,7 @@ func TestSingularExtensionComparison(t *testing.T) {
 		{"Middlegame", "r1b1qrk1/pp1n1ppp/2pbpn2/8/2BP4/2N1PN2/PP3PPP/R1BQ1RK1 w - - 0 1"},
 	}
 
-	depth := 10
+	depth := 12
 
 	t.Log("=== Singular Extension Comparison ===")
 	t.Logf("Testing at depth %d\n", depth)
