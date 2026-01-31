@@ -14,6 +14,13 @@ const (
 // Set to false for benchmarking comparisons
 var LMREnabled = true
 
+// LMPEnabled controls whether Late Move Pruning is used
+var LMPEnabled = true
+
+// Late Move Pruning: at shallow depths, skip quiet moves past this move count.
+// Indexed by depth (0 unused). Roughly 3 + depth*depth.
+var lmpThreshold = [9]int{0, 5, 8, 12, 18, 25, 34, 44, 56}
+
 // LMR reduction table - indexed by [depth][moveNumber]
 // Precomputed for efficiency
 var lmrTable [64][64]int
@@ -71,6 +78,9 @@ type SearchInfo struct {
 	LMRAttempts   uint64 // Times LMR was attempted
 	LMRReSearches uint64 // Times we had to re-search at full depth
 	LMRSavings    uint64 // Successful LMR prunings (no re-search needed)
+
+	// LMP statistics
+	LMPPrunes uint64 // Moves pruned by late move pruning
 
 	// OnDepth is called after each completed iteration of iterative deepening.
 	// Parameters: depth, score, cumulative nodes, PV for this depth.
@@ -348,6 +358,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 		// Check if capture BEFORE making the move
 		isCap := isCapture(move, b)
+
+		// Late Move Pruning: at shallow depths, skip late quiet moves
+		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
+			!isCap && !move.IsPromotion() &&
+			moveCount > lmpThreshold[depth] &&
+			bestScore > -MateScore+100 {
+			info.LMPPrunes++
+			continue
+		}
 
 		b.MakeMove(move)
 

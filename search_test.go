@@ -277,3 +277,122 @@ func TestLMRComparison(t *testing.T) {
 	t.Logf("Overall node reduction:  %.1f%%", overallNodeReduction)
 	t.Logf("Overall speedup:         %.2fx", overallSpeedup)
 }
+
+// TestLMPCorrectness verifies LMP doesn't break tactical correctness
+func TestLMPCorrectness(t *testing.T) {
+	positions := []struct {
+		name     string
+		fen      string
+		best     string // expected best move ("" = any move, check mate score)
+		depth    int
+		wantMate bool
+	}{
+		{"MateIn1", "6k1/5ppp/8/8/8/8/5PPP/4Q1K1 w - - 0 1", "", 3, true},
+		{"MateIn2", "6k1/8/6K1/8/8/8/8/3Q4 w - - 0 1", "", 5, true},
+		{"WinQueen", "rnb1kbnr/pppp1ppp/8/4q3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 1", "d4e5", 4, false},
+		{"ScholarsMate", "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4", "h5f7", 5, false},
+	}
+
+	LMPEnabled = true
+	defer func() { LMPEnabled = true }()
+
+	for _, pos := range positions {
+		t.Run(pos.name, func(t *testing.T) {
+			var b Board
+			b.SetFEN(pos.fen)
+
+			move, info := b.Search(pos.depth, 0)
+
+			if move == NoMove {
+				t.Error("Search returned no move")
+				return
+			}
+
+			if pos.wantMate && info.Score < MateScore-10 {
+				t.Errorf("Expected mate score, got %d (move: %s)", info.Score, move)
+			}
+
+			if pos.best != "" && move.String() != pos.best {
+				t.Errorf("Expected %s, got %s", pos.best, move)
+			}
+
+			t.Logf("Move: %s, Score: %d, Nodes: %d, LMP prunes: %d",
+				move, info.Score, info.Nodes, info.LMPPrunes)
+		})
+	}
+}
+
+// TestLMPComparison compares search with and without LMP
+func TestLMPComparison(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping LMP comparison in short mode")
+	}
+
+	positions := []struct {
+		name string
+		fen  string
+	}{
+		{"Starting", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+		{"WAC.001", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"},
+		{"WAC.004", "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1"},
+		{"Middlegame", "r1b1qrk1/pp1n1ppp/2pbpn2/8/2BP4/2N1PN2/PP3PPP/R1BQ1RK1 w - - 0 1"},
+	}
+
+	depth := 7
+
+	t.Log("=== LMP Comparison ===")
+	t.Logf("Testing at depth %d\n", depth)
+
+	var totalNodesWith, totalNodesWithout uint64
+	var totalTimeWith, totalTimeWithout time.Duration
+
+	for _, pos := range positions {
+		var board Board
+		board.SetFEN(pos.fen)
+
+		// With LMP
+		LMPEnabled = true
+		tt1 := NewTranspositionTable(16)
+		start := time.Now()
+		moveWith, infoWith := board.SearchWithTT(depth, 0, tt1)
+		timeWith := time.Since(start)
+
+		// Without LMP
+		LMPEnabled = false
+		tt2 := NewTranspositionTable(16)
+		start = time.Now()
+		moveWithout, infoWithout := board.SearchWithTT(depth, 0, tt2)
+		timeWithout := time.Since(start)
+
+		// Re-enable
+		LMPEnabled = true
+
+		totalNodesWith += infoWith.Nodes
+		totalNodesWithout += infoWithout.Nodes
+		totalTimeWith += timeWith
+		totalTimeWithout += timeWithout
+
+		nodeReduction := 100.0 * (1.0 - float64(infoWith.Nodes)/float64(infoWithout.Nodes))
+		speedup := float64(timeWithout) / float64(timeWith)
+
+		t.Logf("\n%s:", pos.name)
+		t.Logf("  With LMP:    %s, nodes=%d, time=%v, LMP prunes=%d",
+			moveWith, infoWith.Nodes, timeWith, infoWith.LMPPrunes)
+		t.Logf("  Without LMP: %s, nodes=%d, time=%v",
+			moveWithout, infoWithout.Nodes, timeWithout)
+		t.Logf("  Node reduction: %.1f%%, Speedup: %.2fx", nodeReduction, speedup)
+
+		if moveWith != moveWithout {
+			t.Logf("  NOTE: Different moves found (LMP effect)")
+		}
+	}
+
+	overallNodeReduction := 100.0 * (1.0 - float64(totalNodesWith)/float64(totalNodesWithout))
+	overallSpeedup := float64(totalTimeWithout) / float64(totalTimeWith)
+
+	t.Logf("\n=== TOTALS ===")
+	t.Logf("Total nodes with LMP:    %d", totalNodesWith)
+	t.Logf("Total nodes without LMP: %d", totalNodesWithout)
+	t.Logf("Overall node reduction:  %.1f%%", overallNodeReduction)
+	t.Logf("Overall speedup:         %.2fx", overallSpeedup)
+}
