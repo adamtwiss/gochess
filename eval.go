@@ -2,13 +2,13 @@ package chess
 
 // Mobility bonuses per safe square (MG/EG), declared as var for future tuning
 var (
-	KnightMobilityMG = 4
-	KnightMobilityEG = 4
-	BishopMobilityMG = 5
-	BishopMobilityEG = 5
-	RookMobilityMG   = 2
-	RookMobilityEG   = 3
-	QueenMobilityMG  = 1
+	KnightMobilityMG = 6
+	KnightMobilityEG = 5
+	BishopMobilityMG = 7
+	BishopMobilityEG = 6
+	RookMobilityMG   = 3
+	RookMobilityEG   = 4
+	QueenMobilityMG  = 2
 	QueenMobilityEG  = 2
 )
 
@@ -74,6 +74,10 @@ var (
 	KnightCentralityEG = [4]int{4, 2, 0, -2}
 	BishopCentralityMG = [4]int{4, 2, 0, -2}
 	BishopCentralityEG = [4]int{2, 1, 0, -1}
+
+	// Knight closed position bonus (per pawn on the board)
+	KnightClosedPositionMG = 2
+	KnightClosedPositionEG = 1
 
 	// Pawn threat bonuses (pawns attacking enemy pieces)
 	PawnThreatMinorMG = 15
@@ -229,14 +233,28 @@ func (b *Board) evaluatePST(color Color) (mg, eg int) {
 		mgMat := mgMaterial[pt]
 		egMat := egMaterial[pt]
 
+		// Per-piece-type PST scaling
+		var scaleMG, scaleEG int
+		switch pt {
+		case WhitePawn:
+			scaleMG = PawnPSTScaleMG
+			scaleEG = PawnPSTScaleEG
+		case WhiteKing:
+			scaleMG = KingPSTScaleMG
+			scaleEG = KingPSTScaleEG
+		default: // Knight, Bishop, Rook, Queen
+			scaleMG = PiecePSTScaleMG
+			scaleEG = PiecePSTScaleEG
+		}
+
 		for bb != 0 {
 			sq := bb.PopLSB()
 			idx := int(sq)
 			if color == Black {
 				idx ^= 56 // Mirror rank for Black
 			}
-			mg += mgMat + mgTable[idx]*PSTScaleMG/100
-			eg += egMat + egTable[idx]*PSTScaleEG/100
+			mg += mgMat + mgTable[idx]*scaleMG/100
+			eg += egMat + egTable[idx]*scaleEG/100
 		}
 	}
 	return
@@ -304,6 +322,10 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 				}
 			}
 		}
+
+		// Knight closed position bonus (more valuable with more pawns)
+		mg += totalPawns * KnightClosedPositionMG
+		eg += totalPawns * KnightClosedPositionEG
 	}
 
 	// --- Bishops ---

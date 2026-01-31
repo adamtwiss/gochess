@@ -51,11 +51,12 @@ func (pt *PawnTable) Store(entry PawnEntry) {
 
 // Precomputed masks for pawn evaluation
 var (
-	FileMasks       [8]Bitboard     // one mask per file
-	AdjacentFiles   [8]Bitboard     // neighboring file(s)
-	PassedPawnMask  [2][64]Bitboard // squares that must be empty of enemy pawns for passed
-	ForwardFileMask [2][64]Bitboard // squares ahead on same file (for doubled detection)
-	OutpostMask     [2][64]Bitboard // squares on adjacent files from rank upward (for outpost detection)
+	FileMasks          [8]Bitboard     // one mask per file
+	AdjacentFiles      [8]Bitboard     // neighboring file(s)
+	PassedPawnMask     [2][64]Bitboard // squares that must be empty of enemy pawns for passed
+	ForwardFileMask    [2][64]Bitboard // squares ahead on same file (for doubled detection)
+	OutpostMask        [2][64]Bitboard // squares on adjacent files from rank upward (for outpost detection)
+	BackwardSupportMask [2][64]Bitboard // adjacent file squares at same rank or behind (for backward detection)
 )
 
 func init() {
@@ -143,6 +144,28 @@ func init() {
 				OutpostMask[Black][sq] |= SquareBB(Square(r*8 + file + 1))
 			}
 		}
+
+		// BackwardSupportMask: adjacent file squares at same rank or behind
+		// White: ranks 0..rank on adjacent files
+		BackwardSupportMask[White][sq] = Bitboard(0)
+		for r := 0; r <= rank; r++ {
+			if file > 0 {
+				BackwardSupportMask[White][sq] |= SquareBB(Square(r*8 + file - 1))
+			}
+			if file < 7 {
+				BackwardSupportMask[White][sq] |= SquareBB(Square(r*8 + file + 1))
+			}
+		}
+		// Black: ranks rank..7 on adjacent files
+		BackwardSupportMask[Black][sq] = Bitboard(0)
+		for r := rank; r <= 7; r++ {
+			if file > 0 {
+				BackwardSupportMask[Black][sq] |= SquareBB(Square(r*8 + file - 1))
+			}
+			if file < 7 {
+				BackwardSupportMask[Black][sq] |= SquareBB(Square(r*8 + file + 1))
+			}
+		}
 	}
 }
 
@@ -155,6 +178,8 @@ const (
 	doubledPawnEG   = -10
 	isolatedPawnMG  = -15
 	isolatedPawnEG  = -10
+	backwardPawnMG  = -10
+	backwardPawnEG  = -8
 	connectedPawnMG = 5
 	connectedPawnEG = 5
 )
@@ -200,6 +225,23 @@ func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) 
 		if AdjacentFiles[file]&allFriendlyPawns == 0 {
 			mg += isolatedPawnMG
 			eg += isolatedPawnEG
+		} else {
+			// Backward pawn: not isolated, but no friendly pawn on adjacent files
+			// at same rank or behind, and stop square controlled by enemy pawns
+			if BackwardSupportMask[color][sq]&allFriendlyPawns == 0 {
+				var stopSq Square
+				if color == White {
+					stopSq = sq + 8
+				} else {
+					stopSq = sq - 8
+				}
+				if stopSq >= 0 && stopSq < 64 {
+					if PawnAttacks[color][stopSq]&enemyPawns != 0 {
+						mg += backwardPawnMG
+						eg += backwardPawnEG
+					}
+				}
+			}
 		}
 
 		// Passed pawns: no enemy pawns ahead on same or adjacent files

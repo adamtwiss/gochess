@@ -776,3 +776,20 @@ func TestEvalCache(t *testing.T) {
 		t.Errorf("Eval after unmake %d != original %d", score4, score1)
 	}
 }
+
+func TestPawnBackward(t *testing.T) {
+	var b Board
+	// e3 pawn is backward: d-file empty, f-file has pawn on f5 (ahead),
+	// stop square e4 controlled by Black d5 pawn
+	b.SetFEN("4k3/8/8/3p1P2/8/4P3/8/4K3 w - - 0 1")
+	backwardScore := b.Evaluate()
+
+	// Same pawns but d5 removed — e3 is no longer backward
+	b.SetFEN("4k3/8/8/5P2/8/4P3/8/4K3 w - - 0 1")
+	freeScore := b.Evaluate()
+
+	if backwardScore >= freeScore {
+		t.Errorf("Backward pawn (%d) should score lower than free (%d)", backwardScore, freeScore)
+	}
+	t.Logf("Backward: %d, Free: %d, diff: %d", backwardScore, freeScore, backwardScore-freeScore)
+}

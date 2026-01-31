@@ -154,11 +154,17 @@ var egKingTable = [64]int{
 var mgMaterial = [7]int{0, 82, 337, 365, 477, 1025, 0}
 var egMaterial = [7]int{0, 94, 281, 297, 512, 936, 0}
 
-// PST positional scale factors (percentage, 100 = unscaled PeSTO values).
+// Per-piece-type PST positional scale factors (percentage, 100 = unscaled PeSTO values).
 // Only the positional component is scaled; material values are unchanged.
+// Pawns are scaled most aggressively (rank-2 values of 98-134 are extreme).
+// Pieces need stronger signals for placement quality differentiation.
 var (
-	PSTScaleMG = 50 // Halve middlegame positional component
-	PSTScaleEG = 75 // Gentler reduction for endgame
+	PawnPSTScaleMG  = 35 // Pawn rank-2 values 98-134 become 34-47
+	PawnPSTScaleEG  = 65 // EG pawn placement matters but values are smaller
+	PiecePSTScaleMG = 70 // Preserve piece placement signals
+	PiecePSTScaleEG = 80 // Preserve endgame piece activity
+	KingPSTScaleMG  = 60 // Castled vs center king distinction
+	KingPSTScaleEG  = 85 // Endgame king centralization is critical
 )
 
 // Lookup tables indexed by white piece type (1-6)
