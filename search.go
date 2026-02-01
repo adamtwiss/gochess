@@ -8,6 +8,10 @@ import (
 const (
 	Infinity  = 30000
 	MateScore = 29000
+
+	// Contempt: small penalty for accepting draws (repetition, 50-move rule).
+	// Positive value means the engine prefers to play on rather than draw.
+	Contempt = 10
 )
 
 // LMREnabled controls whether Late Move Reductions are used
@@ -272,10 +276,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 	// Draw detection: repetition and 50-move rule
 	if ply > 0 {
 		if b.HalfmoveClock >= 100 {
-			return 0
+			return -Contempt
 		}
 		if b.IsRepetition() {
-			return 0
+			return -Contempt
 		}
 	}
 
