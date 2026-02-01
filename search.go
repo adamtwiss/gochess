@@ -229,6 +229,12 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			copy(info.PV, info.pvTable[0][:info.pvLen[0]])
 		}
 
+		// If the PV is short (likely due to TT cutoffs), extend it by
+		// walking the transposition table from the end of the known PV.
+		if info.TT != nil && len(info.PV) < depth {
+			info.PV = b.extendPVFromTT(info.PV, depth, info.TT)
+		}
+
 		if info.OnDepth != nil {
 			info.OnDepth(depth, score, info.Nodes, info.PV)
 		}
@@ -257,6 +263,50 @@ func widenDelta(delta int) int {
 	default:
 		return Infinity
 	}
+}
+
+// extendPVFromTT extends a PV by walking the transposition table from the
+// position after the last PV move. This recovers full-length PVs when the
+// search returned early due to TT cutoffs. The board state is preserved.
+func (b *Board) extendPVFromTT(pv []Move, maxLen int, tt *TranspositionTable) []Move {
+	if len(pv) >= maxLen {
+		return pv
+	}
+
+	// Replay the known PV moves
+	var madeStack []Move
+	for _, m := range pv {
+		b.MakeMove(m)
+		madeStack = append(madeStack, m)
+	}
+
+	// Walk the TT to extend
+	seen := make(map[uint64]bool)
+	for len(pv) < maxLen {
+		if seen[b.HashKey] {
+			break // cycle detection
+		}
+		seen[b.HashKey] = true
+
+		entry, found := tt.Probe(b.HashKey)
+		if !found || entry.Move == NoMove {
+			break
+		}
+		m := entry.Move
+		if !b.IsPseudoLegal(m) || !b.IsLegal(m) {
+			break
+		}
+		pv = append(pv, m)
+		b.MakeMove(m)
+		madeStack = append(madeStack, m)
+	}
+
+	// Undo all moves to restore original position
+	for i := len(madeStack) - 1; i >= 0; i-- {
+		b.UnmakeMove(madeStack[i])
+	}
+
+	return pv
 }
 
 // negamax performs alpha-beta search from the current position
