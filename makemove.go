@@ -1,14 +1,15 @@
 package chess
 
-// UndoInfo stores information needed to undo a move
+// UndoInfo stores information needed to undo a move.
+// Fields ordered largest-first for optimal packing (24 bytes vs 32 with int).
 type UndoInfo struct {
+	HashKey       uint64
+	PawnHashKey   uint64
 	Move          Move
+	HalfmoveClock int16
 	Captured      Piece
 	Castling      CastlingRights
 	EnPassant     Square
-	HalfmoveClock int
-	HashKey       uint64
-	PawnHashKey   uint64
 }
 
 // MakeMove makes a move on the board and stores undo information

@@ -105,7 +105,7 @@ type Board struct {
 	SideToMove    Color
 	Castling      CastlingRights
 	EnPassant     Square
-	HalfmoveClock int
+	HalfmoveClock int16
 	FullmoveNum   int
 	HashKey       uint64
 	PawnHashKey   uint64
@@ -294,7 +294,7 @@ func (b *Board) SetFEN(fen string) error {
 
 	// Parse halfmove clock
 	if len(parts) >= 5 {
-		b.HalfmoveClock = atoi(parts[4])
+		b.HalfmoveClock = int16(atoi(parts[4]))
 	}
 
 	// Parse fullmove number
@@ -542,7 +542,7 @@ func pieceToChar(p Piece) string {
 // (sufficient for search — avoids cycling).
 func (b *Board) IsRepetition() bool {
 	n := len(b.UndoStack)
-	limit := b.HalfmoveClock
+	limit := int(b.HalfmoveClock)
 	if limit > n {
 		limit = n
 	}
