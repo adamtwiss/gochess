@@ -48,9 +48,6 @@ func init() {
 		for moveNum := 1; moveNum < 64; moveNum++ {
 			if depth >= 3 && moveNum >= 3 {
 				reduction := int(math.Log(float64(depth)) * math.Log(float64(moveNum)) / C)
-				if reduction < 1 {
-					reduction = 1
-				}
 				// Cap reduction to leave at least depth 1
 				if reduction > depth-2 {
 					reduction = depth - 2
@@ -105,6 +102,9 @@ type SearchInfo struct {
 	// OnDepth is called after each completed iteration of iterative deepening.
 	// Parameters: depth, score, cumulative nodes, PV for this depth.
 	OnDepth func(depth, score int, nodes uint64, pv []Move)
+
+	// Static eval at each ply, for "improving" detection (LMR/LMP adjustment)
+	StaticEvals [MaxPly + 1]int
 
 	// Pre-allocated search structures (avoid per-node heap allocations)
 	pickers [MaxPly + MaxQSDepth]MovePicker
@@ -414,16 +414,33 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 	}
 
-	// Static eval for pruning decisions at shallow depths
+	// Compute static eval for pruning and LMR improving detection.
+	// Stored per-ply so we can compare to 2 plies ago.
 	staticEval := -Infinity
-	if depth <= 3 && !inCheck && ply > 0 {
+	improving := false
+	if !inCheck {
 		staticEval = b.EvaluateRelative()
+		if ply <= MaxPly {
+			info.StaticEvals[ply] = staticEval
+		}
+		// Position is "improving" if our eval is better than 2 plies ago.
+		// When ply-2 was in check we stored -Infinity, so improving=true
+		// (conservative: don't reduce extra when uncertain).
+		if ply >= 2 {
+			improving = staticEval > info.StaticEvals[ply-2]
+		}
 
 		// Reverse Futility Pruning (Static Null Move Pruning)
 		// If static eval is far above beta, prune the whole node
-		margin := depth * 120
-		if staticEval-margin >= beta {
-			return staticEval - margin
+		if depth <= 3 && ply > 0 {
+			margin := depth * 120
+			if staticEval-margin >= beta {
+				return staticEval - margin
+			}
+		}
+	} else {
+		if ply <= MaxPly {
+			info.StaticEvals[ply] = -Infinity
 		}
 	}
 
@@ -567,10 +584,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 		// Late Move Reductions (LMR) + Principal Variation Search (PVS)
 		isKiller := move == killers[0] || move == killers[1]
-		hasHighHistory := info.History[move.From()][move.To()] > 1000
 
 		reduction := 0
-		if LMREnabled && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !hasHighHistory && !givesCheck {
+		if LMREnabled && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !givesCheck {
 			d, m := depth, moveCount
 			if d >= 64 {
 				d = 63
@@ -579,6 +595,30 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				m = 63
 			}
 			reduction = lmrTable[d][m]
+
+			if reduction > 0 {
+				// Reduce less at PV nodes where accuracy matters most
+				if beta-alpha > 1 {
+					reduction--
+				}
+
+				// Reduce less when the position is improving (eval > eval 2 plies ago)
+				if improving {
+					reduction--
+				}
+
+				// Continuous history adjustment: good history reduces less, bad more
+				histScore := info.History[move.From()][move.To()]
+				reduction -= int(histScore / 5000)
+
+				// Clamp: never extend (negative), never reduce past depth 1
+				if reduction < 0 {
+					reduction = 0
+				}
+				if reduction > newDepth-1 {
+					reduction = newDepth - 1
+				}
+			}
 		}
 
 		if reduction > 0 {
