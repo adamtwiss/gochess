@@ -266,6 +266,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		return b.EvaluateRelative()
 	}
 
+	// Clear PV for this node (must happen before any early return so parent
+	// doesn't copy stale PV data from a previous search at this ply)
+	info.pvLen[ply] = 0
+
 	// Check time periodically
 	if info.Nodes&4095 == 0 {
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
@@ -393,9 +397,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		}
 	}
-
-	// Clear PV for this node
-	info.pvLen[ply] = 0
 
 	// Use MovePicker for staged move generation (reuse pre-allocated picker)
 	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove)
