@@ -22,12 +22,12 @@ var (
 	KnightOutpostSupportedMG = 30
 	KnightOutpostSupportedEG = 15
 
-	RookOpenFileMG     = 20
-	RookOpenFileEG     = 15
+	RookOpenFileMG     = 22
+	RookOpenFileEG     = 17
 	RookSemiOpenFileMG = 10
 	RookSemiOpenFileEG = 8
-	RookOn7thMG        = 20
-	RookOn7thEG        = 30
+	RookOn7thMG        = 25
+	RookOn7thEG        = 35
 
 	// Trapped rook: rook on back-rank corner with king blocking escape
 	TrappedRookPenaltyMG = -40
