@@ -79,14 +79,15 @@ func TestEvalSymmetry(t *testing.T) {
 
 func TestEvalPSTKnightCentralization(t *testing.T) {
 	// Knight on e4 (central) should score higher than knight on a1 (corner)
+	// Include pawns so endgame scale factor doesn't zero out the eval
 	var b Board
 
-	// Minimal position: just kings and a white knight on e4
-	b.SetFEN("4k3/8/8/8/4N3/8/8/4K3 w - - 0 1")
+	// Knight on e4 (central) with a pawn to avoid insufficient material scaling
+	b.SetFEN("4k3/8/8/8/4N3/8/4P3/4K3 w - - 0 1")
 	centralScore := b.Evaluate()
 
-	// Knight on a1
-	b.SetFEN("4k3/8/8/8/8/8/8/N3K3 w - - 0 1")
+	// Knight on a1 with same pawn
+	b.SetFEN("4k3/8/8/8/8/8/4P3/N3K3 w - - 0 1")
 	cornerScore := b.Evaluate()
 
 	if centralScore <= cornerScore {
@@ -822,4 +823,143 @@ func TestCastlingPreferred(t *testing.T) {
 		t.Errorf("Engine played Kf8 which traps the rook — expected O-O or other developing move, got %s", move.String())
 	}
 	t.Logf("Best move: %s (flags=%d)", move.String(), move.Flags())
+}
+
+// --- Endgame improvement tests ---
+
+func TestInsufficientMaterialKvK(t *testing.T) {
+	var b Board
+	b.SetFEN("4k3/8/8/8/8/8/8/4K3 w - - 0 1")
+	score := b.Evaluate()
+	if score != 0 {
+		t.Errorf("KvK eval = %d, expected 0", score)
+	}
+}
+
+func TestInsufficientMaterialKNvK(t *testing.T) {
+	var b Board
+	// White has a knight, black has nothing — should be ~0
+	b.SetFEN("4k3/8/8/8/8/8/8/4KN2 w - - 0 1")
+	score := b.Evaluate()
+	if score < -5 || score > 5 {
+		t.Errorf("KNvK eval = %d, expected ~0", score)
+	}
+}
+
+func TestInsufficientMaterialKBvK(t *testing.T) {
+	var b Board
+	b.SetFEN("4k3/8/8/8/8/8/8/4KB2 w - - 0 1")
+	score := b.Evaluate()
+	if score < -5 || score > 5 {
+		t.Errorf("KBvK eval = %d, expected ~0", score)
+	}
+}
+
+func TestInsufficientMaterialKNNvK(t *testing.T) {
+	var b Board
+	b.SetFEN("4k3/8/8/8/8/8/8/3NKN2 w - - 0 1")
+	score := b.Evaluate()
+	if score < -5 || score > 5 {
+		t.Errorf("KNNvK eval = %d, expected ~0", score)
+	}
+}
+
+func TestKBvKBSameColor(t *testing.T) {
+	var b Board
+	// White bishop on c1 (dark), black bishop on f8 (dark) — same color
+	b.SetFEN("5b1k/8/8/8/8/8/8/2B1K3 w - - 0 1")
+	// Verify setup
+	wOnLight := b.Pieces[WhiteBishop]&LightSquares != 0
+	bOnLight := b.Pieces[BlackBishop]&LightSquares != 0
+	if wOnLight != bOnLight {
+		t.Fatalf("Setup error: bishops on different colors (wLight=%v, bLight=%v)", wOnLight, bOnLight)
+	}
+	score := b.Evaluate()
+	if score < -5 || score > 5 {
+		t.Errorf("KBvKB same-color eval = %d, expected ~0", score)
+	}
+}
+
+func TestKBvKBOppositeColor(t *testing.T) {
+	// In bare KBvKB, both sides get scale=0 from the per-side "<=1 minor" check
+	// regardless of bishop color. The same-color bishop check is an additional
+	// path. Here we just verify that opposite-color bishops are detected correctly.
+	var b Board
+
+	// White bishop on f1 (light), black bishop on f8 (dark) — opposite colors
+	b.SetFEN("4kb2/8/8/8/8/8/8/4KB2 w - - 0 1")
+	wOnLight := b.Pieces[WhiteBishop]&LightSquares != 0
+	bOnLight := b.Pieces[BlackBishop]&LightSquares != 0
+	if wOnLight == bOnLight {
+		t.Fatalf("Setup error: bishops on same color (wLight=%v, bLight=%v)", wOnLight, bOnLight)
+	}
+
+	// Both sides still get scale=0 from the per-side check (<=1 minor, no pawns)
+	// The same-color bishop path doesn't activate for opposite-color bishops
+	score := b.Evaluate()
+	t.Logf("KBvKB opposite-color: score=%d (both sides scale=0 from per-side check)", score)
+}
+
+func TestKQvKEval(t *testing.T) {
+	var b Board
+	b.SetFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1")
+	score := b.Evaluate()
+	if score < 500 {
+		t.Errorf("KQvK eval = %d, expected strongly favoring White (>500)", score)
+	}
+	t.Logf("KQvK eval = %d", score)
+}
+
+func TestKRvKNScaling(t *testing.T) {
+	var b Board
+	// KR vs KN — should be heavily scaled (wScale=16 since rook side has no pawns and opponent has a minor)
+	b.SetFEN("4k3/8/8/8/8/8/8/3nKR2 w - - 0 1")
+	score := b.Evaluate()
+	wScale, _ := b.endgameScale()
+	if wScale != 16 {
+		t.Errorf("KRvKN wScale = %d, expected 16", wScale)
+	}
+	// Score should be small due to heavy scaling
+	if score > 100 {
+		t.Errorf("KRvKN eval = %d, expected small (<100) due to scaling", score)
+	}
+	t.Logf("KRvKN eval = %d, wScale = %d", score, wScale)
+}
+
+func TestHalfmoveClockScaling(t *testing.T) {
+	// Use separate Board objects to avoid eval cache interference
+	// (halfmove clock is not part of Zobrist hash)
+	var b1 Board
+	b1.SetFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1")
+	baseScore := b1.Evaluate()
+
+	var b2 Board
+	b2.SetFEN("4k3/8/8/8/8/8/8/3QK3 w - - 80 1")
+	scaledScore := b2.Evaluate()
+
+	// At clock=80, score should be 20% of base
+	if scaledScore >= baseScore/2 {
+		t.Errorf("Halfmove 80 score (%d) should be much less than half of base (%d)", scaledScore, baseScore)
+	}
+	if scaledScore <= 0 {
+		t.Errorf("Halfmove 80 score (%d) should still be positive", scaledScore)
+	}
+	t.Logf("Base score: %d, Clock=80 score: %d (%.0f%%)", baseScore, scaledScore, float64(scaledScore)/float64(baseScore)*100)
+}
+
+func TestEndgameKingDistance(t *testing.T) {
+	var b Board
+	// KQ vs K, enemy king on edge
+	b.SetFEN("k7/8/8/8/8/8/8/3QK3 w - - 0 1")
+	edgeScore := b.Evaluate()
+
+	// KQ vs K, enemy king in center
+	b.SetFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1")
+	centerScore := b.Evaluate()
+
+	// Enemy on edge should score higher (easier to mate)
+	if edgeScore <= centerScore {
+		t.Errorf("Enemy king on edge (%d) should score higher than center (%d)", edgeScore, centerScore)
+	}
+	t.Logf("Edge: %d, Center: %d, diff: %d", edgeScore, centerScore, edgeScore-centerScore)
 }

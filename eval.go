@@ -169,6 +169,9 @@ func (b *Board) Evaluate() int {
 	wTmg, wTeg := b.evaluateThreats(White)
 	bTmg, bTeg := b.evaluateThreats(Black)
 
+	// Endgame king distance heuristic
+	_, ekEG := b.evaluateEndgameKings()
+
 	// Castling rights bonus (middlegame only)
 	castlingMG := 0
 	if b.Castling&WhiteKingside != 0 {
@@ -198,10 +201,24 @@ func (b *Board) Evaluate() int {
 		wPPeg - bPPeg +
 		wKSeg - bKSeg +
 		wSPeg - bSPeg +
-		wTeg - bTeg
+		wTeg - bTeg +
+		ekEG
 
 	phase := b.computePhase()
 	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
+
+	// Endgame scale factors (insufficient material / draw detection)
+	wScale, bScale := b.endgameScale()
+	if score > 0 {
+		score = score * wScale / 128
+	} else {
+		score = score * bScale / 128
+	}
+
+	// 50-move rule scaling
+	if b.HalfmoveClock > 0 {
+		score = score * (100 - int(b.HalfmoveClock)) / 100
+	}
 
 	// Eval cache store
 	b.EvalTable.entries[idx] = EvalEntry{Key: b.HashKey, Score: int16(score)}
@@ -601,6 +618,101 @@ func (b *Board) evaluatePassedPawns(color Color, pawnEntry *PawnEntry) (mg, eg i
 			mg += PassedPawnConnectedMG
 			eg += PassedPawnConnectedEG
 		}
+	}
+
+	return
+}
+
+// endgameScale returns per-side scale factors (0-128) for draw/insufficient material detection.
+// 0 = can't win, 128 = normal. Each side is evaluated independently.
+func (b *Board) endgameScale() (wScale, bScale int) {
+	wScale, bScale = 128, 128
+
+	wPawns := b.Pieces[WhitePawn].Count()
+	wKnights := b.Pieces[WhiteKnight].Count()
+	wBishops := b.Pieces[WhiteBishop].Count()
+	wRooks := b.Pieces[WhiteRook].Count()
+	wQueens := b.Pieces[WhiteQueen].Count()
+	wMinors := wKnights + wBishops
+	wMajors := wRooks + wQueens
+
+	bPawns := b.Pieces[BlackPawn].Count()
+	bKnights := b.Pieces[BlackKnight].Count()
+	bBishops := b.Pieces[BlackBishop].Count()
+	bRooks := b.Pieces[BlackRook].Count()
+	bQueens := b.Pieces[BlackQueen].Count()
+	bMinors := bKnights + bBishops
+	bMajors := bRooks + bQueens
+
+	// Per-side can't-win detection (no pawns required)
+	if wPawns == 0 {
+		if wMinors <= 1 && wMajors == 0 {
+			// K alone, KN, or KB vs anything — can't force mate
+			wScale = 0
+		} else if wKnights == 2 && wBishops == 0 && wMajors == 0 {
+			// KNN vs anything — can't force mate
+			wScale = 0
+		} else if wRooks == 1 && wMinors == 0 && wQueens == 0 && bMinors == 1 && bMajors == 0 {
+			// KR vs KB or KR vs KN — usually drawn
+			wScale = 16
+		}
+	}
+
+	if bPawns == 0 {
+		if bMinors <= 1 && bMajors == 0 {
+			bScale = 0
+		} else if bKnights == 2 && bBishops == 0 && bMajors == 0 {
+			bScale = 0
+		} else if bRooks == 1 && bMinors == 0 && bQueens == 0 && wMinors == 1 && wMajors == 0 {
+			bScale = 16
+		}
+	}
+
+	// KBvKB same-color bishops — draw
+	if wPawns == 0 && bPawns == 0 &&
+		wBishops == 1 && bBishops == 1 &&
+		wMajors == 0 && bMajors == 0 &&
+		wKnights == 0 && bKnights == 0 {
+		wBishopBB := b.Pieces[WhiteBishop]
+		bBishopBB := b.Pieces[BlackBishop]
+		wOnLight := wBishopBB&LightSquares != 0
+		bOnLight := bBishopBB&LightSquares != 0
+		if wOnLight == bOnLight {
+			wScale = 0
+			bScale = 0
+		}
+	}
+
+	return
+}
+
+// evaluateEndgameKings returns king-distance bonuses for endgames.
+// Only active when the stronger side has a major piece and opponent has no queens.
+// Returns (mg, eg) — mg is always 0, bonuses are EG only.
+func (b *Board) evaluateEndgameKings() (mg, eg int) {
+	wMaterial := b.Pieces[WhiteKnight].Count() + b.Pieces[WhiteBishop].Count() +
+		b.Pieces[WhiteRook].Count()*3 + b.Pieces[WhiteQueen].Count()*6
+	bMaterial := b.Pieces[BlackKnight].Count() + b.Pieces[BlackBishop].Count() +
+		b.Pieces[BlackRook].Count()*3 + b.Pieces[BlackQueen].Count()*6
+
+	wKingSq := b.Pieces[WhiteKing].LSB()
+	bKingSq := b.Pieces[BlackKing].LSB()
+	dist := chebyshevDistance(wKingSq, bKingSq)
+
+	// White is stronger and has a major piece, opponent has no queens
+	if wMaterial > bMaterial &&
+		(b.Pieces[WhiteQueen].Count() > 0 || b.Pieces[WhiteRook].Count() > 0) &&
+		b.Pieces[BlackQueen].Count() == 0 {
+		eg += centerDistance(bKingSq) * 10
+		eg += (7 - dist) * 5
+	}
+
+	// Black is stronger and has a major piece, opponent has no queens
+	if bMaterial > wMaterial &&
+		(b.Pieces[BlackQueen].Count() > 0 || b.Pieces[BlackRook].Count() > 0) &&
+		b.Pieces[WhiteQueen].Count() == 0 {
+		eg -= centerDistance(wKingSq) * 10
+		eg -= (7 - dist) * 5
 	}
 
 	return

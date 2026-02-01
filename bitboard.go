@@ -26,6 +26,10 @@ const (
 	Rank7 Bitboard = 0x00FF000000000000
 	Rank8 Bitboard = 0xFF00000000000000
 
+	// Square color masks (for bishop color detection)
+	LightSquares Bitboard = 0x55AA55AA55AA55AA
+	DarkSquares  Bitboard = 0xAA55AA55AA55AA55
+
 	// Useful combinations
 	NotFileA Bitboard = ^FileA
 	NotFileH Bitboard = ^FileH
