@@ -61,10 +61,10 @@ var (
 	RookBehindPassedEG = 25
 
 	// King attack weights per attacked square in king zone (MG only)
-	KnightKingAttack = 2
-	BishopKingAttack = 2
-	RookKingAttack   = 3
-	QueenKingAttack  = 5
+	KnightKingAttack = 3
+	BishopKingAttack = 3
+	RookKingAttack   = 4
+	QueenKingAttack  = 6
 
 	// Castling rights bonus (MG only, per retained right)
 	CastlingRightsMG = 10
@@ -275,7 +275,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 	// King attack tracking
 	enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
-	kingZone := KingAttacks[enemyKingSq]
+	kingZone := KingAttacks[enemyKingSq] | SquareBB(enemyKingSq)
 	var attackerCount, attackWeight int
 
 	// Precompute friendly pawn attacks for outpost support detection
@@ -476,7 +476,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 	// King attack penalty (quadratic scaling, MG only)
 	if attackerCount >= 2 {
-		mg += attackWeight * attackWeight / 4
+		mg += attackWeight * attackWeight / 3
 	}
 
 	return
