@@ -1,6 +1,7 @@
 package chess
 
 import (
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -38,25 +39,21 @@ var lmpThreshold = [9]int{0, 5, 8, 12, 18, 25, 34, 44, 56}
 var lmrTable [64][64]int
 
 func init() {
-	// Initialize LMR table using logarithmic formula
-	// Conservative approach - cap at reasonable reductions
+	// Initialize LMR table using logarithmic formula:
+	//   reduction = ln(depth) * ln(moveNum) / C
+	// C controls aggressiveness: lower = more reduction.
+	// 2.0 is a moderate value (Stockfish uses ~2.25 with additional adjustments).
+	const C = 2.0
 	for depth := 1; depth < 64; depth++ {
 		for moveNum := 1; moveNum < 64; moveNum++ {
 			if depth >= 3 && moveNum >= 3 {
-				// Base reduction of 1 for late moves
-				reduction := 1
-
-				// Increase reduction for very late moves at higher depths
-				if depth >= 6 && moveNum >= 10 {
-					reduction = 2
+				reduction := int(math.Log(float64(depth)) * math.Log(float64(moveNum)) / C)
+				if reduction < 1 {
+					reduction = 1
 				}
-
 				// Cap reduction to leave at least depth 1
 				if reduction > depth-2 {
 					reduction = depth - 2
-				}
-				if reduction < 0 {
-					reduction = 0
 				}
 				lmrTable[depth][moveNum] = reduction
 			}
@@ -457,6 +454,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	bestScore := -Infinity
 	moveCount := 0
 
+	// Track quiet moves searched before beta cutoff for history penalty
+	var quietsTried [64]Move
+	quietsCount := 0
+
 	for {
 		move := picker.Next()
 		if move == NoMove {
@@ -558,6 +559,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 		var score int
 
+		// Track quiet moves for history penalty on beta cutoff
+		if !isCap && !move.IsPromotion() && quietsCount < len(quietsTried) {
+			quietsTried[quietsCount] = move
+			quietsCount++
+		}
+
 		// Late Move Reductions (LMR) + Principal Variation Search (PVS)
 		isKiller := move == killers[0] || move == killers[1]
 		hasHighHistory := info.History[move.From()][move.To()] > 1000
@@ -625,8 +632,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				if alpha >= beta {
 					// Beta cutoff - update killer moves, history, and counter-move for quiet moves
 					if !isCap {
+						bonus := int32(depth * depth)
 						info.storeKiller(ply, move)
-						info.History[move.From()][move.To()] += int32(depth * depth)
+						info.History[move.From()][move.To()] += bonus
+
+						// Penalize all quiet moves tried before the cutoff move
+						for i := 0; i < quietsCount-1; i++ {
+							q := quietsTried[i]
+							info.History[q.From()][q.To()] -= bonus
+						}
 
 						// Store counter-move
 						if len(b.UndoStack) > 0 {
