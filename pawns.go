@@ -16,6 +16,13 @@ type PawnEntry struct {
 type PawnTable struct {
 	entries []PawnEntry
 	mask    uint64
+	probes  uint64
+	hits    uint64
+}
+
+// Stats returns probe and hit counts for the pawn hash table.
+func (pt *PawnTable) Stats() (probes, hits uint64) {
+	return pt.probes, pt.hits
 }
 
 // NewPawnTable creates a new pawn hash table with the given size in MB.
@@ -37,8 +44,10 @@ func NewPawnTable(sizeMB int) *PawnTable {
 
 // Probe looks up a pawn hash entry.
 func (pt *PawnTable) Probe(key uint64) (PawnEntry, bool) {
+	pt.probes++
 	entry := pt.entries[key&pt.mask]
 	if entry.Key == key {
+		pt.hits++
 		return entry, true
 	}
 	return PawnEntry{}, false

@@ -113,56 +113,155 @@ type EPDTestResult struct {
 	SearchInfo  SearchInfo
 	Passed      bool
 	TimeTaken   time.Duration
+	SolveDepth  int           // depth where correct move was first stably found (0 = never solved)
+	SolveTime   time.Duration // elapsed time at that depth
+
+	// Hash table stats (probes, hits)
+	TTProbes, TTHits     uint64
+	EvalProbes, EvalHits uint64
+	PawnProbes, PawnHits uint64
 }
 
-// RunEPDTest runs search on an EPD position and checks if it finds a best move
+// RunEPDTest runs search on an EPD position and checks if it finds a best move.
+// It also tracks solve time: the earliest point where the engine found the correct
+// move and never switched away.
 func RunEPDTest(epd *EPDPosition, depth int, maxTime time.Duration, tt *TranspositionTable) (*EPDTestResult, error) {
+	return RunEPDTestWithInfo(epd, depth, maxTime, tt, nil)
+}
+
+// RunEPDTestWithInfo is like RunEPDTest but accepts an optional SearchInfo for
+// caller-provided callbacks. If info is nil, a default is created. The caller's
+// OnDepth callback (if set) is invoked after solve tracking for each depth.
+func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *TranspositionTable, info *SearchInfo) (*EPDTestResult, error) {
 	var b Board
-	// EPD only has 4 fields, add defaults for halfmove and fullmove
 	fullFEN := epd.FEN + " 0 1"
 	if err := b.SetFEN(fullFEN); err != nil {
 		return nil, fmt.Errorf("invalid FEN: %w", err)
 	}
 
+	// Parse expected best moves from SAN into Move values
+	var expectedMoves []Move
+	for _, bm := range epd.BestMoves {
+		m, err := b.ParseSAN(bm)
+		if err == nil {
+			expectedMoves = append(expectedMoves, m)
+		}
+	}
+
+	// Parse avoid moves
+	var avoidMoves []Move
+	for _, am := range epd.AvoidMoves {
+		m, err := b.ParseSAN(am)
+		if err == nil {
+			avoidMoves = append(avoidMoves, m)
+		}
+	}
+
+	// Track best move and elapsed time at each depth for solve time computation
+	type depthRecord struct {
+		move    Move
+		elapsed time.Duration
+	}
+	var records []depthRecord
+
 	start := time.Now()
-	bestMove, info := b.SearchWithTT(depth, maxTime, tt)
+
+	if info == nil {
+		info = &SearchInfo{}
+	}
+	info.StartTime = start
+	info.MaxTime = maxTime
+	info.TT = tt
+
+	// Wrap caller's OnDepth callback
+	callerOnDepth := info.OnDepth
+	info.OnDepth = func(d, score int, nodes uint64, pv []Move) {
+		pvMove := NoMove
+		if len(pv) > 0 {
+			pvMove = pv[0]
+		}
+		records = append(records, depthRecord{move: pvMove, elapsed: time.Since(start)})
+		if callerOnDepth != nil {
+			callerOnDepth(d, score, nodes, pv)
+		}
+	}
+
+	bestMove, searchInfo := b.SearchWithInfo(depth, info)
 	elapsed := time.Since(start)
 
 	result := &EPDTestResult{
 		Position:    epd,
 		BestMove:    bestMove,
 		BestMoveSAN: b.ToSAN(bestMove),
-		SearchInfo:  info,
+		SearchInfo:  searchInfo,
 		TimeTaken:   elapsed,
 	}
 
-	// Check if the found move is in the best moves list
-	for _, bm := range epd.BestMoves {
-		expectedMove, err := b.ParseSAN(bm)
-		if err != nil {
-			continue
-		}
-		if bestMove == expectedMove {
-			result.Passed = true
-			break
-		}
+	// Collect hash table stats
+	if tt != nil {
+		result.TTProbes, result.TTHits, _ = tt.Stats()
+	}
+	if b.EvalTable != nil {
+		result.EvalProbes, result.EvalHits = b.EvalTable.Stats()
+	}
+	if b.PawnTable != nil {
+		result.PawnProbes, result.PawnHits = b.PawnTable.Stats()
 	}
 
-	// Also check if the move avoids the "avoid moves"
-	if result.Passed && len(epd.AvoidMoves) > 0 {
-		for _, am := range epd.AvoidMoves {
-			avoidMove, err := b.ParseSAN(am)
-			if err != nil {
-				continue
+	// Check pass/fail
+	isCorrect := func(m Move) bool {
+		for _, em := range expectedMoves {
+			if m == em {
+				return true
 			}
-			if bestMove == avoidMove {
-				result.Passed = false
+		}
+		return false
+	}
+	isAvoided := func(m Move) bool {
+		for _, am := range avoidMoves {
+			if m == am {
+				return true
+			}
+		}
+		return false
+	}
+
+	if isCorrect(bestMove) && !isAvoided(bestMove) {
+		result.Passed = true
+	}
+
+	// Compute solve time: walk backwards from the last depth to find
+	// the earliest point where the correct move was found and held.
+	if result.Passed && len(records) > 0 {
+		solveIdx := -1
+		for i := len(records) - 1; i >= 0; i-- {
+			if isCorrect(records[i].move) && !isAvoided(records[i].move) {
+				solveIdx = i
+			} else {
 				break
 			}
+		}
+		if solveIdx >= 0 {
+			result.SolveDepth = solveIdx + 1 // depths are 1-indexed
+			result.SolveTime = records[solveIdx].elapsed
 		}
 	}
 
 	return result, nil
+}
+
+// FormatKNPS formats a node count and duration as human-readable kNPS with
+// comma-separated thousands (e.g., "1,234 kNPS").
+func FormatKNPS(nodes uint64, elapsed time.Duration) string {
+	if elapsed <= 0 {
+		return "- kNPS"
+	}
+	knps := float64(nodes) / elapsed.Seconds() / 1000
+	whole := int(knps + 0.5)
+	if whole >= 1000 {
+		return fmt.Sprintf("%d,%03d kNPS", whole/1000, whole%1000)
+	}
+	return fmt.Sprintf("%d kNPS", whole)
 }
 
 // EPDSuiteResult holds the results of running an entire EPD test suite

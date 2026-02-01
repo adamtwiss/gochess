@@ -102,6 +102,13 @@ type EvalEntry struct {
 type EvalTable struct {
 	entries []EvalEntry
 	mask    uint64
+	probes  uint64
+	hits    uint64
+}
+
+// Stats returns probe and hit counts for the eval cache.
+func (et *EvalTable) Stats() (probes, hits uint64) {
+	return et.probes, et.hits
 }
 
 // NewEvalTable creates a new eval cache with the given size in MB.
@@ -126,8 +133,10 @@ func (b *Board) Evaluate() int {
 	if b.EvalTable == nil {
 		b.EvalTable = NewEvalTable(1)
 	}
+	b.EvalTable.probes++
 	idx := b.HashKey & b.EvalTable.mask
 	if e := b.EvalTable.entries[idx]; e.Key == b.HashKey {
+		b.EvalTable.hits++
 		return int(e.Score)
 	}
 

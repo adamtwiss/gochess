@@ -26,6 +26,7 @@ type TranspositionTable struct {
 	entries []TTEntry
 	size    uint64
 	mask    uint64 // size - 1, for fast modulo
+	probes  uint64 // Stats: total probes
 	hits    uint64 // Stats: successful probes
 	writes  uint64 // Stats: entries written
 }
@@ -54,6 +55,7 @@ func (tt *TranspositionTable) Clear() {
 	for i := range tt.entries {
 		tt.entries[i] = TTEntry{}
 	}
+	tt.probes = 0
 	tt.hits = 0
 	tt.writes = 0
 }
@@ -66,6 +68,7 @@ func (tt *TranspositionTable) index(key uint64) uint64 {
 // Probe looks up a position in the table
 // Returns the entry and whether it was found
 func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
+	tt.probes++
 	entry := tt.entries[tt.index(key)]
 	if entry.Key == key && entry.Flag != TTNone {
 		tt.hits++
@@ -94,9 +97,9 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 	}
 }
 
-// Stats returns hit count and write count
-func (tt *TranspositionTable) Stats() (hits, writes uint64) {
-	return tt.hits, tt.writes
+// Stats returns probe count, hit count and write count
+func (tt *TranspositionTable) Stats() (probes, hits, writes uint64) {
+	return tt.probes, tt.hits, tt.writes
 }
 
 // Hashfull returns permill of table entries used (for UCI info)

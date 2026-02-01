@@ -76,6 +76,15 @@ func main() {
 	engine.Run()
 }
 
+// formatHitrate formats a probes/hits pair as "hits/probes (pct%)"
+func formatHitrate(probes, hits uint64) string {
+	if probes == 0 {
+		return "0/0"
+	}
+	pct := float64(hits) / float64(probes) * 100
+	return fmt.Sprintf("%d/%d (%.1f%%)", hits, probes, pct)
+}
+
 // pvToSAN converts a PV line to SAN notation by replaying moves on a board copy.
 func pvToSAN(b *chess.Board, pv []chess.Move) string {
 	var bc chess.Board = *b
@@ -153,9 +162,14 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 			if !result.Passed {
 				status = "FAIL"
 			}
-			fmt.Printf("[%s] %-12s found %-8s expected %-12s depth=%d nodes=%-10d time=%v\n",
+			solveStr := "-"
+			if result.SolveDepth > 0 {
+				solveStr = fmt.Sprintf("d%d/%v", result.SolveDepth, result.SolveTime.Round(time.Millisecond))
+			}
+			nps := chess.FormatKNPS(result.SearchInfo.Nodes, result.TimeTaken)
+			fmt.Printf("[%s] %-12s found %-8s expected %-12s depth=%-3d solve=%-14s %-14s time=%v\n",
 				status, id, result.BestMoveSAN, expected,
-				result.SearchInfo.Depth, result.SearchInfo.Nodes, result.TimeTaken.Round(time.Millisecond))
+				result.SearchInfo.Depth, solveStr, nps, result.TimeTaken.Round(time.Millisecond))
 		}
 	}
 
@@ -170,6 +184,7 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 	fmt.Printf("Passed: %d/%d (%.1f%%)\n", passed, total, pct)
 	fmt.Printf("Failed: %d\n", failed)
 	fmt.Printf("Total nodes: %d\n", totalNodes)
+	fmt.Printf("Average: %s\n", chess.FormatKNPS(totalNodes, elapsed))
 	fmt.Printf("Total time: %v\n", elapsed.Round(time.Millisecond))
 }
 
@@ -185,62 +200,31 @@ func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Durat
 	fmt.Printf("FEN: %s\n", pos.FEN)
 	fmt.Println()
 
-	start := time.Now()
-
 	info := &chess.SearchInfo{
-		StartTime: time.Now(),
-		MaxTime:   maxTime,
-		TT:        tt,
 		OnDepth: func(d, score int, nodes uint64, pv []chess.Move) {
 			pvStr := pvToSAN(&b, pv)
 			fmt.Printf("  depth %2d  score %6d  nodes %10d  pv %s\n", d, score, nodes, pvStr)
 		},
 	}
 
-	bestMove, searchInfo := b.SearchWithInfo(depth, info)
-	elapsed := time.Since(start)
+	result, err := chess.RunEPDTestWithInfo(pos, depth, maxTime, tt, info)
+	if err != nil {
+		return nil, err
+	}
 
 	// Print summary for this position
-	nps := uint64(0)
-	if elapsed > 0 {
-		nps = searchInfo.Nodes * uint64(time.Second) / uint64(elapsed)
+	nps := chess.FormatKNPS(result.SearchInfo.Nodes, result.TimeTaken)
+	solveStr := "-"
+	if result.SolveDepth > 0 {
+		solveStr = fmt.Sprintf("d%d/%v", result.SolveDepth, result.SolveTime.Round(time.Millisecond))
 	}
 	fmt.Printf("  ---\n")
-	fmt.Printf("  nodes: %d  NPS: %d  max depth: %d  time: %v\n",
-		searchInfo.Nodes, nps, searchInfo.Depth, elapsed.Round(time.Millisecond))
-
-	// Build result (same logic as RunEPDTest)
-	result := &chess.EPDTestResult{
-		Position:    pos,
-		BestMove:    bestMove,
-		BestMoveSAN: b.ToSAN(bestMove),
-		SearchInfo:  searchInfo,
-		TimeTaken:   elapsed,
-	}
-
-	for _, bm := range pos.BestMoves {
-		expectedMove, err := b.ParseSAN(bm)
-		if err != nil {
-			continue
-		}
-		if bestMove == expectedMove {
-			result.Passed = true
-			break
-		}
-	}
-
-	if result.Passed && len(pos.AvoidMoves) > 0 {
-		for _, am := range pos.AvoidMoves {
-			avoidMove, err := b.ParseSAN(am)
-			if err != nil {
-				continue
-			}
-			if bestMove == avoidMove {
-				result.Passed = false
-				break
-			}
-		}
-	}
+	fmt.Printf("  nodes: %d  %s  max depth: %d  solve: %s  time: %v\n",
+		result.SearchInfo.Nodes, nps, result.SearchInfo.Depth, solveStr, result.TimeTaken.Round(time.Millisecond))
+	fmt.Printf("  TT: %s  eval: %s  pawn: %s\n",
+		formatHitrate(result.TTProbes, result.TTHits),
+		formatHitrate(result.EvalProbes, result.EvalHits),
+		formatHitrate(result.PawnProbes, result.PawnHits))
 
 	return result, nil
 }

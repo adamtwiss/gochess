@@ -96,14 +96,14 @@ func TestSearchWithTT(t *testing.T) {
 	// First search
 	move1, info1 := b.SearchWithTT(5, 0, tt)
 
-	hits1, writes1 := tt.Stats()
+	_, hits1, writes1 := tt.Stats()
 	t.Logf("First search: move=%s, nodes=%d, TT writes=%d", move1.String(), info1.Nodes, writes1)
 
 	// Reset position and search again with same TT
 	b.Reset()
 	move2, info2 := b.SearchWithTT(5, 0, tt)
 
-	hits2, writes2 := tt.Stats()
+	_, hits2, writes2 := tt.Stats()
 	t.Logf("Second search: move=%s, nodes=%d, TT hits=%d, TT writes=%d",
 		move2.String(), info2.Nodes, hits2-hits1, writes2-writes1)
 
