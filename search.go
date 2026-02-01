@@ -328,8 +328,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 	inCheck := b.InCheck()
 
 	// Null-move pruning
-	// Skip if: in check, at root, or depth too shallow
-	if depth >= 3 && !inCheck && ply > 0 {
+	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
+	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
+	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 {
 		R := 2 // Reduction factor
 		if depth > 6 {
 			R = 3
