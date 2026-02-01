@@ -421,7 +421,11 @@ func (b *Board) GenerateLegalMoves() []Move {
 
 // GenerateCaptures returns all pseudo-legal capture moves (including promotions)
 func (b *Board) GenerateCaptures() []Move {
-	moves := make([]Move, 0, 32)
+	return b.GenerateCapturesAppend(make([]Move, 0, 32))
+}
+
+// GenerateCapturesAppend appends pseudo-legal captures to the provided slice
+func (b *Board) GenerateCapturesAppend(moves []Move) []Move {
 	us := b.SideToMove
 	them := 1 - us
 	theirPieces := b.Occupied[them]
@@ -602,7 +606,11 @@ func (b *Board) GenerateCaptures() []Move {
 
 // GenerateQuiets returns all pseudo-legal quiet moves (non-captures, non-promotions)
 func (b *Board) GenerateQuiets() []Move {
-	moves := make([]Move, 0, 32)
+	return b.GenerateQuietsAppend(make([]Move, 0, 32))
+}
+
+// GenerateQuietsAppend appends pseudo-legal quiet moves to the provided slice
+func (b *Board) GenerateQuietsAppend(moves []Move) []Move {
 	us := b.SideToMove
 	empty := ^b.AllPieces
 

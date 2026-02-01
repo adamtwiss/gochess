@@ -16,6 +16,8 @@ type MovePicker struct {
 	stage       int
 	moves       []Move
 	scores      []int
+	badMoves    []Move // saved bad captures from first pass
+	badScores   []int
 	index       int
 	ply         int
 	skipQuiet   bool // For quiescence search
@@ -37,27 +39,47 @@ const (
 
 // NewMovePicker creates a new move picker for the main search
 func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int, counterMove Move) *MovePicker {
-	return &MovePicker{
-		board:       b,
-		ttMove:      ttMove,
-		killers:     killers,
-		counterMove: counterMove,
-		history:     history,
-		ply:         ply,
-		stage:       stageTTMove,
-		moves:       make([]Move, 0, 64),
-		scores:      make([]int, 0, 64),
-	}
+	mp := &MovePicker{}
+	mp.Init(b, ttMove, ply, killers, history, counterMove)
+	return mp
 }
 
 // NewMovePickerQuiescence creates a move picker for quiescence search (captures only)
 func NewMovePickerQuiescence(b *Board) *MovePicker {
-	return &MovePicker{
-		board:     b,
-		stage:     stageGenerateCaptures,
-		moves:     make([]Move, 0, 32),
-		scores:    make([]int, 0, 32),
-		skipQuiet: true,
+	mp := &MovePicker{}
+	mp.InitQuiescence(b)
+	return mp
+}
+
+// Init resets a MovePicker for reuse, avoiding heap allocations on subsequent calls
+func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int, counterMove Move) {
+	mp.board = b
+	mp.ttMove = ttMove
+	mp.killers = killers
+	mp.counterMove = counterMove
+	mp.history = history
+	mp.ply = ply
+	mp.stage = stageTTMove
+	mp.index = 0
+	mp.skipQuiet = false
+	if mp.moves == nil {
+		mp.moves = make([]Move, 0, 64)
+		mp.scores = make([]int, 0, 64)
+		mp.badMoves = make([]Move, 0, 16)
+		mp.badScores = make([]int, 0, 16)
+	}
+}
+
+// InitQuiescence resets a MovePicker for quiescence search reuse
+func (mp *MovePicker) InitQuiescence(b *Board) {
+	mp.board = b
+	mp.ttMove = NoMove
+	mp.stage = stageGenerateCaptures
+	mp.index = 0
+	mp.skipQuiet = true
+	if mp.moves == nil {
+		mp.moves = make([]Move, 0, 32)
+		mp.scores = make([]int, 0, 32)
 	}
 }
 
@@ -85,15 +107,7 @@ func (mp *MovePicker) Next() Move {
 				if move == mp.ttMove {
 					continue // Already tried
 				}
-				// Only return good captures here (SEE >= 0)
-				// Score is at mp.index-1 since pickBest incremented it
-				scoreIdx := mp.index - 1
-				if scoreIdx >= 0 && mp.scores[scoreIdx] >= 0 {
-					return move
-				}
-				// Put this back for bad captures stage
-				mp.index--
-				break
+				return move
 			}
 			if mp.skipQuiet {
 				mp.stage = stageBadCaptures
@@ -160,61 +174,50 @@ func (mp *MovePicker) Next() Move {
 	}
 }
 
-// generateAndScoreCaptures generates all captures and scores them
+// generateAndScoreCaptures generates all captures, partitions into good and bad
 func (mp *MovePicker) generateAndScoreCaptures() {
-	captures := mp.board.GenerateCaptures()
-	mp.moves = mp.moves[:0]
+	mp.moves = mp.board.GenerateCapturesAppend(mp.moves[:0])
 	mp.scores = mp.scores[:0]
+	mp.badMoves = mp.badMoves[:0]
+	mp.badScores = mp.badScores[:0]
 
-	for _, m := range captures {
-		mp.moves = append(mp.moves, m)
-		// Score by MVV-LVA for initial ordering, SEE for good/bad classification
-		score := mp.mvvLva(m)
-		// Adjust by SEE: good captures get positive boost, bad get negative
+	// Partition: good captures stay in mp.moves, bad go to mp.badMoves
+	j := 0
+	for i := 0; i < len(mp.moves); i++ {
+		m := mp.moves[i]
 		see := mp.board.SEE(m)
 		if see < 0 {
-			score = see - 10000 // Bad captures go to end
+			mp.badMoves = append(mp.badMoves, m)
+			mp.badScores = append(mp.badScores, see)
+		} else {
+			mp.moves[j] = m
+			mp.scores = append(mp.scores, mp.mvvLva(m))
+			j++
 		}
-		mp.scores = append(mp.scores, score)
 	}
-
-	// Store count of captures for bad capture restoration
+	mp.moves = mp.moves[:j]
 	mp.index = 0
 }
 
 // generateAndScoreQuiets generates quiet moves and scores by history
 func (mp *MovePicker) generateAndScoreQuiets() {
-	quiets := mp.board.GenerateQuiets()
-
-	// Reset for quiet moves
-	mp.moves = mp.moves[:0]
+	mp.moves = mp.board.GenerateQuietsAppend(mp.moves[:0])
 	mp.scores = mp.scores[:0]
 
-	for _, m := range quiets {
-		mp.moves = append(mp.moves, m)
-		// Score by history heuristic
+	for i := 0; i < len(mp.moves); i++ {
 		score := 0
 		if mp.history != nil {
-			score = mp.history[m.From()][m.To()]
+			score = mp.history[mp.moves[i].From()][mp.moves[i].To()]
 		}
 		mp.scores = append(mp.scores, score)
 	}
 	mp.index = 0
 }
 
-// restoreBadCaptures reloads bad captures for final stage
+// restoreBadCaptures swaps in the saved bad captures from the first pass
 func (mp *MovePicker) restoreBadCaptures() {
-	captures := mp.board.GenerateCaptures()
-	mp.moves = mp.moves[:0]
-	mp.scores = mp.scores[:0]
-
-	for _, m := range captures {
-		see := mp.board.SEE(m)
-		if see < 0 {
-			mp.moves = append(mp.moves, m)
-			mp.scores = append(mp.scores, see)
-		}
-	}
+	mp.moves = append(mp.moves[:0], mp.badMoves...)
+	mp.scores = append(mp.scores[:0], mp.badScores...)
 	mp.index = 0
 }
 

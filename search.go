@@ -12,6 +12,11 @@ const (
 	// Contempt: small penalty for accepting draws (repetition, 50-move rule).
 	// Positive value means the engine prefers to play on rather than draw.
 	Contempt = 10
+
+	// MaxPly is the maximum search depth (for pre-allocated arrays)
+	MaxPly = 64
+	// MaxQSDepth is the maximum quiescence search depth
+	MaxQSDepth = 32
 )
 
 // LMREnabled controls whether Late Move Reductions are used
@@ -102,6 +107,11 @@ type SearchInfo struct {
 	// OnDepth is called after each completed iteration of iterative deepening.
 	// Parameters: depth, score, cumulative nodes, PV for this depth.
 	OnDepth func(depth, score int, nodes uint64, pv []Move)
+
+	// Pre-allocated search structures (avoid per-node heap allocations)
+	pickers [MaxPly + MaxQSDepth]MovePicker
+	pvTable [MaxPly + 1][MaxPly + 1]Move
+	pvLen   [MaxPly + 1]int
 }
 
 // storeKiller stores a killer move at the given ply
@@ -170,7 +180,6 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 	}
 
 	var bestMove Move
-	var pv []Move
 	prevScore := 0
 
 	// Iterative deepening with aspiration windows
@@ -185,8 +194,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			delta := 25
 			alpha, beta := prevScore-delta, prevScore+delta
 			for {
-				pv = pv[:0]
-				score = b.negamax(depth, 0, alpha, beta, info, &pv)
+				score = b.negamax(depth, 0, alpha, beta, info)
 				if atomic.LoadInt32(&info.Stopped) != 0 {
 					break
 				}
@@ -203,8 +211,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 				break // score within window
 			}
 		} else {
-			pv = pv[:0]
-			score = b.negamax(depth, 0, -Infinity, Infinity, info, &pv)
+			score = b.negamax(depth, 0, -Infinity, Infinity, info)
 		}
 
 		// Check if we ran out of time mid-search
@@ -215,10 +222,10 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		// Save results from this iteration
 		prevScore = score
 		info.Score = score
-		if len(pv) > 0 {
-			bestMove = pv[0]
-			info.PV = make([]Move, len(pv))
-			copy(info.PV, pv)
+		if info.pvLen[0] > 0 {
+			bestMove = info.pvTable[0][0]
+			info.PV = make([]Move, info.pvLen[0])
+			copy(info.PV, info.pvTable[0][:info.pvLen[0]])
 		}
 
 		if info.OnDepth != nil {
@@ -253,9 +260,9 @@ func widenDelta(delta int) int {
 
 // negamax performs alpha-beta search from the current position
 // ply is the distance from root (for mate score adjustment)
-func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[]Move) int {
+func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Guard against stack overflow (Go has limited goroutine stack)
-	if ply >= 64 {
+	if ply >= MaxPly {
 		return b.EvaluateRelative()
 	}
 
@@ -305,7 +312,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 			switch entry.Flag {
 			case TTExact:
-				*pv = []Move{ttMove}
+				info.pvTable[ply][0] = ttMove
+				info.pvLen[ply] = 1
 				return score
 			case TTLower:
 				if score > alpha {
@@ -318,7 +326,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 			}
 
 			if alpha >= beta {
-				*pv = []Move{ttMove}
+				info.pvTable[ply][0] = ttMove
+				info.pvLen[ply] = 1
 				return score
 			}
 		}
@@ -341,8 +350,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		}
 
 		b.MakeNullMove()
-		var nullPV []Move
-		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info, &nullPV)
+		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info)
 		b.UnmakeNullMove()
 
 		if atomic.LoadInt32(&info.Stopped) != 0 {
@@ -386,18 +394,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		}
 	}
 
-	// Prefer TT move, fall back to PV move
-	pvMove := ttMove
-	if pvMove == NoMove && len(*pv) > 0 {
-		pvMove = (*pv)[0]
-	}
-
-	// Use MovePicker for staged move generation
-	picker := NewMovePicker(b, pvMove, ply, killers, &info.History, counterMove)
-
 	// Clear PV for this node
-	localPV := make([]Move, 0, depth)
-	*pv = (*pv)[:0]
+	info.pvLen[ply] = 0
+
+	// Use MovePicker for staged move generation (reuse pre-allocated picker)
+	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove)
+	picker := &info.pickers[ply]
 
 	bestMove := NoMove
 	bestScore := -Infinity
@@ -450,8 +452,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 				singularDepth := (depth - 1) / 2
 
 				info.ExcludedMove[ply] = ttMove
-				var singularPV []Move
-				singularScore := b.negamax(singularDepth, ply, singularBeta-1, singularBeta, info, &singularPV)
+				singularScore := b.negamax(singularDepth, ply, singularBeta-1, singularBeta, info)
 				info.ExcludedMove[ply] = NoMove
 
 				if atomic.LoadInt32(&info.Stopped) != 0 {
@@ -503,7 +504,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		}
 		newDepth := depth - 1 + extension
 
-		childPV := make([]Move, 0, depth-1)
 		var score int
 
 		// Late Move Reductions (LMR) + Principal Variation Search (PVS)
@@ -526,33 +526,30 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 			info.LMRAttempts++
 
 			// LMR: reduced depth, zero window
-			score = -b.negamax(newDepth-reduction, ply+1, -alpha-1, -alpha, info, &childPV)
+			score = -b.negamax(newDepth-reduction, ply+1, -alpha-1, -alpha, info)
 
 			if score > alpha && atomic.LoadInt32(&info.Stopped) == 0 {
 				// LMR failed high → re-search full depth, zero window (PVS)
 				info.LMRReSearches++
-				childPV = childPV[:0]
-				score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info, &childPV)
+				score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info)
 			} else {
 				info.LMRSavings++
 			}
 
 			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
 				// PVS failed high → full window re-search
-				childPV = childPV[:0]
-				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
+				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
 			}
 		} else if moveCount > 1 {
 			// PVS: zero-window for non-first moves
-			score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info, &childPV)
+			score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info)
 			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
 				// Failed high → full window re-search
-				childPV = childPV[:0]
-				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
+				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
 			}
 		} else {
 			// First move: always full window
-			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info, &childPV)
+			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
 		}
 
 		b.UnmakeMove(move)
@@ -568,11 +565,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 			if score > alpha {
 				alpha = score
 
-				// Update PV
-				localPV = localPV[:0]
-				localPV = append(localPV, move)
-				localPV = append(localPV, childPV...)
-				*pv = localPV
+				// Update PV using triangular table
+				info.pvTable[ply][0] = move
+				copy(info.pvTable[ply][1:], info.pvTable[ply+1][:info.pvLen[ply+1]])
+				info.pvLen[ply] = 1 + info.pvLen[ply+1]
 
 				if alpha >= beta {
 					// Beta cutoff - update killer moves, history, and counter-move for quiet moves
@@ -662,8 +658,10 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		alpha = standPat
 	}
 
-	// Use MovePicker for captures only
-	picker := NewMovePickerQuiescence(b)
+	// Use MovePicker for captures only (reuse pre-allocated picker)
+	qsIdx := MaxPly + qsDepth
+	info.pickers[qsIdx].InitQuiescence(b)
+	picker := &info.pickers[qsIdx]
 
 	for {
 		move := picker.Next()
