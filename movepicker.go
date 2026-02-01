@@ -12,7 +12,7 @@ type MovePicker struct {
 	ttMove      Move
 	killers     [2]Move
 	counterMove Move
-	history     *[64][64]int
+	history     *[64][64]int32
 	stage       int
 	moves       []Move
 	scores      []int
@@ -38,7 +38,7 @@ const (
 )
 
 // NewMovePicker creates a new move picker for the main search
-func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int, counterMove Move) *MovePicker {
+func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move) *MovePicker {
 	mp := &MovePicker{}
 	mp.Init(b, ttMove, ply, killers, history, counterMove)
 	return mp
@@ -52,7 +52,7 @@ func NewMovePickerQuiescence(b *Board) *MovePicker {
 }
 
 // Init resets a MovePicker for reuse, avoiding heap allocations on subsequent calls
-func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int, counterMove Move) {
+func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move) {
 	mp.board = b
 	mp.ttMove = ttMove
 	mp.killers = killers
@@ -207,7 +207,7 @@ func (mp *MovePicker) generateAndScoreQuiets() {
 	for i := 0; i < len(mp.moves); i++ {
 		score := 0
 		if mp.history != nil {
-			score = mp.history[mp.moves[i].From()][mp.moves[i].To()]
+			score = int(mp.history[mp.moves[i].From()][mp.moves[i].To()])
 		}
 		mp.scores = append(mp.scores, score)
 	}

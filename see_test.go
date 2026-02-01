@@ -162,7 +162,7 @@ func TestMovePickerBasic(t *testing.T) {
 	b.SetFEN("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
 
 	var killers [2]Move
-	var history [64][64]int
+	var history [64][64]int32
 
 	picker := NewMovePicker(&b, NoMove, 0, killers, &history, NoMove)
 
@@ -194,7 +194,7 @@ func TestMovePickerTTMoveFirst(t *testing.T) {
 	ttMove := NewMove(NewSquare(2, 3), NewSquare(5, 6)) // Bxf7
 
 	var killers [2]Move
-	var history [64][64]int
+	var history [64][64]int32
 
 	picker := NewMovePicker(&b, ttMove, 0, killers, &history, NoMove)
 
@@ -221,7 +221,7 @@ func BenchmarkMovePicker(b *testing.B) {
 	board.SetFEN("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
 
 	var killers [2]Move
-	var history [64][64]int
+	var history [64][64]int32
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

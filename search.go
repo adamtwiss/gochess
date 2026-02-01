@@ -83,8 +83,9 @@ type SearchInfo struct {
 	// Killer moves: 2 slots per ply, max 64 ply
 	Killers [64][2]Move
 
-	// History table: indexed by [from][to], stores cutoff counts
-	History [64][64]int
+	// History table: indexed by [from][to], stores cutoff counts.
+	// int32 keeps the table at 16KB (fits in L1 cache) vs 32KB with int.
+	History [64][64]int32
 
 	// Counter-move heuristic: indexed by [piece][toSquare] of the previous move
 	CounterMoves [13][64]Move
@@ -575,7 +576,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					// Beta cutoff - update killer moves, history, and counter-move for quiet moves
 					if !isCap {
 						info.storeKiller(ply, move)
-						info.History[move.From()][move.To()] += depth * depth
+						info.History[move.From()][move.To()] += int32(depth * depth)
 
 						// Store counter-move
 						if len(b.UndoStack) > 0 {
