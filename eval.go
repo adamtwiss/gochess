@@ -1,15 +1,40 @@
 package chess
 
-// Mobility bonuses per safe square (MG/EG), declared as var for future tuning
+// Non-linear mobility arrays indexed by move count. Each entry is {MG, EG}.
+// Derived from Stockfish classical at ~70% scale.
 var (
-	KnightMobilityMG = 6
-	KnightMobilityEG = 5
-	BishopMobilityMG = 7
-	BishopMobilityEG = 6
-	RookMobilityMG   = 3
-	RookMobilityEG   = 4
-	QueenMobilityMG  = 2
-	QueenMobilityEG  = 2
+	// Knight: 9 entries (0-8 squares). Crossover near index 3.
+	KnightMobility = [9][2]int{
+		{-28, -24}, {-18, -17}, {-9, -9}, {0, -2},
+		{8, 5}, {17, 12}, {22, 16}, {26, 19}, {26, 19},
+	}
+
+	// Bishop: 14 entries (0-13 squares). Crossover near index 4.
+	BishopMobility = [14][2]int{
+		{-18, -22}, {-8, -12}, {2, -1}, {12, 9},
+		{22, 19}, {32, 29}, {40, 37}, {46, 43},
+		{50, 47}, {52, 49}, {54, 51}, {55, 52},
+		{56, 53}, {56, 53},
+	}
+
+	// Rook: 15 entries (0-14 squares). EG-heavy (rook activity matters in endgames).
+	RookMobility = [15][2]int{
+		{-14, -26}, {-10, -14}, {-6, -2}, {-1, 9},
+		{3, 21}, {7, 33}, {10, 44}, {13, 56},
+		{16, 67}, {18, 75}, {19, 78}, {20, 80},
+		{20, 82}, {21, 83}, {22, 83},
+	}
+
+	// Queen: 28 entries (0-27 squares). Small values — queen already worth 900cp.
+	QueenMobility = [28][2]int{
+		{-7, -13}, {-6, -9}, {-4, -5}, {-2, -1},
+		{-1, 2}, {1, 6}, {2, 9}, {4, 13},
+		{6, 16}, {7, 19}, {8, 22}, {10, 24},
+		{11, 25}, {12, 25}, {13, 25}, {14, 25},
+		{14, 25}, {14, 25}, {14, 25}, {14, 25},
+		{14, 25}, {14, 25}, {14, 25}, {14, 25},
+		{14, 25}, {14, 25}, {14, 25}, {14, 25},
+	}
 )
 
 // Piece evaluation bonuses (MG/EG)
@@ -79,15 +104,9 @@ var (
 	SpaceBonusMG = 2
 	SpaceBonusEG = 0
 
-	// Minor piece centralization (by center distance 0-3)
-	KnightCentralityMG = [4]int{8, 4, 0, -4}
-	KnightCentralityEG = [4]int{4, 2, 0, -2}
-	BishopCentralityMG = [4]int{4, 2, 0, -2}
-	BishopCentralityEG = [4]int{2, 1, 0, -1}
-
 	// Knight closed position bonus (per pawn on the board)
-	KnightClosedPositionMG = 2
-	KnightClosedPositionEG = 1
+	KnightClosedPositionMG = 1
+	KnightClosedPositionEG = 0
 
 	// Pawn threat bonuses (pawns attacking enemy pieces)
 	PawnThreatMinorMG = 15
@@ -330,18 +349,13 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		sq := knights.PopLSB()
 		attacks := KnightAttacks[sq] &^ friendly
 		count := attacks.Count()
-		mg += count * KnightMobilityMG
-		eg += count * KnightMobilityEG
+		mg += KnightMobility[count][0]
+		eg += KnightMobility[count][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
 			attackWeight += KnightKingAttack * kzAttacks.Count()
 		}
-
-		// Centralization bonus
-		cd := centerDistance(sq)
-		mg += KnightCentralityMG[cd]
-		eg += KnightCentralityEG[cd]
 
 		// Outpost: relative rank 4-6 (ranks 3-5 zero-indexed for White, 2-4 for Black)
 		rank := sq.Rank()
@@ -381,23 +395,13 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		sq := bishops.PopLSB()
 		attacks := BishopAttacksBB(sq, b.AllPieces) &^ friendly
 		count := attacks.Count()
-		// Diminishing returns: first 7 squares at full rate, excess at half
-		effective := count
-		if count > 7 {
-			effective = 7 + (count-7)/2
-		}
-		mg += effective * BishopMobilityMG
-		eg += effective * BishopMobilityEG
+		mg += BishopMobility[count][0]
+		eg += BishopMobility[count][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
 			attackWeight += BishopKingAttack * kzAttacks.Count()
 		}
-
-		// Centralization bonus
-		cd := centerDistance(sq)
-		mg += BishopCentralityMG[cd]
-		eg += BishopCentralityEG[cd]
 
 		// Open position bonus: more valuable with fewer pawns
 		missingPawns := 16 - totalPawns
@@ -433,13 +437,8 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		sq := rooks.PopLSB()
 		attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
 		count := attacks.Count()
-		// Diminishing returns: first 7 squares at full rate, excess at half
-		effective := count
-		if count > 7 {
-			effective = 7 + (count-7)/2
-		}
-		mg += effective * RookMobilityMG
-		eg += effective * RookMobilityEG
+		mg += RookMobility[count][0]
+		eg += RookMobility[count][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
@@ -522,8 +521,8 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		sq := queens.PopLSB()
 		attacks := QueenAttacksBB(sq, b.AllPieces) &^ friendly
 		count := attacks.Count()
-		mg += count * QueenMobilityMG
-		eg += count * QueenMobilityEG
+		mg += QueenMobility[count][0]
+		eg += QueenMobility[count][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
