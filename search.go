@@ -354,10 +354,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 		}
 	}
 
-	// Reverse Futility Pruning (Static Null Move Pruning)
-	// At shallow depths, if static eval is far above beta, prune
+	// Static eval for pruning decisions at shallow depths
+	staticEval := -Infinity
 	if depth <= 3 && !inCheck && ply > 0 {
-		staticEval := b.EvaluateRelative()
+		staticEval = b.EvaluateRelative()
+
+		// Reverse Futility Pruning (Static Null Move Pruning)
+		// If static eval is far above beta, prune the whole node
 		margin := depth * 120
 		if staticEval-margin >= beta {
 			return staticEval - margin
@@ -468,6 +471,17 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo, pv *[
 
 		// Check extension: extend search by 1 ply when move gives check
 		givesCheck := b.InCheck()
+
+		// Futility pruning: at shallow depths, skip quiet moves that can't raise alpha
+		if staticEval > -Infinity && depth <= 2 && !inCheck && !givesCheck &&
+			!isCap && !move.IsPromotion() &&
+			bestScore > -MateScore+100 {
+			futilityMargin := [3]int{0, 200, 400}
+			if staticEval+futilityMargin[depth] <= alpha {
+				b.UnmakeMove(move)
+				continue
+			}
+		}
 
 		// Late Move Pruning: at shallow depths, skip late quiet moves
 		// Placed after MakeMove so we can exempt check-giving moves
