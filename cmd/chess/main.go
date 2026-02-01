@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"chess"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -30,10 +31,15 @@ func main() {
 	// Book loading flag
 	bookFile := flag.String("book", "", "opening book file for UCI mode")
 
+	// Mode flags
+	forceUCI := flag.Bool("uci", false, "force UCI protocol mode (default when stdin is not a terminal)")
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  chess                                          # interactive mode\n")
+		fmt.Fprintf(os.Stderr, "  chess -uci                                     # UCI mode\n")
 		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20\n")
 		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -eco eco.pgn -bookout book.bin\n")
 		fmt.Fprintf(os.Stderr, "  chess -book book.bin\n")
@@ -63,17 +69,24 @@ func main() {
 		return
 	}
 
-	// Enter UCI mode
-	engine := chess.NewUCIEngine()
-	if *bookFile != "" {
-		book, err := chess.LoadOpeningBook(*bookFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading book: %v\n", err)
-			os.Exit(1)
+	// If forced UCI or stdin is not a terminal, use UCI mode
+	if *forceUCI || !term.IsTerminal(int(os.Stdin.Fd())) {
+		engine := chess.NewUCIEngine()
+		if *bookFile != "" {
+			book, err := chess.LoadOpeningBook(*bookFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading book: %v\n", err)
+				os.Exit(1)
+			}
+			engine.SetBook(book)
 		}
-		engine.SetBook(book)
+		engine.Run()
+		return
 	}
-	engine.Run()
+
+	// Interactive CLI mode
+	cli := chess.NewCLIEngine()
+	cli.Run()
 }
 
 // formatHitrate formats a probes/hits pair as "hits/probes (pct%)"
