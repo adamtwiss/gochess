@@ -91,11 +91,15 @@ var (
 	RookBehindPassedMG = 15
 	RookBehindPassedEG = 25
 
-	// King attack weights per attacked square in king zone (MG only)
-	KnightKingAttack = 3
-	BishopKingAttack = 3
-	RookKingAttack   = 4
-	QueenKingAttack  = 6
+	// King attack unit weights (base per attacker + bonus per king-zone square)
+	KnightAttackUnits   = 7
+	KnightKingZoneBonus = 1
+	BishopAttackUnits   = 5
+	BishopKingZoneBonus = 1
+	RookAttackUnits     = 8
+	RookKingZoneBonus   = 2
+	QueenAttackUnits    = 13
+	QueenKingZoneBonus  = 1
 
 	// Castling rights bonus (MG only, per retained right)
 	CastlingRightsMG = 10
@@ -119,6 +123,21 @@ var (
 
 // OCBScale is the endgame scale factor (out of 128) for opposite-colored bishop endings.
 var OCBScale = 64
+
+// KingSafetyTable maps accumulated attack units to centipawn penalties.
+// Superlinear growth: near-zero for low indices, rapid growth from 15-50, capped at 999.
+var KingSafetyTable = [100]int{
+	0, 0, 1, 2, 3, 5, 7, 10, 13, 16,
+	20, 24, 29, 34, 39, 45, 52, 59, 67, 75,
+	84, 93, 103, 113, 124, 136, 148, 161, 175, 189,
+	204, 220, 237, 254, 272, 291, 311, 332, 354, 377,
+	401, 426, 452, 479, 507, 536, 566, 597, 629, 662,
+	696, 731, 767, 804, 842, 881, 921, 962, 999, 999,
+	999, 999, 999, 999, 999, 999, 999, 999, 999, 999,
+	999, 999, 999, 999, 999, 999, 999, 999, 999, 999,
+	999, 999, 999, 999, 999, 999, 999, 999, 999, 999,
+	999, 999, 999, 999, 999, 999, 999, 999, 999, 999,
+}
 
 // EvalEntry is a single eval cache entry.
 type EvalEntry struct {
@@ -330,7 +349,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	// King attack tracking
 	enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
 	kingZone := KingAttacks[enemyKingSq] | SquareBB(enemyKingSq)
-	var attackerCount, attackWeight int
+	var attackerCount, attackUnits int
 
 	// Precompute friendly pawn attacks for outpost support detection
 	var friendlyPawnAttacks Bitboard
@@ -354,7 +373,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
-			attackWeight += KnightKingAttack * kzAttacks.Count()
+			attackUnits += KnightAttackUnits + KnightKingZoneBonus*kzAttacks.Count()
 		}
 
 		// Outpost: relative rank 4-6 (ranks 3-5 zero-indexed for White, 2-4 for Black)
@@ -400,7 +419,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
-			attackWeight += BishopKingAttack * kzAttacks.Count()
+			attackUnits += BishopAttackUnits + BishopKingZoneBonus*kzAttacks.Count()
 		}
 
 		// Open position bonus: more valuable with fewer pawns
@@ -442,7 +461,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
-			attackWeight += RookKingAttack * kzAttacks.Count()
+			attackUnits += RookAttackUnits + RookKingZoneBonus*kzAttacks.Count()
 		}
 
 		file := sq.File()
@@ -526,13 +545,80 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
-			attackWeight += QueenKingAttack * kzAttacks.Count()
+			attackUnits += QueenAttackUnits + QueenKingZoneBonus*kzAttacks.Count()
 		}
 	}
 
-	// King attack penalty (quadratic scaling, MG only)
+	// --- King safety: structural factors ---
+
+	// Weak squares: king-zone squares not defended by enemy pawns
+	var enemyPawnDefense Bitboard
+	if enemy == White {
+		enemyPawnDefense = enemyPawns.NorthWest() | enemyPawns.NorthEast()
+	} else {
+		enemyPawnDefense = enemyPawns.SouthWest() | enemyPawns.SouthEast()
+	}
+	weakKingZone := kingZone &^ enemyPawnDefense &^ SquareBB(enemyKingSq)
+	weakSquareCount := weakKingZone.Count()
+
+	// Open/semi-open files toward enemy king
+	enemyKingFile := enemyKingSq.File()
+	startFile := enemyKingFile - 1
+	if startFile < 0 {
+		startFile = 0
+	}
+	endFile := enemyKingFile + 1
+	if endFile > 7 {
+		endFile = 7
+	}
+
+	openFileUnits := 0
+	for f := startFile; f <= endFile; f++ {
+		if FileMasks[f]&enemyPawns == 0 {
+			openFileUnits += 3 // semi-open (no enemy pawns)
+			if FileMasks[f]&friendlyPawns == 0 {
+				openFileUnits += 2 // fully open (no pawns at all)
+			}
+		}
+	}
+
+	// Pawn shelter weakness around enemy king
+	shelterWeakness := 0
+	for f := startFile; f <= endFile; f++ {
+		filePawns := enemyPawns & FileMasks[f]
+		if filePawns == 0 {
+			shelterWeakness += 3
+		} else {
+			if enemy == White {
+				if filePawns&(Rank2|Rank3) == 0 {
+					shelterWeakness += 2
+				}
+			} else {
+				if filePawns&(Rank7|Rank6) == 0 {
+					shelterWeakness += 2
+				}
+			}
+		}
+	}
+
+	// Add structural factors when attackers are present
+	if attackerCount >= 1 {
+		attackUnits += weakSquareCount
+		attackUnits += openFileUnits
+		attackUnits += shelterWeakness
+	}
+
+	// King attack penalty via table lookup (MG only)
+	if attackUnits < 0 {
+		attackUnits = 0
+	}
+	if attackUnits >= 100 {
+		attackUnits = 99
+	}
 	if attackerCount >= 2 {
-		mg += attackWeight * attackWeight / 3
+		mg += KingSafetyTable[attackUnits]
+	} else if attackerCount == 1 && attackUnits >= 15 {
+		mg += KingSafetyTable[attackUnits] / 3
 	}
 
 	return
