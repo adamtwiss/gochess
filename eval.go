@@ -36,6 +36,12 @@ var (
 	BishopOpenPositionMG = 3
 	BishopOpenPositionEG = 3
 
+	BadBishopPawnMG = -3
+	BadBishopPawnEG = -4
+
+	DoubledRooksMG = 12
+	DoubledRooksEG = 18
+
 	// Passed pawn: not-blocked bonus scaled by relative rank
 	PassedPawnNotBlockedMG = [8]int{0, 0, 0, 5, 8, 12, 20, 0}
 	PassedPawnNotBlockedEG = [8]int{0, 5, 5, 10, 15, 25, 40, 0}
@@ -91,6 +97,9 @@ var (
 	PawnThreatQueenMG = 30
 	PawnThreatQueenEG = 20
 )
+
+// OCBScale is the endgame scale factor (out of 128) for opposite-colored bishop endings.
+var OCBScale = 64
 
 // EvalEntry is a single eval cache entry.
 type EvalEntry struct {
@@ -394,10 +403,32 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		missingPawns := 16 - totalPawns
 		mg += missingPawns * BishopOpenPositionMG
 		eg += missingPawns * BishopOpenPositionEG
+
+		// Bad bishop: penalty per friendly pawn on same square color
+		var sameColorMask Bitboard
+		if SquareBB(sq)&LightSquares != 0 {
+			sameColorMask = LightSquares
+		} else {
+			sameColorMask = DarkSquares
+		}
+		sameColorPawns := (friendlyPawns & sameColorMask).Count()
+		mg += sameColorPawns * BadBishopPawnMG
+		eg += sameColorPawns * BadBishopPawnEG
 	}
 
 	// --- Rooks ---
 	rooks := b.Pieces[pieceOf(WhiteRook, color)]
+
+	// Doubled rooks: bonus when two rooks share a file
+	if rooks.Count() >= 2 {
+		for f := 0; f < 8; f++ {
+			if (rooks & FileMasks[f]).Count() >= 2 {
+				mg += DoubledRooksMG
+				eg += DoubledRooksEG
+			}
+		}
+	}
+
 	for rooks != 0 {
 		sq := rooks.PopLSB()
 		attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
@@ -680,6 +711,23 @@ func (b *Board) endgameScale() (wScale, bScale int) {
 		if wOnLight == bOnLight {
 			wScale = 0
 			bScale = 0
+		}
+	}
+
+	// Opposite-colored bishop endgames (bishops + pawns only) — drawish
+	if wBishops == 1 && bBishops == 1 &&
+		wKnights == 0 && bKnights == 0 &&
+		wMajors == 0 && bMajors == 0 &&
+		(wPawns > 0 || bPawns > 0) {
+		wBishopBB := b.Pieces[WhiteBishop]
+		bBishopBB := b.Pieces[BlackBishop]
+		if (wBishopBB&LightSquares != 0) != (bBishopBB&LightSquares != 0) {
+			if wScale > OCBScale {
+				wScale = OCBScale
+			}
+			if bScale > OCBScale {
+				bScale = OCBScale
+			}
 		}
 	}
 

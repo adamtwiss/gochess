@@ -947,6 +947,107 @@ func TestHalfmoveClockScaling(t *testing.T) {
 	t.Logf("Base score: %d, Clock=80 score: %d (%.0f%%)", baseScore, scaledScore, float64(scaledScore)/float64(baseScore)*100)
 }
 
+func TestBadBishop(t *testing.T) {
+	var b Board
+
+	// Light-squared bishop with pawns on light squares (bad bishop)
+	// Bishop on f1 (light), pawns on e2, g2 (both light squares)
+	b.SetFEN("4k3/8/8/8/8/8/4P1P1/4KB2 w - - 0 1")
+	badScore := b.Evaluate()
+
+	// Light-squared bishop with pawns on dark squares (good bishop)
+	// Bishop on f1 (light), pawns on d2, f2 (both dark squares)
+	b.SetFEN("4k3/8/8/8/8/8/3P1P2/4KB2 w - - 0 1")
+	goodScore := b.Evaluate()
+
+	if badScore >= goodScore {
+		t.Errorf("Bad bishop (%d) should score lower than good bishop (%d)", badScore, goodScore)
+	}
+	t.Logf("Bad bishop: %d, Good bishop: %d, diff: %d", badScore, goodScore, badScore-goodScore)
+}
+
+func TestDoubledRooks(t *testing.T) {
+	var b Board
+
+	// Verify doubled rooks bonus is applied by checking endgameScale indirectly.
+	// Use positions with pawns to keep files closed and minimize other eval differences.
+	// Two rooks on the d-file (d1 and d3), pawns blocking open-file bonuses.
+	b.SetFEN("4k3/pppppppp/8/8/8/3R4/PPPPPPPP/3R1K2 w - - 0 1")
+	if b.PawnTable == nil {
+		b.PawnTable = NewPawnTable(1)
+	}
+	entry := b.probePawnEval()
+	doubledMG, doubledEG := b.evaluatePieces(White, &entry)
+
+	// Two rooks on different files (d1 and e3), same pawn structure.
+	b.SetFEN("4k3/pppppppp/8/8/8/4R3/PPPPPPPP/3R1K2 w - - 0 1")
+	entry = b.probePawnEval()
+	separateMG, separateEG := b.evaluatePieces(White, &entry)
+
+	// The doubled rooks bonus (12 MG + 18 EG = 30) should be present
+	doubledTotal := doubledMG + doubledEG
+	separateTotal := separateMG + separateEG
+	diff := doubledTotal - separateTotal
+	t.Logf("Doubled: MG=%d EG=%d total=%d, Separate: MG=%d EG=%d total=%d, diff=%d",
+		doubledMG, doubledEG, doubledTotal, separateMG, separateEG, separateTotal, diff)
+
+	// The doubled bonus is 12+18=30. Other factors may vary, but the bonus should
+	// contribute measurably. Check that the difference is within expected range.
+	if diff < DoubledRooksMG+DoubledRooksEG-15 {
+		t.Errorf("Doubled rook bonus not detected: diff=%d, expected at least %d",
+			diff, DoubledRooksMG+DoubledRooksEG-15)
+	}
+}
+
+func TestOCBDrawishness(t *testing.T) {
+	var b Board
+
+	// Opposite-colored bishops with pawns — should get OCBScale (64)
+	// White bishop on f1 (light), black bishop on c8 (light) — same color, NOT OCB
+	// White bishop on f1 (light), black bishop on f8 (dark) — opposite color, IS OCB
+	b.SetFEN("5b1k/4p3/8/8/8/8/4P3/4KB2 w - - 0 1")
+	wScale, bScale := b.endgameScale()
+	wBishopLight := b.Pieces[WhiteBishop]&LightSquares != 0
+	bBishopLight := b.Pieces[BlackBishop]&LightSquares != 0
+	if wBishopLight == bBishopLight {
+		t.Fatalf("Setup error: bishops on same color (wLight=%v, bLight=%v)", wBishopLight, bBishopLight)
+	}
+	if wScale != OCBScale || bScale != OCBScale {
+		t.Errorf("OCB with pawns: wScale=%d, bScale=%d, expected both %d", wScale, bScale, OCBScale)
+	}
+
+	// Same-colored bishops with pawns — should stay at 128
+	// White bishop on c1 (dark), black bishop on f8 (dark) — same color
+	b.SetFEN("5b1k/4p3/8/8/8/8/4P3/2B1K3 w - - 0 1")
+	wScale, bScale = b.endgameScale()
+	wBishopLight = b.Pieces[WhiteBishop]&LightSquares != 0
+	bBishopLight = b.Pieces[BlackBishop]&LightSquares != 0
+	if wBishopLight != bBishopLight {
+		t.Fatalf("Setup error: bishops on different colors (wLight=%v, bLight=%v)", wBishopLight, bBishopLight)
+	}
+	if wScale != 128 || bScale != 128 {
+		t.Errorf("Same-color bishops with pawns: wScale=%d, bScale=%d, expected both 128", wScale, bScale)
+	}
+}
+
+func TestOCBPureBishopOnly(t *testing.T) {
+	var b Board
+
+	// OCB with rooks present — should NOT trigger OCB scaling (not pure bishop endgame)
+	b.SetFEN("r4b1k/4p3/8/8/8/8/4P3/R3KB2 w - - 0 1")
+	wScale, bScale := b.endgameScale()
+	if wScale == OCBScale || bScale == OCBScale {
+		t.Errorf("OCB with rooks: wScale=%d, bScale=%d, should NOT be %d (rooks present)", wScale, bScale, OCBScale)
+	}
+
+	// OCB with knights present — should NOT trigger OCB scaling
+	b.SetFEN("n4b1k/4p3/8/8/8/8/4P3/N3KB2 w - - 0 1")
+	wScale, bScale = b.endgameScale()
+	if wScale == OCBScale || bScale == OCBScale {
+		t.Errorf("OCB with knights: wScale=%d, bScale=%d, should NOT be %d (knights present)", wScale, bScale, OCBScale)
+	}
+}
+
 func TestEndgameKingDistance(t *testing.T) {
 	var b Board
 	// KQ vs K, enemy king on edge
