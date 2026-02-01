@@ -1,0 +1,74 @@
+
+  # Clade's TODO list:
+
+  - Opposite-colored bishop drawishness - Scale down the eval when heading
+  toward a drawn OCB endgame.  (maybe still need to d)
+
+  Infrastructure (quality of life):
+  - Multi-threaded search (Lazy SMP) - Multiple threads sharing the TT.
+  Significant strength gain on multi-core, but more engineering effort.
+  - Endgame tablebases (Syzygy) - Perfect play in 6-piece endings.
+
+  Search efficiency could improve tactical play. ECM is at 28.4%, which is low. Traditional futility pruning at
+  frontier nodes (depth 1-2, skip quiet moves when static eval + margin < alpha) is a standard improvement we don't
+  have. It's different from LMP — LMP prunes by move count, futility prunes by eval margin. This would let us search
+  deeper in the same time and find more tactics.  (did we do this)
+
+# Claude Ideas = 1st Feb
+
+Here's my analysis, ranked by bang-for-the-buck:
+
+1. LMR table is way too conservative (search.go:40-64)
+
+This is the single biggest improvement opportunity. The current table uses hardcoded reductions of 1 or 2:
+
+depth 3-5, any move:  reduction = 1
+depth 6+,  move < 10: reduction = 1
+depth 6+,  move >= 10: reduction = 2
+Standard engines use a logarithmic formula like log(depth) * log(moveNum) / C which produces much more aggressive reductions at depth. At depth 12, move 20, you're reducing by 2 — Stockfish would reduce by 3-4. This is likely leaving a significant amount of search depth on the table. Fixing this is a one-line change to the init() function.
+
+2. History table has no decay / normalization (search.go:629)
+
+History[from][to] += depth * depth grows unboundedly across searches. The SearchWithInfo function zeros it at the start of each go command, which is correct, but the hasHighHistory threshold at line 563 is a fixed > 1000 — that's arbitrary and doesn't scale with search depth or how many cutoffs have occurred. Consider either:
+
+Aging/scaling history values (divide all by 2 periodically)
+Using a relative threshold instead of a fixed constant
+3. Null-move reduction is conservative (search.go:402-405)
+
+R=2 for depth 3-6, R=3 for depth 7+. Modern engines use R = 3 + depth/4 (or similar), which gives R=4 at depth 8, R=5 at depth 12, etc. More aggressive null-move pruning lets you search deeper with the same time budget.
+
+4. Reverse futility pruning limited to depth <= 3 (search.go:422-431)
+
+The RFP implementation looks correct but conservative. Many engines extend this to depth 5-6 with scaled margins. Currently margin = depth * 120, which is reasonable, but the depth cutoff limits its effect.
+
+5. No history penalty for quiet moves that don't cause cutoffs
+
+At line 629, history is incremented on beta cutoff, but quiet moves that were tried and didn't cause cutoffs aren't penalized. Adding History[from][to] -= depth * depth for all quiet moves tried before the cutoff move improves move ordering measurably — the table then captures relative quality, not just absolute cutoff counts.
+
+6. TT is single-entry per bucket (tt.go:82-98)
+
+Depth-preferred replacement means shallow-but-recent entries get thrown out by deep-but-stale ones. A two-entry bucket (one depth-preferred, one always-replace) is a common improvement that reduces collision losses with minimal complexity.
+
+7. No SEE pruning for quiet moves in main search
+
+SEE is used for capture ordering in the move picker and for quiescence pruning, but not for pruning quiet moves at shallow depths. Adding if depth <= 3 && SEESign(move, -threshold) { skip } for quiet moves that lose material can prune bad tactical moves early.
+
+8. Missing: delta pruning in quiescence
+
+In quiescence, every capture is searched if SEE >= 0, regardless of how far below alpha the stand-pat score is. A delta cutoff (if standPat + maxPossibleGain + margin < alpha { return alpha }) avo
+
+# Adam's ideas
+
+Eval hashes (done)
+Eval seems pretty simple still. 
+* Do we consider rooks on open file, doubled rooks, rooks behind passed pawns.
+NPS Performance still trails GNU Chess by 20%
+Extensions?
+* are we generating capture moves twice in move generator
+
+Cosmetics:
+* CLI mode to make it easier to test positions, and debug how we score positions. (done)
+* Max depth report e.g. 12/17
+* With EPD report the time we first got it right (and didn't later get it wrong). (done)
+* Run a particular set of puzzles from an EPD.
+
