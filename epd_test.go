@@ -1,6 +1,7 @@
 package chess
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -237,12 +238,15 @@ func TestWACFile(t *testing.T) {
 		t.Skip("No positions in testdata/wac.epd")
 	}
 
+	depth := 8
+	maxTime := 2 * time.Second
+
 	tt := NewTranspositionTable(64) // 64MB TT
 	passed := 0
 	failed := 0
-
-	depth := 8
-	maxTime := 2 * time.Second
+	nodeScore := 0.0
+	timeScore := 0.0
+	maxTimeMs := float64(maxTime.Milliseconds())
 
 	for _, epd := range positions {
 		tt.Clear() // Clear TT between positions to avoid hash collision issues
@@ -256,6 +260,12 @@ func TestWACFile(t *testing.T) {
 		if result.Passed {
 			passed++
 			status = "PASS"
+			if result.SolveNodes > 0 {
+				nodeScore += EPDLogScore(float64(result.SearchInfo.Nodes), float64(result.SolveNodes))
+			}
+			if result.SolveTime > 0 {
+				timeScore += EPDLogScore(maxTimeMs, float64(result.SolveTime.Milliseconds()))
+			}
 		} else {
 			failed++
 		}
@@ -266,9 +276,12 @@ func TestWACFile(t *testing.T) {
 	}
 
 	pct := float64(passed) / float64(len(positions)) * 100
+	maxTimeScore := float64(len(positions)) * math.Log2(maxTimeMs)
 	t.Logf("\n=== SUMMARY ===")
 	t.Logf("Passed: %d/%d (%.1f%%)", passed, len(positions), pct)
 	t.Logf("Failed: %d", failed)
+	t.Logf("Node score: %.1f  (higher=better)", nodeScore)
+	t.Logf("Time score: %.1f / %.1f  (higher=better)", timeScore, maxTimeScore)
 }
 
 // TestECMFile runs all positions from testdata/ecm.epd file
@@ -290,9 +303,12 @@ func TestECMFile(t *testing.T) {
 	tt := NewTranspositionTable(64) // 64MB TT
 	passed := 0
 	failed := 0
+	nodeScore := 0.0
+	timeScore := 0.0
 
 	depth := 8
 	maxTime := 2 * time.Second
+	maxTimeMs := float64(maxTime.Milliseconds())
 
 	for _, epd := range positions {
 		tt.Clear() // Clear TT between positions to avoid hash collision issues
@@ -306,6 +322,12 @@ func TestECMFile(t *testing.T) {
 		if result.Passed {
 			passed++
 			status = "PASS"
+			if result.SolveNodes > 0 {
+				nodeScore += EPDLogScore(float64(result.SearchInfo.Nodes), float64(result.SolveNodes))
+			}
+			if result.SolveTime > 0 {
+				timeScore += EPDLogScore(maxTimeMs, float64(result.SolveTime.Milliseconds()))
+			}
 		} else {
 			failed++
 		}
@@ -316,9 +338,12 @@ func TestECMFile(t *testing.T) {
 	}
 
 	pct := float64(passed) / float64(len(positions)) * 100
+	maxTimeScore := float64(len(positions)) * math.Log2(maxTimeMs)
 	t.Logf("\n=== SUMMARY ===")
 	t.Logf("Passed: %d/%d (%.1f%%)", passed, len(positions), pct)
 	t.Logf("Failed: %d", failed)
+	t.Logf("Node score: %.1f  (higher=better)", nodeScore)
+	t.Logf("Time score: %.1f / %.1f  (higher=better)", timeScore, maxTimeScore)
 }
 
 // BenchmarkWAC runs the full WAC suite for benchmarking

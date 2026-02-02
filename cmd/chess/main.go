@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -129,6 +130,9 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 	passed := 0
 	failed := 0
 	totalNodes := uint64(0)
+	nodeScore := 0.0
+	timeScore := 0.0
+	maxTimeMs := float64(maxTime.Milliseconds())
 	suiteStart := time.Now()
 
 	fmt.Printf("EPD Test Suite: %s\n", filename)
@@ -143,41 +147,39 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 			id = fmt.Sprintf("#%d", i+1)
 		}
 
+		var result *chess.EPDTestResult
 		if verbose {
-			result, err := runVerbose(pos, id, depth, maxTime, tt, threads)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error on position %d: %v\n", i+1, err)
-				continue
+			result, err = runVerbose(pos, id, depth, maxTime, tt, threads)
+		} else {
+			result, err = chess.RunEPDTestWithInfo(pos, depth, maxTime, tt, nil, threads)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error on position %d: %v\n", i+1, err)
+			continue
+		}
+
+		totalNodes += result.SearchInfo.Nodes
+		if result.Passed {
+			passed++
+			if result.SolveNodes > 0 {
+				nodeScore += chess.EPDLogScore(float64(result.SearchInfo.Nodes), float64(result.SolveNodes))
 			}
-			totalNodes += result.SearchInfo.Nodes
-			if result.Passed {
-				passed++
-			} else {
-				failed++
+			if result.SolveTime > 0 {
+				timeScore += chess.EPDLogScore(maxTimeMs, float64(result.SolveTime.Milliseconds()))
 			}
-			expected := strings.Join(pos.BestMoves, "/")
-			status := "PASS"
-			if !result.Passed {
-				status = "FAIL"
-			}
+		} else {
+			failed++
+		}
+
+		expected := strings.Join(pos.BestMoves, "/")
+		status := "PASS"
+		if !result.Passed {
+			status = "FAIL"
+		}
+
+		if verbose {
 			fmt.Printf("[%s] %s: found %s, expected %s\n\n", status, id, result.BestMoveSAN, expected)
 		} else {
-			result, err := chess.RunEPDTestWithInfo(pos, depth, maxTime, tt, nil, threads)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error on position %d: %v\n", i+1, err)
-				continue
-			}
-			totalNodes += result.SearchInfo.Nodes
-			if result.Passed {
-				passed++
-			} else {
-				failed++
-			}
-			expected := strings.Join(pos.BestMoves, "/")
-			status := "PASS"
-			if !result.Passed {
-				status = "FAIL"
-			}
 			solveStr := "-"
 			if result.SolveDepth > 0 {
 				solveStr = fmt.Sprintf("d%d/%v", result.SolveDepth, result.SolveTime.Round(time.Millisecond))
@@ -196,9 +198,14 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 		pct = float64(passed) / float64(total) * 100
 	}
 
+	// Compute maximum possible log-scores (if every position solved at depth 1)
+	maxTimeScore := float64(total) * math.Log2(maxTimeMs)
+
 	fmt.Printf("\n=== SUMMARY ===\n")
 	fmt.Printf("Passed: %d/%d (%.1f%%)\n", passed, total, pct)
 	fmt.Printf("Failed: %d\n", failed)
+	fmt.Printf("Node score: %.1f  (log2 nodes saved by early solve, higher=better)\n", nodeScore)
+	fmt.Printf("Time score: %.1f / %.1f  (log2 time saved vs limit, higher=better)\n", timeScore, maxTimeScore)
 	fmt.Printf("Total nodes: %d\n", totalNodes)
 	fmt.Printf("Average: %s\n", chess.FormatKNPS(totalNodes, elapsed))
 	fmt.Printf("Total time: %v\n", elapsed.Round(time.Millisecond))

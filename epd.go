@@ -3,6 +3,7 @@ package chess
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -113,8 +114,9 @@ type EPDTestResult struct {
 	SearchInfo  SearchInfo
 	Passed      bool
 	TimeTaken   time.Duration
-	SolveDepth  int           // depth where correct move was first stably found (0 = never solved)
-	SolveTime   time.Duration // elapsed time at that depth
+	SolveDepth int           // depth where correct move was first stably found (0 = never solved)
+	SolveTime  time.Duration // elapsed time at that depth
+	SolveNodes uint64        // cumulative nodes at that depth
 
 	// Hash table stats (probes, hits)
 	TTProbes, TTHits     uint64
@@ -162,6 +164,7 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 	type depthRecord struct {
 		move    Move
 		elapsed time.Duration
+		nodes   uint64
 	}
 	var records []depthRecord
 
@@ -181,7 +184,7 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 		if len(pv) > 0 {
 			pvMove = pv[0]
 		}
-		records = append(records, depthRecord{move: pvMove, elapsed: time.Since(start)})
+		records = append(records, depthRecord{move: pvMove, elapsed: time.Since(start), nodes: nodes})
 		if callerOnDepth != nil {
 			callerOnDepth(d, score, nodes, pv)
 		}
@@ -245,6 +248,7 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 		if solveIdx >= 0 {
 			result.SolveDepth = solveIdx + 1 // depths are 1-indexed
 			result.SolveTime = records[solveIdx].elapsed
+			result.SolveNodes = records[solveIdx].nodes
 		}
 	}
 
@@ -263,6 +267,20 @@ func FormatKNPS(nodes uint64, elapsed time.Duration) string {
 		return fmt.Sprintf("%d,%03d kNPS", whole/1000, whole%1000)
 	}
 	return fmt.Sprintf("%d kNPS", whole)
+}
+
+// EPDLogScore computes a continuous quality score for a solved position.
+// For solved positions: log2(budget) - log2(cost), where budget is the
+// maximum allowed (time limit or total nodes) and cost is when the correct
+// move was stably found. Unsolved positions score 0. Higher is better.
+func EPDLogScore(budget, cost float64) float64 {
+	if cost <= 0 || budget <= 0 {
+		return 0
+	}
+	if cost < 1 {
+		cost = 1
+	}
+	return math.Log2(budget) - math.Log2(cost)
 }
 
 // EPDSuiteResult holds the results of running an entire EPD test suite
