@@ -191,6 +191,10 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		atomic.StoreInt64(&info.Deadline, info.StartTime.Add(info.MaxTime).UnixNano())
 	}
 
+	// Advance TT generation so stale entries from previous searches are cheap to evict.
+	// Only called here (main thread); helpers share the TT and see the same generation.
+	info.TT.NewSearch()
+
 	var bestMove Move
 	prevScore := 0
 
@@ -247,7 +251,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		}
 
 		if info.OnDepth != nil {
-			info.OnDepth(depth, score, info.Nodes, info.PV)
+			info.OnDepth(depth, score, atomic.LoadUint64(&info.Nodes), info.PV)
 		}
 
 		// Check if remaining time is less than the last iteration took
@@ -529,7 +533,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	info.pvLen[ply] = 0
 
 	// Check time periodically
-	if info.Nodes&4095 == 0 {
+	if atomic.LoadUint64(&info.Nodes)&4095 == 0 {
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
 			atomic.StoreInt32(&info.Stopped, 1)
 			return 0
@@ -540,7 +544,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		return 0
 	}
 
-	info.Nodes++
+	atomic.AddUint64(&info.Nodes, 1)
 
 	// Draw detection: repetition and 50-move rule
 	if ply > 0 {
@@ -980,7 +984,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		return b.EvaluateRelative()
 	}
 
-	info.Nodes++
+	atomic.AddUint64(&info.Nodes, 1)
 
 	// Stand pat - evaluate the current position
 	standPat := b.EvaluateRelative()
