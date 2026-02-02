@@ -31,6 +31,9 @@ var LMPEnabled = true
 // SingularExtEnabled controls whether Singular Extensions are used
 var SingularExtEnabled = true
 
+// SEEQuietPruneEnabled controls whether SEE-based quiet move pruning is used
+var SEEQuietPruneEnabled = true
+
 // Late Move Pruning: at shallow depths, skip quiet moves past this move count.
 // Indexed by depth (0 unused). Roughly 3 + depth*depth.
 var lmpThreshold = [9]int{0, 5, 8, 12, 18, 25, 34, 44, 56}
@@ -92,6 +95,9 @@ type SearchInfo struct {
 
 	// LMP statistics
 	LMPPrunes uint64 // Moves pruned by late move pruning
+
+	// SEE quiet pruning statistics
+	SEEQuietPrunes uint64 // Moves pruned by SEE quiet pruning
 
 	// Singular extension: excluded move per ply for verification search
 	ExcludedMove [64]Move
@@ -700,6 +706,18 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Check if capture BEFORE making the move
 		isCap := isCapture(move, b)
 
+		// SEE quiet pruning: compute SEE before MakeMove (doesn't modify board)
+		var seeQuietScore int
+		checkSEEQuiet := false
+		if SEEQuietPruneEnabled && ply > 0 && !inCheck && depth <= 8 &&
+			!isCap && !move.IsPromotion() &&
+			move != killers[0] && move != killers[1] &&
+			move != counterMove && move != ttMove &&
+			bestScore > -MateScore+100 {
+			seeQuietScore = b.SEEAfterQuiet(move)
+			checkSEEQuiet = true
+		}
+
 		// Singular extension: if TT move is significantly better than alternatives, extend it
 		singularExtension := 0
 		if SingularExtEnabled &&
@@ -765,6 +783,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			moveCount > lmpThreshold[depth] &&
 			bestScore > -MateScore+100 {
 			info.LMPPrunes++
+			b.UnmakeMove(move)
+			continue
+		}
+
+		// SEE quiet pruning: prune quiet moves where piece lands on a losing square
+		if checkSEEQuiet && !givesCheck && seeQuietScore < -depth*80 {
+			info.SEEQuietPrunes++
 			b.UnmakeMove(move)
 			continue
 		}
