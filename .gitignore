@@ -1,2 +1,5 @@
+# Skip binary
 chess
-chessgcc # GCC compiled version I was playign with
+
+# GCC compiled version I was playign with
+chessgcc
