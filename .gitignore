@@ -1,5 +1,5 @@
-# Skip binary
-chess
+# Skip binary at repo root
+/chess
 
 # GCC compiled version I was playign with
 chessgcc
