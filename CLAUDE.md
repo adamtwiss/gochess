@@ -9,7 +9,7 @@ go test                    # Run all tests (includes WAC/ECM suites, ~3min)
 go test -v                 # Verbose output
 go test -run TestX         # Run a specific test
 go test -bench .           # Run benchmarks
-go test -run 'Test(Print|Zobrist|Bitboard|Perft|SAN|Search|SEE|Eval|LMP)' # Skip EPD suites
+go test -run 'Test(Print|Zobrist|Bitboard|Perft|SAN|Search|SEE|Eval|LMP)' # Quick unit tests (skips EPD suites, book, UCI, PGN)
 
 go build -o chess ./cmd/chess    # Build CLI binary
 ./chess -e testdata/wac.epd -t 5000 -n 20   # Run EPD test suite
@@ -22,8 +22,8 @@ go build -o chess ./cmd/chess    # Build CLI binary
 Chess engine in Go using bitboard representation. Core library is `package chess` in the root; CLI is `cmd/chess/`.
 
 ```
-cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder)
-testdata/            Test data (wac.epd, ecm.epd, 2600.pgn, eco.pgn)
+cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder, interactive CLI)
+testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, 2600.pgn, eco.pgn)
 book.bin             Compiled opening book (binary format)
 board.go             Board struct, piece types, FEN parsing, pieceOf() helper
 move.go              Move encoding (16-bit), flags, NoMove sentinel
@@ -33,10 +33,10 @@ movegen.go           Pseudo-legal/legal move generation, IsAttacked, InCheck
 makemove.go          MakeMove/UnmakeMove, null move, UndoInfo
 movepicker.go        Staged move ordering for search, IsPseudoLegal
 search.go            Negamax, alpha-beta, iterative deepening, LMR, LMP, PVS
-eval.go              Tapered eval: PST, mobility, positional bonuses, eval cache
+eval.go              Tapered eval: PST, mobility, king safety, positional bonuses, eval cache
 pst.go               PeSTO piece-square tables, material values, phase constants
-pawns.go             Pawn structure eval (doubled/isolated/passed), pawn hash table
-tt.go                Transposition table (depth-preferred replacement)
+pawns.go             Pawn structure eval (doubled/isolated/passed), pawn hash table, pawn shield
+tt.go                Transposition table (two-slot buckets: depth-preferred + always-replace)
 zobrist.go           Zobrist hash keys, incremental hashing
 see.go               Static Exchange Evaluation for capture ordering
 san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
@@ -44,6 +44,7 @@ epd.go               EPD file loading and test suite runner
 pgn.go               PGN game parsing (tags, moves)
 book.go              Opening book: build from PGN, binary format, weighted move selection
 uci.go               UCI protocol (position, go, setoption, ponder)
+cli.go               Interactive CLI engine (set, fen, board, eval, moves, search, epd, perft)
 ```
 
 ## Architecture
@@ -52,7 +53,7 @@ uci.go               UCI protocol (position, go, setoption, ponder)
 
 - **Hybrid storage**: `Board.Squares[64]` for piece-by-square lookup, `Board.Pieces[13]` bitboards for piece-type iteration
 - **Occupancy**: `Board.Occupied[2]` (by color) and `Board.AllPieces` for attack generation
-- **Undo stack**: `Board.UndoStack []UndoInfo` stores captured piece, castling, en passant, halfmove clock, hash per move
+- **Undo stack**: `Board.UndoStack []UndoInfo` stores move, captured piece, castling, en passant, halfmove clock, HashKey, and PawnHashKey per move
 
 ### Piece Indexing
 
@@ -86,8 +87,9 @@ Staged generation for search efficiency:
 1. TT move (from transposition table)
 2. Good captures (SEE >= 0, scored by MVV-LVA)
 3. Killer moves (2 per ply, caused beta cutoffs in sibling nodes)
-4. Quiet moves (scored by history heuristic)
-5. Bad captures (SEE < 0, last resort)
+4. Counter-move (move that refuted opponent's previous move)
+5. Quiet moves (scored by history heuristic)
+6. Bad captures (SEE < 0, last resort)
 
 Selection sort within each stage (partial sort, only finds next-best on demand).
 
@@ -95,28 +97,34 @@ Selection sort within each stage (partial sort, only finds next-best on demand).
 
 Negamax with alpha-beta pruning, iterative deepening with time control.
 
-- **Transposition table**: Probe before search, store after. Depth-preferred replacement. Mate scores adjusted by ply distance to prevent stale mate evaluations.
-- **Null-move pruning**: Skip turn and search with reduced depth (R=3 if depth>=7, else R=2). Disabled when in check.
-- **Late Move Reductions (LMR)**: Logarithmic reduction table. Quiet moves searched late in the move list are reduced. Re-search at full depth if score exceeds alpha. Disabled for captures, promotions, killers, check-giving moves, and high-history moves.
-- **Late Move Pruning (LMP)**: Skip quiet moves entirely at shallow depths (depth <= 3) after searching enough moves (threshold scales with depth). Disabled when in check.
+- **Transposition table**: Probe before search, store after. Two-slot buckets: slot 0 is depth-preferred, slot 1 is always-replace. Mate scores adjusted by ply distance to prevent stale mate evaluations.
+- **Null-move pruning**: Skip turn and search with reduced depth (R=3 if depth>=7, else R=2). Requires depth >= 3, non-pawn material, not in check.
+- **Reverse Futility Pruning**: At shallow depths (depth <= 3), prune whole node if static eval minus margin (depth * 120) exceeds beta.
+- **Futility pruning**: At depth <= 2, skip quiet non-checking moves when static eval plus margin cannot raise alpha.
+- **Late Move Reductions (LMR)**: Logarithmic reduction table. Quiet moves searched late in the move list are reduced. Re-search at full depth if score exceeds alpha. Disabled for captures, promotions, killers, and check-giving moves. Continuous history adjustment: good history reduces less, bad history reduces more (histScore / 5000). Reduced less at PV nodes and when position is improving.
+- **Late Move Pruning (LMP)**: Skip quiet moves at shallow depths (depth 1-8) after searching enough moves (threshold from `lmpThreshold[depth]` table). Disabled when in check or giving check.
+- **Singular extensions**: At depth >= 10, if the TT move is significantly better than alternatives (verified by a reduced-depth search excluding the TT move), extend the TT move by 1 ply.
 - **Principal Variation Search (PVS)**: After first move, search with zero window (alpha, alpha+1). Re-search with full window if it fails high.
-- **Aspiration windows**: Iterative deepening uses a narrow window around previous score. Widens on fail high/low.
-- **Check extensions**: Extend search by 1 ply when in check.
+- **Aspiration windows**: Starting at depth 4, iterative deepening uses a narrow window (delta=25) around previous score. Widens progressively on fail high/low.
+- **Check extensions**: Extend search by 1 ply when move gives check.
 - **Quiescence search**: Captures only at leaf nodes, pruned by SEE >= 0. Stand-pat evaluation as lower bound. Depth-limited to 32.
 - **Killer moves**: 2 slots per ply, updated on beta cutoff with quiet moves.
-- **History heuristic**: `history[from][to] += depth * depth` on beta cutoff. Used to score quiet moves in move ordering.
-- **Time management**: Checks clock every 4096 nodes. Iterative deepening allows stopping between depths.
+- **Counter-move heuristic**: `CounterMoves[piece][toSquare]` indexed by opponent's previous move. Stored on beta cutoff, used as a MovePicker stage between killers and quiets.
+- **History heuristic**: `history[from][to] += depth * depth` on beta cutoff. Quiet moves tried before the cutoff move receive a matching penalty (`-= depth * depth`). Used to score quiet moves in move ordering and to adjust LMR reductions.
+- **Time management**: Checks clock every 4096 nodes. Iterative deepening allows stopping between depths. Early exit if remaining time is less than last iteration took.
 
 ### Evaluation
 
 Tapered evaluation blending middlegame and endgame scores based on game phase (piece count). `Evaluate()` returns White-relative centipawns; `EvaluateRelative()` returns side-to-move relative.
 
-- **Piece-square tables** (pst.go): PeSTO tables for all piece types, separate MG/EG values. Material values baked into PST entries (P=100, N=320, B=330, R=500, Q=900).
-- **Pawn structure** (pawns.go): Cached via pawn hash table. Evaluates doubled, isolated, backward, connected, and passed pawns. Precomputed masks: `PassedPawnMask`, `ForwardFileMask`, `OutpostMask`, `AdjacentFiles`.
-- **Mobility** (eval.go): Per-square bonuses for knight (4), bishop (5), rook (2), queen (1) attacks on non-friendly squares.
-- **Positional bonuses** (eval.go): Bishop pair, knight outposts (supported/unsupported), rook on open/semi-open file, rook on 7th rank, bishop open position scaling.
+- **Piece-square tables** (pst.go): PeSTO tables for all piece types, separate MG/EG values with per-piece-type scaling factors (35-85%). Material values added separately: MG (P=82, N=337, B=365, R=477, Q=1025), EG (P=94, N=281, B=297, R=512, Q=936). SEE uses simplified values (P=100, N=320, B=330, R=500, Q=900).
+- **Pawn structure** (pawns.go): Cached via pawn hash table. Evaluates doubled, isolated, backward, connected, and passed pawns. Pawn advancement bonus. Precomputed masks: `PassedPawnMask`, `ForwardFileMask`, `OutpostMask`, `AdjacentFiles`.
+- **Mobility** (eval.go): Non-linear bonus arrays indexed by move count — `KnightMobility[9]`, `BishopMobility[14]`, `RookMobility[15]`, `QueenMobility[28]` — each with separate MG/EG values.
+- **King safety** (eval.go + pawns.go): Table-driven system. Per-piece attack unit weights (Knight=7, Bishop=5, Rook=8, Queen=13) plus king-zone square bonuses accumulate into an attack score. `KingSafetyTable[100]` maps total attack units to centipawn penalties. Pawn shield evaluation (ranks 2-3 around king) and semi-open file penalty near king in pawns.go.
+- **Positional bonuses** (eval.go): Bishop pair, knight outposts (supported/unsupported), knight closed-position bonus (scales with pawn count), rook on open/semi-open file, rook on 7th rank, doubled rooks on same file, trapped rook penalty, bad bishop penalty (per friendly pawn on same square color), bishop open position scaling, castling rights MG bonus.
 - **Passed pawn enhancements** (eval.go): Not-blocked bonus, free path to promotion, king proximity (friendly close / enemy far), protected passers, connected passers, rook behind passer. These depend on piece positions so they are not cached in the pawn table.
-- **King safety** (pawns.go): Pawn shield evaluation (ranks 2-3 around king), semi-open file penalty near king.
+- **Space and threats** (eval.go): Space evaluation (safe squares in center files), pawn threats (pawns attacking enemy pieces).
+- **Endgame scaling** (eval.go): Per-side scale factors (0-128) for draw/insufficient material detection. Handles KNN, KR vs KB/KN, opposite-colored bishop drawishness (OCBScale=64), and 50-move rule scaling.
 - **Eval cache** (eval.go): `EvalTable` caches full `Evaluate()` results keyed by Zobrist hash. Auto-initialized at 1 MB. Avoids redundant recomputation on transpositions.
 - **Phase calculation**: Knight=1, Bishop=1, Rook=2, Queen=4, Total=24. Phase increases as pieces are traded.
 
@@ -138,7 +146,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### EPD / Test Suites
 
-`LoadEPDFile()` parses EPD format (4-field FEN + operations like `bm`, `am`, `id`). `RunEPDTest()` searches a position and checks if found move matches expected best move(s). Test suites: WAC (300 positions), ECM (201 positions) in `testdata/`.
+`LoadEPDFile()` parses EPD format (4-field FEN + operations like `bm`, `am`, `id`). `RunEPDTest()` searches a position and checks if found move matches expected best move(s). Test suites in `testdata/`: WAC (201 positions), WAC300 (300), ECM (200), plus arasan, lct, sbd, wac2018, zugzwang.
 
 ### PGN Parsing
 
@@ -146,8 +154,9 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### CLI
 
-`cmd/chess/main.go` — Three modes:
+`cmd/chess/main.go` — Four modes:
 
+- **Interactive CLI**: Default when stdin is a terminal and no flags given. Provides commands: `set`, `fen`, `board`, `reset`, `moves`, `search`, `eval`, `epd`, `perft`, `uci`. Implemented in `cli.go` (`CLIEngine`).
 - **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output)
 - **UCI mode**: `-uci`, with optional `-book` (opening book path)
 - **Book building**: `-buildbook`, `-pgn`, `-eco`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
@@ -155,7 +164,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 ## Key Gotchas
 
 - Move flag equality vs bitwise: see "Critical rule" above.
-- `UnmakeMove()` panics on undo stack mismatch — always pair with `MakeMove()`.
+- `UnmakeMove()` panics on empty undo stack or move mismatch — always pair with `MakeMove()`.
 - `GenerateAllMoves()` returns pseudo-legal moves; search must call `IsLegal()`.
 - Castling rights are lost both when a rook/king moves AND when a rook is captured on its home square.
 - En passant hash uses file only (8 keys), not full square.
