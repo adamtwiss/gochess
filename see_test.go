@@ -111,6 +111,69 @@ func TestSEESign(t *testing.T) {
 	}
 }
 
+func TestSEEAfterQuiet(t *testing.T) {
+	tests := []struct {
+		name     string
+		fen      string
+		move     string // UCI format quiet move
+		wantSign int    // -1 = negative (losing), 0 = safe
+	}{
+		{
+			// Knight moves to a square defended by a pawn -> losing
+			// Black pawn on d6 defends e5
+			name:     "KnightToPawnDefended",
+			fen:      "rnbqkbnr/ppp1pppp/3p4/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1",
+			move:     "f3e5", // Ne5, d6 pawn defends e5
+			wantSign: -1,
+		},
+		{
+			// Knight moves to safe square (no attackers)
+			name:     "KnightToSafeSquare",
+			fen:      "8/8/8/8/8/5N2/8/4K2k w - - 0 1",
+			move:     "f3e5", // Ne5, no attackers
+			wantSign: 0,
+		},
+		{
+			// Bishop moves to unattacked square
+			name:     "BishopToSafe",
+			fen:      "8/8/8/8/8/8/1B6/4K2k w - - 0 1",
+			move:     "b2e5", // Be5, no attackers
+			wantSign: 0,
+		},
+		{
+			// Queen to pawn-defended square -> losing
+			// Black pawn on e6 defends d5
+			name:     "QueenToPawnDefended",
+			fen:      "rnbqkbnr/pppp1ppp/4p3/8/8/3Q4/PPPPPPPP/RNB1KBNR w KQkq - 0 1",
+			move:     "d3d5", // Qd5, e6 pawn defends d5
+			wantSign: -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var b Board
+			if err := b.SetFEN(tt.fen); err != nil {
+				t.Fatalf("SetFEN(%q) error: %v", tt.fen, err)
+			}
+
+			from := NewSquare(int(tt.move[0]-'a'), int(tt.move[1]-'1'))
+			to := NewSquare(int(tt.move[2]-'a'), int(tt.move[3]-'1'))
+			move := NewMove(from, to)
+
+			see := b.SEEAfterQuiet(move)
+			t.Logf("SEEAfterQuiet(%s) = %d", tt.move, see)
+
+			if tt.wantSign < 0 && see >= 0 {
+				t.Errorf("SEEAfterQuiet(%s) = %d, want negative (losing)", tt.move, see)
+			}
+			if tt.wantSign == 0 && see != 0 {
+				t.Errorf("SEEAfterQuiet(%s) = %d, want 0 (safe)", tt.move, see)
+			}
+		})
+	}
+}
+
 func TestGenerateCaptures(t *testing.T) {
 	var b Board
 	b.Reset()

@@ -146,6 +146,59 @@ func (b *Board) leastValuableAttacker(sq Square, color Color, occupied Bitboard)
 	return NoSquare, 0
 }
 
+// SEEAfterQuiet evaluates the exchange on a square after a quiet (non-capture)
+// move places a piece there. Returns 0 if the piece is safe, or a negative value
+// indicating material loss if the opponent can profitably capture it.
+// Does not modify the board.
+func (b *Board) SEEAfterQuiet(m Move) int {
+	from := m.From()
+	to := m.To()
+	piece := b.Squares[from]
+	if piece == Empty {
+		return 0
+	}
+	pieceValue := SEEPieceValues[piece]
+
+	// Our piece moves from 'from' to 'to'
+	occupied := (b.AllPieces &^ SquareBB(from)) | SquareBB(to)
+
+	// Opponent tries to capture our piece first
+	opponent := 1 - b.SideToMove
+	lva, lvaValue := b.leastValuableAttacker(to, opponent, occupied)
+	if lva == NoSquare {
+		return 0 // No attacker, piece is safe
+	}
+
+	// Build gain array: gain[0] = opponent captures our piece
+	var gain [32]int
+	gainLen := 1
+	gain[0] = pieceValue
+	nextVictimValue := lvaValue
+	occupied &^= SquareBB(lva)
+	sideToMove := b.SideToMove // Our turn to recapture
+
+	for gainLen < 32 {
+		lva, lvaValue = b.leastValuableAttacker(to, sideToMove, occupied)
+		if lva == NoSquare {
+			break
+		}
+		gain[gainLen] = nextVictimValue - gain[gainLen-1]
+		gainLen++
+		nextVictimValue = lvaValue
+		occupied &^= SquareBB(lva)
+		sideToMove = 1 - sideToMove
+	}
+
+	// Negamax backward
+	for i := gainLen - 2; i >= 0; i-- {
+		if -gain[i+1] < gain[i] {
+			gain[i] = -gain[i+1]
+		}
+	}
+
+	return -gain[0] // Negate: gain[0] is opponent's result
+}
+
 // SEESign returns true if SEE >= threshold (faster than full SEE for pruning)
 // Commonly used with threshold=0 to check if capture doesn't lose material
 func (b *Board) SEESign(m Move, threshold int) bool {
