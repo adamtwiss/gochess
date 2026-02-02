@@ -39,7 +39,7 @@ pst.go               PeSTO piece-square tables, material values, phase constants
 pawns.go             Pawn structure eval (doubled/isolated/passed), pawn hash table, pawn shield
 tt.go                Transposition table (lockless, two-slot buckets: depth-preferred + always-replace)
 zobrist.go           Zobrist hash keys, incremental hashing
-see.go               Static Exchange Evaluation for capture ordering
+see.go               Static Exchange Evaluation for capture ordering and quiet move pruning
 san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
 epd.go               EPD file loading and test suite runner
 pgn.go               PGN game parsing (tags, moves)
@@ -104,6 +104,7 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Futility pruning**: At depth <= 2, skip quiet non-checking moves when static eval plus margin cannot raise alpha.
 - **Late Move Reductions (LMR)**: Logarithmic reduction table. Quiet moves searched late in the move list are reduced. Re-search at full depth if score exceeds alpha. Disabled for captures, promotions, killers, and check-giving moves. Continuous history adjustment: good history reduces less, bad history reduces more (histScore / 5000). Reduced less at PV nodes and when position is improving.
 - **Late Move Pruning (LMP)**: Skip quiet moves at shallow depths (depth 1-8) after searching enough moves (threshold from `lmpThreshold[depth]` table). Disabled when in check or giving check.
+- **SEE quiet pruning**: At depth <= 8, prune quiet moves where `SEEAfterQuiet` indicates the piece lands on a square where it would be captured for material loss exceeding `depth * 80` centipawns. Computed before MakeMove, applied after (to exempt check-giving moves). Exempts TT move, killers, counter-move, captures, promotions. Controlled by `SEEQuietPruneEnabled` toggle.
 - **Singular extensions**: At depth >= 10, if the TT move is significantly better than alternatives (verified by a reduced-depth search excluding the TT move), extend the TT move by 1 ply.
 - **Principal Variation Search (PVS)**: After first move, search with zero window (alpha, alpha+1). Re-search with full window if it fails high.
 - **Aspiration windows**: Starting at depth 4, iterative deepening uses a narrow window (delta=25) around previous score. Widens progressively on fail high/low.
@@ -146,7 +147,7 @@ Incrementally updated in `MakeMove`/`UnmakeMove` via XOR. Keys cover piece-squar
 
 ### SEE (Static Exchange Evaluation)
 
-Simulates alternating captures on a single square. Builds gain array, then negamax backward to find optimal result. `SEESign(move, threshold)` provides fast boolean check with early exits. Used in quiescence pruning and move ordering.
+Simulates alternating captures on a single square. Builds gain array, then negamax backward to find optimal result. `SEESign(move, threshold)` provides fast boolean check with early exits. Used in quiescence pruning and move ordering. `SEEAfterQuiet(move)` evaluates the exchange on the destination square after a quiet move, returning 0 (safe) or negative (material loss); used for quiet move pruning in search.
 
 ### Opening Book
 
