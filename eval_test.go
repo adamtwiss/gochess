@@ -1048,6 +1048,58 @@ func TestOCBPureBishopOnly(t *testing.T) {
 	}
 }
 
+func TestEndgameScale(t *testing.T) {
+	tests := []struct {
+		name       string
+		fen        string
+		wantWScale int
+		wantBScale int
+	}{
+		// Bare king vs bare king
+		{"KvK", "4k3/8/8/8/8/8/8/4K3 w - - 0 1", 0, 0},
+		// KN vs K - insufficient material
+		{"KNvK", "4k3/8/8/8/8/8/8/3NK3 w - - 0 1", 0, 0},
+		// KB vs K - insufficient material
+		{"KBvK", "4k3/8/8/8/8/8/8/3BK3 w - - 0 1", 0, 0},
+		// K vs KN - insufficient for both
+		{"KvKN", "3nk3/8/8/8/8/8/8/4K3 w - - 0 1", 0, 0},
+		// KNN vs K - can't force mate
+		{"KNNvK", "4k3/8/8/8/8/8/8/2NNK3 w - - 0 1", 0, 0},
+		// KR vs KN - drawish (wScale=16)
+		{"KRvKN", "3nk3/8/8/8/8/8/8/3RK3 w - - 0 1", 16, 0},
+		// KR vs KB - drawish (wScale=16)
+		{"KRvKB", "3bk3/8/8/8/8/8/8/3RK3 w - - 0 1", 16, 0},
+		// K vs KR - drawish for black (bScale=16 since black has rook, white has minor=0 so bScale=16 doesn't trigger)
+		{"KNvKR", "3rk3/8/8/8/8/8/8/3NK3 w - - 0 1", 0, 16},
+		// KQ vs K - can win (queen is a major, white has pawns=0 but majors>0)
+		{"KQvK", "4k3/8/8/8/8/8/8/3QK3 w - - 0 1", 128, 0},
+		// KR vs K - can win
+		{"KRvK", "4k3/8/8/8/8/8/8/3RK3 w - - 0 1", 128, 0},
+		// KBB vs K - can win (2 minors, not KNN)
+		{"KBBvK", "4k3/8/8/8/8/8/8/2BBK3 w - - 0 1", 128, 0},
+		// KBN vs K - can win (2 minors, not KNN)
+		{"KBNvK", "4k3/8/8/8/8/8/8/2BNK3 w - - 0 1", 128, 0},
+		// With pawns - both sides normal
+		{"KPvKP", "4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1", 128, 128},
+		// KN+P vs K - white has pawn so not insufficient
+		{"KNPvK", "4k3/8/8/8/8/8/4P3/3NK3 w - - 0 1", 128, 0},
+		// OCB with pawns - drawish
+		{"OCB+pawns", "5b1k/4p3/8/8/8/8/4P3/4KB2 w - - 0 1", 64, 64},
+		// Same-color bishops with pawns - normal
+		{"SCB+pawns", "5b1k/4p3/8/8/8/8/4P3/2B1K3 w - - 0 1", 128, 128},
+	}
+
+	for _, tt := range tests {
+		var b Board
+		b.SetFEN(tt.fen)
+		wScale, bScale := b.endgameScale()
+		if wScale != tt.wantWScale || bScale != tt.wantBScale {
+			t.Errorf("%s: endgameScale() = (%d, %d), want (%d, %d)",
+				tt.name, wScale, bScale, tt.wantWScale, tt.wantBScale)
+		}
+	}
+}
+
 func TestEndgameKingDistance(t *testing.T) {
 	var b Board
 	// KQ vs K, enemy king on edge

@@ -9,7 +9,7 @@ go test                    # Run all tests (includes WAC/ECM suites, ~3min)
 go test -v                 # Verbose output
 go test -run TestX         # Run a specific test
 go test -bench .           # Run benchmarks
-go test -run 'Test(Print|Zobrist|Bitboard|Perft|SAN|Search|SEE|Eval|LMP)' # Quick unit tests (skips EPD suites, book, UCI, PGN)
+go test -short              # Run unit tests only (skips slow EPD suites)
 
 go build -o chess ./cmd/chess    # Build CLI binary
 ./chess -e testdata/wac.epd -t 5000 -n 20              # Run EPD test suite

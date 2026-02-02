@@ -70,6 +70,94 @@ func TestParseEPD(t *testing.T) {
 	}
 }
 
+func TestParseEPDAvoidMoves(t *testing.T) {
+	line := `r2qkb1r/pp1b1ppp/2n1pn2/2ppN3/3P4/1BN1P3/PPP2PPP/R1BQK2R w KQkq - bm Nxd7; am exd5; id "test.am";`
+	epd, err := ParseEPD(line)
+	if err != nil {
+		t.Fatalf("ParseEPD error: %v", err)
+	}
+	if len(epd.BestMoves) != 1 || epd.BestMoves[0] != "Nxd7" {
+		t.Errorf("BestMoves = %v, want [Nxd7]", epd.BestMoves)
+	}
+	if len(epd.AvoidMoves) != 1 || epd.AvoidMoves[0] != "exd5" {
+		t.Errorf("AvoidMoves = %v, want [exd5]", epd.AvoidMoves)
+	}
+	if epd.ID != "test.am" {
+		t.Errorf("ID = %q, want %q", epd.ID, "test.am")
+	}
+}
+
+func TestParseEPDComments(t *testing.T) {
+	line := `2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - bm Qg6; c0 "mate in 3"; c1 "famous position"; id "WAC.001";`
+	epd, err := ParseEPD(line)
+	if err != nil {
+		t.Fatalf("ParseEPD error: %v", err)
+	}
+	if len(epd.Comments) != 2 {
+		t.Errorf("Comments count = %d, want 2", len(epd.Comments))
+	}
+	if len(epd.Comments) >= 1 && epd.Comments[0] != "mate in 3" {
+		t.Errorf("Comments[0] = %q, want %q", epd.Comments[0], "mate in 3")
+	}
+	if epd.RawOperands["c0"] != "mate in 3" {
+		t.Errorf("RawOperands[c0] = %q, want %q", epd.RawOperands["c0"], "mate in 3")
+	}
+}
+
+func TestParseEPDMalformed(t *testing.T) {
+	// Too few fields should return error
+	_, err := ParseEPD("rnbqkbnr/pppppppp/8/8")
+	if err == nil {
+		t.Error("Expected error for EPD with too few fields")
+	}
+}
+
+func TestLoadEPDFileWAC(t *testing.T) {
+	positions, err := LoadEPDFile("testdata/wac.epd")
+	if err != nil {
+		t.Fatalf("LoadEPDFile error: %v", err)
+	}
+	if len(positions) < 100 {
+		t.Errorf("Expected at least 100 WAC positions, got %d", len(positions))
+	}
+	// Every position should have at least one best move and an ID
+	for i, pos := range positions {
+		if len(pos.BestMoves) == 0 {
+			t.Errorf("Position %d has no best moves", i)
+			break
+		}
+		if pos.ID == "" {
+			t.Errorf("Position %d has no ID", i)
+			break
+		}
+		// FEN should be parseable
+		var b Board
+		if err := b.SetFEN(pos.FEN + " 0 1"); err != nil {
+			t.Errorf("Position %d (%s): invalid FEN %q: %v", i, pos.ID, pos.FEN, err)
+			break
+		}
+	}
+}
+
+func TestFormatKNPS(t *testing.T) {
+	tests := []struct {
+		nodes   uint64
+		elapsed time.Duration
+		want    string
+	}{
+		{0, 0, "- kNPS"},
+		{1000000, time.Second, "1,000 kNPS"},
+		{500000, time.Second, "500 kNPS"},
+		{50000, time.Second, "50 kNPS"},
+	}
+	for _, tt := range tests {
+		got := FormatKNPS(tt.nodes, tt.elapsed)
+		if got != tt.want {
+			t.Errorf("FormatKNPS(%d, %v) = %q, want %q", tt.nodes, tt.elapsed, got, tt.want)
+		}
+	}
+}
+
 func TestRunEPDTest(t *testing.T) {
 	// Test a simple tactical position
 	epd := &EPDPosition{

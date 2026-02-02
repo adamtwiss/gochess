@@ -119,8 +119,8 @@ Build an opening book from a PGN database of games:
 # Run all tests (includes WAC/ECM suites, takes a few minutes)
 go test
 
-# Run unit tests only (skip EPD suites)
-go test -run 'Test(Print|Zobrist|Bitboard|Perft|SAN|Search|SEE|Eval|LMP)'
+# Run unit tests only (skip slow EPD suites)
+go test -short
 
 # Run benchmarks
 go test -bench .

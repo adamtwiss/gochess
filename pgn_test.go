@@ -187,6 +187,112 @@ func TestParsePGNFileECO(t *testing.T) {
 	}
 }
 
+func TestParsePGNReplayAndHash(t *testing.T) {
+	// Parse a short PGN game, replay all moves on a Board, verify zobrist hash
+	// at the end matches a full recompute. This catches regressions in:
+	// - PGN parsing (tokenizing, comment stripping)
+	// - SAN parsing (disambiguation, captures, promotions, castling)
+	// - Incremental zobrist hashing (MakeMove correctness)
+	input := `[Event "Immortal Game"]
+[White "Anderssen"]
+[Black "Kieseritzky"]
+[Result "1-0"]
+
+1. e4 e5 2. f4 exf4 3. Bc4 Qh4+ 4. Kf1 b5 5. Bxb5 Nf6
+6. Nf3 Qh6 7. d3 Nh5 8. Nh4 Qg5 9. Nf5 c6 10. g4 Nf6
+11. Rg1 cxb5 12. h4 Qg6 13. h5 Qg5 14. Qf3 Ng8 15. Bxf4 Qf6
+16. Nc3 Bc5 17. Nd5 Qxb2 18. Bd6 Bxg1 19. e5 Qxa1+ 20. Ke2 Na6
+21. Nxg7+ Kd8 22. Qf6+ Nxf6 23. Be7# 1-0
+`
+	games, err := ParsePGN(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParsePGN error: %v", err)
+	}
+	if len(games) != 1 {
+		t.Fatalf("expected 1 game, got %d", len(games))
+	}
+
+	g := games[0]
+	if len(g.Moves) == 0 {
+		t.Fatal("game has no moves")
+	}
+
+	var b Board
+	b.Reset()
+
+	for i, san := range g.Moves {
+		m, err := b.ParseSAN(san)
+		if err != nil {
+			t.Fatalf("move %d (%q): ParseSAN error: %v", i+1, san, err)
+		}
+		b.MakeMove(m)
+
+		// Verify hash stays in sync after every move
+		computed := b.Hash()
+		if b.HashKey != computed {
+			t.Fatalf("move %d (%q): hash mismatch: stored=%x computed=%x", i+1, san, b.HashKey, computed)
+		}
+	}
+
+	// Record the final hash for regression detection
+	finalHash := b.HashKey
+	t.Logf("Immortal Game: %d moves replayed, final hash=%x", len(g.Moves), finalHash)
+
+	// Verify the final position FEN is correct
+	// After 23. Be7# the position should have specific characteristics
+	if b.SideToMove != Black {
+		t.Errorf("Expected Black to move after White's last move, got White")
+	}
+	// Black king should be on d8
+	bk := b.Pieces[BlackKing].LSB()
+	if bk != NewSquare(3, 7) {
+		t.Errorf("Black king on %s, expected d8", bk)
+	}
+}
+
+func TestParsePGNReplayECOFile(t *testing.T) {
+	// Replay first 10 games from eco.pgn and verify hashes after each game
+	games, err := ParsePGNFile("testdata/eco.pgn")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	limit := 10
+	if len(games) < limit {
+		limit = len(games)
+	}
+
+	for gi := 0; gi < limit; gi++ {
+		g := games[gi]
+		var b Board
+		b.Reset()
+
+		for i, san := range g.Moves {
+			m, err := b.ParseSAN(san)
+			if err != nil {
+				t.Errorf("game %d (ECO=%s) move %d (%q): ParseSAN error: %v",
+					gi, g.Tags["ECO"], i+1, san, err)
+				break
+			}
+			b.MakeMove(m)
+		}
+
+		// Verify final hash matches full recompute
+		computed := b.Hash()
+		if b.HashKey != computed {
+			t.Errorf("game %d (ECO=%s): final hash mismatch: stored=%x computed=%x",
+				gi, g.Tags["ECO"], b.HashKey, computed)
+		}
+
+		// Verify pawn hash too
+		pawnComputed := b.PawnHash()
+		if b.PawnHashKey != pawnComputed {
+			t.Errorf("game %d (ECO=%s): final pawn hash mismatch: stored=%x computed=%x",
+				gi, g.Tags["ECO"], b.PawnHashKey, pawnComputed)
+		}
+	}
+}
+
 func TestParsePGNFile2600(t *testing.T) {
 	games, err := ParsePGNFile("testdata/2600.pgn")
 	if err != nil {

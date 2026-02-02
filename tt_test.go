@@ -158,6 +158,44 @@ func TestTTBucketBehavior(t *testing.T) {
 	}
 }
 
+func TestTTClear(t *testing.T) {
+	tt := NewTranspositionTable(1)
+
+	// Store some entries
+	for i := uint64(0); i < 100; i++ {
+		tt.Store(i*7777, 5, 100, TTExact, NewMove(12, 28))
+	}
+
+	// Verify entries exist
+	_, found := tt.Probe(0)
+	if !found {
+		t.Error("Entry should exist before Clear")
+	}
+
+	_, _, writes := tt.Stats()
+	if writes == 0 {
+		t.Error("Should have writes before Clear")
+	}
+
+	// Clear and verify everything is gone
+	tt.Clear()
+
+	probes, hits, writes := tt.Stats()
+	if probes != 0 || hits != 0 || writes != 0 {
+		t.Errorf("After Clear: probes=%d, hits=%d, writes=%d, all should be 0", probes, hits, writes)
+	}
+
+	// Probe should miss
+	_, found = tt.Probe(0)
+	if found {
+		t.Error("Entry should not exist after Clear")
+	}
+
+	if tt.Hashfull() != 0 {
+		t.Errorf("Hashfull after Clear = %d, want 0", tt.Hashfull())
+	}
+}
+
 func TestSearchWithTT(t *testing.T) {
 	var b Board
 	b.Reset()
