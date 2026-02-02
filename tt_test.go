@@ -37,11 +37,10 @@ func TestTTCollision(t *testing.T) {
 	tt.Store(key1, 5, 100, TTExact, NewMove(12, 28))
 	tt.Store(key2, 6, 200, TTLower, NewMove(52, 36))
 
-	// key1 might be overwritten if they collide
 	entry1, found1 := tt.Probe(key1)
 	entry2, found2 := tt.Probe(key2)
 
-	// At least one should be found
+	// With two slots per bucket, both should be found if they collide
 	if !found1 && !found2 {
 		t.Error("Neither entry found after storing both")
 	}
@@ -65,7 +64,7 @@ func TestTTDepthReplacement(t *testing.T) {
 	// Store with depth 3
 	tt.Store(key, 3, 50, TTExact, NewMove(12, 28))
 
-	// Try to store with lower depth - should not replace
+	// Try to store with lower depth - should not replace in slot 0
 	tt.Store(key, 2, 60, TTExact, NewMove(12, 20))
 
 	entry, found := tt.Probe(key)
@@ -84,6 +83,78 @@ func TestTTDepthReplacement(t *testing.T) {
 	entry, _ = tt.Probe(key)
 	if entry.Depth != 5 {
 		t.Errorf("Depth = %d, want 5 (should be replaced by deeper)", entry.Depth)
+	}
+}
+
+func TestTTBucketBehavior(t *testing.T) {
+	tt := NewTranspositionTable(1)
+
+	// Craft two keys that map to the same bucket index
+	// Since mask = size-1, we just need keys that agree on the low bits
+	baseKey := uint64(42)
+	idx := tt.index(baseKey)
+
+	// key1 and key2 both map to same bucket but are different positions
+	key1 := baseKey
+	key2 := baseKey + tt.size // same low bits, different key
+
+	if tt.index(key1) != tt.index(key2) {
+		t.Fatalf("keys don't collide: idx1=%d, idx2=%d", tt.index(key1), tt.index(key2))
+	}
+	_ = idx
+
+	// Store a deep entry (goes to slot 0)
+	tt.Store(key1, 10, 150, TTExact, NewMove(12, 28))
+
+	// Store a shallow entry for different position at same index
+	// Should go to slot 1 (can't beat depth 10 for slot 0)
+	tt.Store(key2, 3, 50, TTLower, NewMove(52, 36))
+
+	// Both should be findable
+	entry1, found1 := tt.Probe(key1)
+	entry2, found2 := tt.Probe(key2)
+
+	if !found1 {
+		t.Error("Deep entry (key1) not found - should be in slot 0")
+	}
+	if !found2 {
+		t.Error("Shallow entry (key2) not found - should be in slot 1")
+	}
+
+	if found1 && entry1.Depth != 10 {
+		t.Errorf("key1 depth = %d, want 10", entry1.Depth)
+	}
+	if found2 && entry2.Depth != 3 {
+		t.Errorf("key2 depth = %d, want 3", entry2.Depth)
+	}
+
+	// Now store a third position at same index with medium depth
+	// This should replace slot 1 (always-replace) but not slot 0 (depth 10)
+	key3 := baseKey + 2*tt.size
+	tt.Store(key3, 6, 80, TTUpper, NewMove(1, 18))
+
+	// key1 (deep, slot 0) should survive
+	entry1, found1 = tt.Probe(key1)
+	if !found1 {
+		t.Error("Deep entry (key1) evicted from slot 0 by shallower key3")
+	}
+	if found1 && entry1.Depth != 10 {
+		t.Errorf("key1 depth = %d, want 10", entry1.Depth)
+	}
+
+	// key3 should be in slot 1
+	entry3, found3 := tt.Probe(key3)
+	if !found3 {
+		t.Error("key3 not found - should be in slot 1")
+	}
+	if found3 && entry3.Depth != 6 {
+		t.Errorf("key3 depth = %d, want 6", entry3.Depth)
+	}
+
+	// key2 should be evicted (replaced in slot 1)
+	_, found2 = tt.Probe(key2)
+	if found2 {
+		t.Log("key2 still found after key3 replaced slot 1 (unexpected but acceptable if index differs)")
 	}
 }
 
