@@ -12,8 +12,9 @@ go test -bench .           # Run benchmarks
 go test -run 'Test(Print|Zobrist|Bitboard|Perft|SAN|Search|SEE|Eval|LMP)' # Quick unit tests (skips EPD suites, book, UCI, PGN)
 
 go build -o chess ./cmd/chess    # Build CLI binary
-./chess -e testdata/wac.epd -t 5000 -n 20   # Run EPD test suite
-./chess -uci                                  # Start UCI mode
+./chess -e testdata/wac.epd -t 5000 -n 20              # Run EPD test suite
+./chess -e testdata/wac.epd -t 5000 -n 20 -threads 4   # Run EPD with Lazy SMP (4 threads)
+./chess -uci                                            # Start UCI mode
 ./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin  # Build opening book
 ```
 
@@ -32,11 +33,11 @@ attacks.go           Magic bitboard tables, pre-computed attack lookups
 movegen.go           Pseudo-legal/legal move generation, IsAttacked, InCheck
 makemove.go          MakeMove/UnmakeMove, null move, UndoInfo
 movepicker.go        Staged move ordering for search, IsPseudoLegal
-search.go            Negamax, alpha-beta, iterative deepening, LMR, LMP, PVS
+search.go            Negamax, alpha-beta, iterative deepening, LMR, LMP, PVS, Lazy SMP
 eval.go              Tapered eval: PST, mobility, king safety, positional bonuses, eval cache
 pst.go               PeSTO piece-square tables, material values, phase constants
 pawns.go             Pawn structure eval (doubled/isolated/passed), pawn hash table, pawn shield
-tt.go                Transposition table (two-slot buckets: depth-preferred + always-replace)
+tt.go                Transposition table (lockless, two-slot buckets: depth-preferred + always-replace)
 zobrist.go           Zobrist hash keys, incremental hashing
 see.go               Static Exchange Evaluation for capture ordering
 san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
@@ -97,7 +98,7 @@ Selection sort within each stage (partial sort, only finds next-best on demand).
 
 Negamax with alpha-beta pruning, iterative deepening with time control.
 
-- **Transposition table**: Probe before search, store after. Two-slot buckets: slot 0 is depth-preferred, slot 1 is always-replace. Mate scores adjusted by ply distance to prevent stale mate evaluations.
+- **Transposition table**: Probe before search, store after. Two-slot buckets: slot 0 is depth-preferred, slot 1 is always-replace. Lockless thread-safe via packed atomic `uint64` fields with XOR verification (see Lazy SMP section). Mate scores adjusted by ply distance to prevent stale mate evaluations.
 - **Null-move pruning**: Skip turn and search with reduced depth (R=3 if depth>=7, else R=2). Requires depth >= 3, non-pawn material, not in check.
 - **Reverse Futility Pruning**: At shallow depths (depth <= 3), prune whole node if static eval minus margin (depth * 120) exceeds beta.
 - **Futility pruning**: At depth <= 2, skip quiet non-checking moves when static eval plus margin cannot raise alpha.
@@ -112,6 +113,17 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Counter-move heuristic**: `CounterMoves[piece][toSquare]` indexed by opponent's previous move. Stored on beta cutoff, used as a MovePicker stage between killers and quiets.
 - **History heuristic**: `history[from][to] += depth * depth` on beta cutoff. Quiet moves tried before the cutoff move receive a matching penalty (`-= depth * depth`). Used to score quiet moves in move ordering and to adjust LMR reductions.
 - **Time management**: Checks clock every 4096 nodes. Iterative deepening allows stopping between depths. Early exit if remaining time is less than last iteration took.
+- **Lazy SMP**: Multi-threaded search via `SearchParallel()`. All threads search the same root position independently, sharing only the transposition table. Each thread has its own `Board` copy (with undo stack for repetition detection), `SearchInfo` (killers, history, counter-moves), eval cache, and pawn hash table. Helper threads use depth diversification (a skip table indexed by thread index and depth) to ensure threads are at different depths at any given time, improving TT entry diversity. The main thread (thread 0) runs normally with the `OnDepth` callback; helper threads run a stripped-down iterative deepening loop. Node counts from all threads are aggregated for NPS reporting. Default: 1 thread (no behavior change). Configurable via UCI `Threads` option (1-256) and `-threads` CLI flag.
+
+### Transposition Table Thread Safety
+
+The TT uses a lockless scheme for concurrent access by multiple search threads:
+- Each entry is stored as two `uint64` fields: `keyXor` and `data`
+- `data` packs move (16 bits), flag (8 bits), score (16 bits), and depth (8 bits) into a single `uint64`
+- `keyXor = key ^ data` — on read, the stored key is recovered as `keyXor ^ data` and verified against the requested key
+- All reads/writes use `atomic.LoadUint64`/`atomic.StoreUint64`
+- Torn reads (where one field is from an old write and the other from a new write) are detected by the XOR verification and treated as misses
+- Stats counters use `atomic.AddUint64`
 
 ### Evaluation
 
@@ -142,7 +154,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### UCI Protocol
 
-`uci.go` implements the Universal Chess Interface. Supports: `position` (startpos/FEN + moves), `go` (time controls, depth, movetime, infinite, ponder), `stop`, `setoption` (Hash, Ponder, OwnBook, BookFile), `ponderhit`. Search runs in a goroutine; `stop` signals via `SearchInfo.Deadline`. Opening book consulted before search when enabled.
+`uci.go` implements the Universal Chess Interface. Supports: `position` (startpos/FEN + moves), `go` (time controls, depth, movetime, infinite, ponder), `stop`, `setoption` (Hash, Threads, Ponder, OwnBook, BookFile), `ponderhit`. Search runs in a goroutine using `SearchParallel` with the configured thread count; `stop` signals all threads via `SearchInfo.Stopped`. Opening book consulted before search when enabled.
 
 ### EPD / Test Suites
 
@@ -157,7 +169,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 `cmd/chess/main.go` — Four modes:
 
 - **Interactive CLI**: Default when stdin is a terminal and no flags given. Provides commands: `set`, `fen`, `board`, `reset`, `moves`, `search`, `eval`, `epd`, `perft`, `uci`. Implemented in `cli.go` (`CLIEngine`).
-- **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output)
+- **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output), `-threads` (Lazy SMP thread count)
 - **UCI mode**: `-uci`, with optional `-book` (opening book path)
 - **Book building**: `-buildbook`, `-pgn`, `-eco`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
 
@@ -171,3 +183,5 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - TT mate scores are ply-adjusted: stored as `mate + ply`, retrieved as `mate - ply`.
 - Eval cache uses full `HashKey` (includes side-to-move). `Evaluate()` is White-relative, so same position with different side-to-move gets separate cache entries — correct but slightly lower hit rate.
 - Pawn hash table and eval cache auto-initialize on first `Evaluate()` call if nil.
+- Lazy SMP threads share only the TT. Board, SearchInfo, eval cache, and pawn table are per-thread. The `Stopped` and `Deadline` fields on `SearchInfo` are accessed atomically (`int32`/`int64`). When adding new shared state, it must use atomic operations or be per-thread.
+- TT `Probe`/`Store` are lockless via packed atomics — do not add non-atomic fields to `ttSlot`.

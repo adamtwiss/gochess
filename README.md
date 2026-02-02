@@ -6,7 +6,8 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 
 - Bitboard-based board representation with magic bitboard move generation
 - Negamax search with alpha-beta pruning, iterative deepening, and PVS
-- Transposition table, null-move pruning, late move reductions, late move pruning
+- Lazy SMP multi-threaded search (configurable thread count)
+- Lockless transposition table, null-move pruning, late move reductions, late move pruning
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
 - Opening book support (built from PGN databases)
 - Full UCI protocol support for use with chess GUIs
@@ -39,6 +40,7 @@ The engine also enters UCI mode automatically when stdin is not a terminal (e.g.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `Hash` | 64 | Transposition table size in MB |
+| `Threads` | 1 | Number of search threads (Lazy SMP) |
 | `Ponder` | false | Enable pondering |
 | `OwnBook` | false | Use the engine's opening book |
 | `BookFile` | | Path to opening book file |
@@ -74,6 +76,9 @@ Run standard test suites (e.g., WAC, ECM) to evaluate engine strength:
 # Run the WAC suite with 5 seconds per position
 ./chess -e testdata/wac.epd -t 5000
 
+# Run with 4 search threads (Lazy SMP)
+./chess -e testdata/wac.epd -t 5000 -threads 4
+
 # Run the first 20 positions with verbose output
 ./chess -e testdata/wac.epd -t 5000 -n 20 -v
 
@@ -89,6 +94,7 @@ Run standard test suites (e.g., WAC, ECM) to evaluate engine strength:
 | `-d` | 64 | Maximum search depth |
 | `-hash` | 64 | Transposition table size in MB |
 | `-v` | false | Verbose output with board display and per-depth info |
+| `-threads` | 1 | Number of search threads (Lazy SMP) |
 
 ### Building an Opening Book
 

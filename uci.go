@@ -23,6 +23,7 @@ type UCIEngine struct {
 	board        Board
 	tt           *TranspositionTable
 	hashSizeMB   int
+	threads      int // number of search threads (Lazy SMP)
 	searchInfo   *SearchInfo
 	searchMu     sync.Mutex
 	searchWg     sync.WaitGroup
@@ -48,6 +49,7 @@ func NewUCIEngineWithIO(in io.Reader, out io.Writer) *UCIEngine {
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 	e := &UCIEngine{
 		hashSizeMB: 64,
+		threads:    1,
 		input:      scanner,
 		output:     out,
 		ponderOpt:  true,
@@ -105,6 +107,7 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("id name GoChess")
 	e.send("id author Adam")
 	e.send("option name Hash type spin default 64 min 1 max 4096")
+	e.send("option name Threads type spin default 1 min 1 max 256")
 	e.send("option name Ponder type check default true")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
@@ -282,6 +285,7 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			d, scoreStr, nodes, nps, ms, hashfull, strings.Join(pvStrs, " "))
 	}
 	e.searchInfo = info
+	numThreads := e.threads
 
 	if params.ponder {
 		e.pondering = true
@@ -294,7 +298,7 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 	e.searchWg.Add(1)
 	go func() {
 		defer e.searchWg.Done()
-		bestMove, searchResult := searchBoard.SearchWithInfo(params.depth, info)
+		bestMove, searchResult := searchBoard.SearchParallel(params.depth, info, numThreads)
 
 		// If pondering and search finished before ponderhit/stop, wait
 		e.searchMu.Lock()
@@ -336,6 +340,12 @@ func (e *UCIEngine) cmdStop() {
 	e.searchMu.Lock()
 	if e.searchInfo != nil {
 		atomic.StoreInt32(&e.searchInfo.Stopped, 1)
+		// Stop helper threads (Lazy SMP) — SearchParallel also does this
+		// when the main thread returns, but stopping them here too ensures
+		// faster shutdown when cmdStop is called externally.
+		for _, h := range e.searchInfo.HelperInfos {
+			atomic.StoreInt32(&h.Stopped, 1)
+		}
 	}
 	if e.pondering {
 		e.pondering = false
@@ -432,6 +442,15 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.hashSizeMB = mb
 		e.tt = NewTranspositionTable(mb)
+	} else if strings.EqualFold(name, "Threads") {
+		n, err := strconv.Atoi(tokens[valueIdx])
+		if err != nil || n < 1 {
+			return
+		}
+		if n > 256 {
+			n = 256
+		}
+		e.threads = n
 	} else if strings.EqualFold(name, "Ponder") {
 		e.ponderOpt = strings.EqualFold(tokens[valueIdx], "true")
 	} else if strings.EqualFold(name, "OwnBook") {

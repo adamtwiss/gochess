@@ -751,3 +751,40 @@ func TestKingAttackAndCastlingRights(t *testing.T) {
 		t.Error("Position with White castling rights should evaluate better for White")
 	}
 }
+
+func TestSearchParallel(t *testing.T) {
+	var b Board
+	b.Reset()
+
+	tt := NewTranspositionTable(16)
+
+	// Search with 1 thread
+	info1 := &SearchInfo{
+		StartTime: time.Now(),
+		TT:        tt,
+	}
+	move1, result1 := b.SearchParallel(7, info1, 1)
+	t.Logf("1 thread: move=%s, depth=%d, nodes=%d, score=%d", move1.String(), result1.Depth, result1.Nodes, result1.Score)
+
+	// Search with 4 threads (use a fresh TT to ensure fair comparison)
+	tt2 := NewTranspositionTable(16)
+	b.Reset()
+	info2 := &SearchInfo{
+		StartTime: time.Now(),
+		TT:        tt2,
+	}
+	move2, result2 := b.SearchParallel(7, info2, 4)
+	t.Logf("4 threads: move=%s, depth=%d, nodes=%d, score=%d", move2.String(), result2.Depth, result2.Nodes, result2.Score)
+
+	if move1 == NoMove {
+		t.Error("1-thread search returned no move")
+	}
+	if move2 == NoMove {
+		t.Error("4-thread search returned no move")
+	}
+
+	// Multi-threaded should use more total nodes (helpers contribute)
+	if result2.Nodes <= result1.Nodes/2 {
+		t.Errorf("4-thread node count (%d) suspiciously low vs 1-thread (%d)", result2.Nodes, result1.Nodes)
+	}
+}

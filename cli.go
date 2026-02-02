@@ -314,7 +314,7 @@ func (c *CLIEngine) cmdEPD(rawArgs string) {
 	maxTime := 5 * time.Minute
 	info.MaxTime = maxTime
 
-	result, err := RunEPDTestWithInfo(epd, maxDepth, maxTime, c.tt, info)
+	result, err := RunEPDTestWithInfo(epd, maxDepth, maxTime, c.tt, info, 1)
 
 	close(done)
 	signal.Stop(sigCh)

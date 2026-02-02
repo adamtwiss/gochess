@@ -19,6 +19,9 @@ func main() {
 	hashMB := flag.Int("hash", 64, "transposition table size in MB")
 	verbose := flag.Bool("v", false, "verbose output: show board, per-depth search info, and stats")
 
+	// SMP flag
+	threads := flag.Int("threads", 1, "number of search threads (Lazy SMP)")
+
 	// Book building flags
 	buildBook := flag.Bool("buildbook", false, "build opening book from PGN files")
 	bookPGN := flag.String("pgn", "", "PGN file with GM games for book building")
@@ -40,7 +43,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  chess                                          # interactive mode\n")
 		fmt.Fprintf(os.Stderr, "  chess -uci                                     # UCI mode\n")
-		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20\n")
+		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20 -threads 4\n")
 		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -eco eco.pgn -bookout book.bin\n")
 		fmt.Fprintf(os.Stderr, "  chess -book book.bin\n")
 	}
@@ -65,7 +68,7 @@ func main() {
 	}
 
 	if *epdFile != "" {
-		runEPD(*epdFile, *depth, time.Duration(*maxTimeMS)*time.Millisecond, *maxPositions, *hashMB, *verbose)
+		runEPD(*epdFile, *depth, time.Duration(*maxTimeMS)*time.Millisecond, *maxPositions, *hashMB, *verbose, *threads)
 		return
 	}
 
@@ -110,7 +113,7 @@ func pvToSAN(b *chess.Board, pv []chess.Move) string {
 	return strings.Join(parts, " ")
 }
 
-func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int, hashMB int, verbose bool) {
+func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int, hashMB int, verbose bool, threads int) {
 	positions, err := chess.LoadEPDFile(filename)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading EPD file: %v\n", err)
@@ -129,8 +132,8 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 	suiteStart := time.Now()
 
 	fmt.Printf("EPD Test Suite: %s\n", filename)
-	fmt.Printf("Positions: %d, Depth: %d, Time: %v, Hash: %dMB\n\n",
-		len(positions), depth, maxTime, hashMB)
+	fmt.Printf("Positions: %d, Depth: %d, Time: %v, Hash: %dMB, Threads: %d\n\n",
+		len(positions), depth, maxTime, hashMB, threads)
 
 	for i, pos := range positions {
 		tt.Clear()
@@ -141,7 +144,7 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 		}
 
 		if verbose {
-			result, err := runVerbose(pos, id, depth, maxTime, tt)
+			result, err := runVerbose(pos, id, depth, maxTime, tt, threads)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error on position %d: %v\n", i+1, err)
 				continue
@@ -159,7 +162,7 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 			}
 			fmt.Printf("[%s] %s: found %s, expected %s\n\n", status, id, result.BestMoveSAN, expected)
 		} else {
-			result, err := chess.RunEPDTest(pos, depth, maxTime, tt)
+			result, err := chess.RunEPDTestWithInfo(pos, depth, maxTime, tt, nil, threads)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error on position %d: %v\n", i+1, err)
 				continue
@@ -201,7 +204,7 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 	fmt.Printf("Total time: %v\n", elapsed.Round(time.Millisecond))
 }
 
-func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Duration, tt *chess.TranspositionTable) (*chess.EPDTestResult, error) {
+func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Duration, tt *chess.TranspositionTable, threads int) (*chess.EPDTestResult, error) {
 	var b chess.Board
 	fullFEN := pos.FEN + " 0 1"
 	if err := b.SetFEN(fullFEN); err != nil {
@@ -220,7 +223,7 @@ func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Durat
 		},
 	}
 
-	result, err := chess.RunEPDTestWithInfo(pos, depth, maxTime, tt, info)
+	result, err := chess.RunEPDTestWithInfo(pos, depth, maxTime, tt, info, threads)
 	if err != nil {
 		return nil, err
 	}

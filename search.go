@@ -2,6 +2,7 @@ package chess
 
 import (
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -105,6 +106,13 @@ type SearchInfo struct {
 
 	// Static eval at each ply, for "improving" detection (LMR/LMP adjustment)
 	StaticEvals [MaxPly + 1]int
+
+	// ThreadIndex identifies this thread (0 = main thread)
+	ThreadIndex int
+
+	// HelperInfos holds pointers to helper thread SearchInfos.
+	// Only used by the main thread (ThreadIndex 0) for node aggregation in OnDepth.
+	HelperInfos []*SearchInfo
 
 	// Pre-allocated search structures (avoid per-node heap allocations)
 	pickers [MaxPly + MaxQSDepth]MovePicker
@@ -248,6 +256,202 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 	}
 
 	return bestMove, *info
+}
+
+// smpSkipDepths controls depth diversification for Lazy SMP helper threads.
+// Each row is indexed by (depth % len(row)). A true value means the helper
+// thread at that index should skip searching at that depth during iterative
+// deepening. This ensures threads are at different depths at any given time,
+// improving TT diversity. Rows are assigned to threads round-robin.
+var smpSkipDepths = [20][]bool{
+	{false, true},                   // thread 1
+	{false, false, true},            // thread 2
+	{false, false, false, true},     // thread 3
+	{false, true, false, true},      // thread 4
+	{false, false, true, false, true},                    // thread 5
+	{false, false, false, true, false, true},             // thread 6
+	{false, false, false, false, true, false, true},      // thread 7
+	{false, true, false, false, false, true, false, true}, // thread 8
+	{false, false, true, false, false, false, true, false, true},             // thread 9
+	{false, false, false, true, false, false, false, true, false, true},      // thread 10
+	{false, false, false, false, true, false, false, false, true, false, true}, // thread 11
+	{false, true, false, false, false, false, true, false, false, false, true}, // thread 12
+	{false, false, true, false, false, false, false, true, false, false, false, true},      // thread 13
+	{false, false, false, true, false, false, false, false, true, false, false, false, true}, // thread 14
+	{false, false, false, false, true, false, false, false, false, true, false, false, false}, // thread 15
+	{false, true, false, false, false, false, false, true, false, false, false, false, true},  // thread 16
+	{false, false, true, false, false, false, false, false, true, false, false, false, false},  // thread 17
+	{false, false, false, true, false, false, false, false, false, true, false, false, false},  // thread 18
+	{false, false, false, false, true, false, false, false, false, false, true, false, false},  // thread 19
+	{false, true, false, false, false, false, false, false, true, false, false, false, false},  // thread 20
+}
+
+// SearchParallel performs search using Lazy SMP with numThreads threads.
+// All threads share the transposition table; each has its own Board, SearchInfo,
+// eval cache, and pawn hash table. The main thread (thread 0) runs with the
+// provided info (including OnDepth callback). Helper threads use depth
+// diversification to improve TT coverage.
+//
+// If numThreads <= 1, delegates directly to SearchWithInfo.
+func (b *Board) SearchParallel(maxDepth int, info *SearchInfo, numThreads int) (Move, SearchInfo) {
+	if numThreads <= 1 {
+		return b.SearchWithInfo(maxDepth, info)
+	}
+
+	// Create helper thread infos
+	helpers := make([]*SearchInfo, numThreads-1)
+	helperBoards := make([]Board, numThreads-1)
+
+	for i := 0; i < numThreads-1; i++ {
+		// Deep copy the board (including undo stack for repetition detection)
+		helperBoards[i] = *b
+		helperBoards[i].UndoStack = make([]UndoInfo, len(b.UndoStack), len(b.UndoStack)+256)
+		copy(helperBoards[i].UndoStack, b.UndoStack)
+		// Per-thread eval and pawn tables
+		helperBoards[i].PawnTable = NewPawnTable(1)
+		helperBoards[i].EvalTable = NewEvalTable(1)
+
+		helpers[i] = &SearchInfo{
+			StartTime:   info.StartTime,
+			MaxTime:     info.MaxTime,
+			TT:          info.TT, // shared TT
+			ThreadIndex: i + 1,
+		}
+		// Copy deadline
+		if d := atomic.LoadInt64(&info.Deadline); d > 0 {
+			atomic.StoreInt64(&helpers[i].Deadline, d)
+		}
+	}
+
+	// Store helper infos on the main thread for node aggregation
+	info.HelperInfos = helpers
+	info.ThreadIndex = 0
+
+	// Wrap the main thread's OnDepth to aggregate nodes from all threads
+	callerOnDepth := info.OnDepth
+	if callerOnDepth != nil {
+		info.OnDepth = func(d, score int, nodes uint64, pv []Move) {
+			// Aggregate nodes from all helpers
+			totalNodes := nodes
+			for _, h := range helpers {
+				totalNodes += atomic.LoadUint64(&h.Nodes)
+			}
+			callerOnDepth(d, score, totalNodes, pv)
+		}
+	}
+
+	// Launch helper goroutines
+	var wg sync.WaitGroup
+	for i := 0; i < numThreads-1; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			helperSearch(&helperBoards[idx], maxDepth, helpers[idx])
+		}(i)
+	}
+
+	// Main thread searches normally
+	bestMove, result := b.SearchWithInfo(maxDepth, info)
+
+	// Stop all helpers
+	for _, h := range helpers {
+		atomic.StoreInt32(&h.Stopped, 1)
+	}
+	wg.Wait()
+
+	// Aggregate final node count
+	for _, h := range helpers {
+		result.Nodes += atomic.LoadUint64(&h.Nodes)
+	}
+
+	return bestMove, result
+}
+
+// helperSearch runs iterative deepening with depth diversification for a helper thread.
+// It uses the same logic as SearchWithInfo but skips some depths based on the
+// thread's skip pattern to ensure threads are at different depths.
+func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
+	if info.TT == nil {
+		info.TT = NewTranspositionTable(16)
+	}
+
+	// Clear per-search tables
+	for i := range info.History {
+		for j := range info.History[i] {
+			info.History[i][j] = 0
+		}
+	}
+	for i := range info.Killers {
+		info.Killers[i][0] = NoMove
+		info.Killers[i][1] = NoMove
+	}
+	for i := range info.CounterMoves {
+		for j := range info.CounterMoves[i] {
+			info.CounterMoves[i][j] = NoMove
+		}
+	}
+	for i := range info.ExcludedMove {
+		info.ExcludedMove[i] = NoMove
+	}
+
+	if info.MaxTime > 0 && atomic.LoadInt64(&info.Deadline) == 0 {
+		atomic.StoreInt64(&info.Deadline, info.StartTime.Add(info.MaxTime).UnixNano())
+	}
+
+	// Select skip pattern for this thread
+	skipIdx := (info.ThreadIndex - 1) % len(smpSkipDepths)
+	skipPattern := smpSkipDepths[skipIdx]
+
+	prevScore := 0
+
+	for depth := 1; depth <= maxDepth; depth++ {
+		// Depth diversification: skip some depths based on thread's pattern
+		if len(skipPattern) > 0 && skipPattern[depth%len(skipPattern)] {
+			continue
+		}
+
+		info.Depth = depth
+
+		var score int
+		if depth >= 4 && prevScore > -MateScore+100 && prevScore < MateScore-100 {
+			delta := 25
+			alpha, beta := prevScore-delta, prevScore+delta
+			for {
+				score = b.negamax(depth, 0, alpha, beta, info)
+				if atomic.LoadInt32(&info.Stopped) != 0 {
+					break
+				}
+				if score <= alpha {
+					delta = widenDelta(delta)
+					alpha = prevScore - delta
+					continue
+				}
+				if score >= beta {
+					delta = widenDelta(delta)
+					beta = prevScore + delta
+					continue
+				}
+				break
+			}
+		} else {
+			score = b.negamax(depth, 0, -Infinity, Infinity, info)
+		}
+
+		if atomic.LoadInt32(&info.Stopped) != 0 {
+			break
+		}
+
+		prevScore = score
+
+		// Check time: stop if remaining time is less than last iteration
+		if d := atomic.LoadInt64(&info.Deadline); d > 0 {
+			now := time.Now().UnixNano()
+			remaining := d - now
+			if remaining <= 0 {
+				break
+			}
+		}
+	}
 }
 
 // widenDelta returns the next wider aspiration window delta

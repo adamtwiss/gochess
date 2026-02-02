@@ -126,13 +126,14 @@ type EPDTestResult struct {
 // It also tracks solve time: the earliest point where the engine found the correct
 // move and never switched away.
 func RunEPDTest(epd *EPDPosition, depth int, maxTime time.Duration, tt *TranspositionTable) (*EPDTestResult, error) {
-	return RunEPDTestWithInfo(epd, depth, maxTime, tt, nil)
+	return RunEPDTestWithInfo(epd, depth, maxTime, tt, nil, 1)
 }
 
 // RunEPDTestWithInfo is like RunEPDTest but accepts an optional SearchInfo for
 // caller-provided callbacks. If info is nil, a default is created. The caller's
 // OnDepth callback (if set) is invoked after solve tracking for each depth.
-func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *TranspositionTable, info *SearchInfo) (*EPDTestResult, error) {
+// numThreads controls Lazy SMP parallelism (1 = single-threaded).
+func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *TranspositionTable, info *SearchInfo, numThreads int) (*EPDTestResult, error) {
 	var b Board
 	fullFEN := epd.FEN + " 0 1"
 	if err := b.SetFEN(fullFEN); err != nil {
@@ -186,7 +187,7 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 		}
 	}
 
-	bestMove, searchInfo := b.SearchWithInfo(depth, info)
+	bestMove, searchInfo := b.SearchParallel(depth, info, numThreads)
 	elapsed := time.Since(start)
 
 	result := &EPDTestResult{
