@@ -120,7 +120,13 @@ func runTune(args []string) {
 	fs.Parse(args)
 
 	tuner := chess.NewTuner()
-	fmt.Printf("Parameter count: %d\n", tuner.NumParams())
+	frozenCount := 0
+	for _, f := range tuner.Frozen {
+		if f {
+			frozenCount++
+		}
+	}
+	fmt.Printf("Parameter count: %d (%d tunable, %d frozen)\n", tuner.NumParams(), tuner.NumParams()-frozenCount, frozenCount)
 	fmt.Printf("Loading training data from %s...\n", *dataFile)
 
 	start := time.Now()

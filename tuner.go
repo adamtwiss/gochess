@@ -41,6 +41,7 @@ type TunerEntry struct {
 type Tuner struct {
 	Params []TunerParam   // parameter metadata
 	Values []float64      // current parameter values
+	Frozen []bool         // if true, parameter is pinned and not updated during tuning
 	Traces []TunerEntry   // loaded training data
 
 	// Parameter index ranges for output formatting
@@ -316,6 +317,15 @@ func (t *Tuner) initTunerParams() {
 	// Close last section
 	if len(t.sections) > 0 {
 		t.sections[len(t.sections)-1].endIndex = len(t.Params)
+	}
+
+	// Freeze material values — well-established and prone to coupling with PSTs
+	t.Frozen = make([]bool, len(t.Params))
+	for i := idxMaterialMG; i < idxMaterialMG+5; i++ {
+		t.Frozen[i] = true
+	}
+	for i := idxMaterialEG; i < idxMaterialEG+5; i++ {
+		t.Frozen[i] = true
 	}
 }
 
@@ -1237,6 +1247,9 @@ func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, err floa
 
 		// Adam update
 		for j := 0; j < np; j++ {
+			if t.Frozen[j] {
+				continue
+			}
 			m[j] = cfg.Beta1*m[j] + (1-cfg.Beta1)*grad[j]
 			v[j] = cfg.Beta2*v[j] + (1-cfg.Beta2)*grad[j]*grad[j]
 
