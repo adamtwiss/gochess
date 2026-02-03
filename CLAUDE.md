@@ -12,10 +12,14 @@ go test -bench .           # Run benchmarks
 go test -short              # Run unit tests only (skips slow EPD suites)
 
 go build -o chess ./cmd/chess    # Build CLI binary
+go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -e testdata/wac.epd -t 5000 -n 20              # Run EPD test suite
 ./chess -e testdata/wac.epd -t 5000 -n 20 -threads 4   # Run EPD with Lazy SMP (4 threads)
 ./chess -uci                                            # Start UCI mode
 ./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin  # Build opening book
+
+./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data
+./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
 ```
 
 ## Project Structure
@@ -24,7 +28,8 @@ Chess engine in Go using bitboard representation. Core library is `package chess
 
 ```
 cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder, interactive CLI)
-testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, 2600.pgn, eco.pgn)
+cmd/tuner/main.go    Texel tuner CLI (selfplay data generation, parameter optimization)
+testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, noob_3moves.epd, 2600.pgn, eco.pgn)
 book.bin             Compiled opening book (binary format)
 board.go             Board struct, piece types, FEN parsing, pieceOf() helper
 move.go              Move encoding (16-bit), flags, NoMove sentinel
@@ -46,6 +51,8 @@ pgn.go               PGN game parsing (tags, moves)
 book.go              Opening book: build from PGN, binary format, weighted move selection
 uci.go               UCI protocol (position, go, setoption, ponder)
 cli.go               Interactive CLI engine (set, fen, board, eval, moves, search, epd, perft)
+selfplay.go          Self-play game generation for tuning data
+tuner.go             Texel tuner: parameter catalog, trace-based eval, Adam optimizer
 ```
 
 ## Architecture
@@ -165,6 +172,27 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 `ParsePGN()` / `ParsePGNFile()` parse PGN format into `PGNGame` structs (tag pairs + move list). Used by the opening book builder. Handles brace comments, NAGs, and result tokens.
 
+### Texel Tuner
+
+`cmd/tuner/main.go` — Two-phase system for optimizing ~1038 evaluation parameters.
+
+**Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;result` lines. Games run concurrently with independent Board+TT per game.
+
+**Parameter optimization** (`tuner.go`): Texel tuning via Adam optimizer. A `Tuner` holds the parameter catalog and training data:
+
+- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (22), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), misc (10).
+- `computeTrace()` mirrors `Evaluate()` but records sparse MG/EG coefficients per parameter instead of computing a score. Each position produces a `TunerTrace` with `[]SparseEntry` for MG and EG contributions.
+- `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
+- `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
+- `TuneK()` finds optimal K via golden section search on MSE
+- `Tune()` runs Adam optimizer: parallel gradient computation across CPU cores, each position contributes `d(sigmoid)/d(param)` scaled by MG/EG phase blend
+
+**What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, etc.), passed pawn enhancements (not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement), king attack unit weights, king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), space/threat/castling bonuses.
+
+**What's NOT tuned**: Endgame scale factors (multiplicative), phase constants, PST scale factors (folded into PST values), 50-move rule scaling.
+
+**PST scaling note**: Tuned PST values are *effective* values (raw table value × scale/100). Output sets all PST scale factors to 100. This avoids coupling between table values and scale factors during optimization.
+
 ### CLI
 
 `cmd/chess/main.go` — Four modes:
@@ -186,3 +214,6 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - Pawn hash table and eval cache auto-initialize on first `Evaluate()` call if nil.
 - Lazy SMP threads share only the TT. Board, SearchInfo, eval cache, and pawn table are per-thread. The `Stopped` and `Deadline` fields on `SearchInfo` are accessed atomically (`int32`/`int64`). When adding new shared state, it must use atomic operations or be per-thread.
 - TT `Probe`/`Store` are lockless via packed atomics — do not add non-atomic fields to `ttSlot`.
+- Tuner PST parameters are pre-scaled (raw × scale/100). Adding a new PST-related eval term requires initializing the tuner param with the effective value, not the raw table value.
+- Tuner traces must mirror `Evaluate()` exactly. When modifying eval, update `computeTrace()` in tuner.go to match. Non-additive eval terms (king safety table lookup, endgame scaling, 50-move scaling) cannot be represented in the trace.
+- Tuner's `PassedPawnKingScale` uses initial engine values as constant coefficients to avoid circular dependency with distance parameters (product of two tunable params).

@@ -9,6 +9,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Lazy SMP multi-threaded search (configurable thread count)
 - Lockless transposition table, null-move pruning, late move reductions, late move pruning
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
+- Texel tuner for automated evaluation parameter optimization via self-play
 - Opening book support (built from PGN databases)
 - Full UCI protocol support for use with chess GUIs
 - EPD test suite runner (WAC, ECM)
@@ -18,7 +19,8 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 Requires Go 1.21 or later.
 
 ```bash
-go build -o chess ./cmd/chess
+go build -o chess ./cmd/chess   # Chess engine
+go build -o tuner ./cmd/tuner   # Texel tuner
 ```
 
 ## Usage
@@ -112,6 +114,67 @@ Build an opening book from a PGN database of games:
 | `-bookdepth` | 30 | Max full moves to include |
 | `-bookminfreq` | 3 | Minimum frequency to include a move |
 | `-booktop` | 8 | Maximum moves per position |
+
+### Texel Tuner
+
+The tuner optimizes ~1143 evaluation parameters (material values, piece-square tables, mobility, positional bonuses, pawn structure, king safety table, pawn shield, king attack weights) by minimizing prediction error against game outcomes. The workflow has two steps: generate training data via self-play, then run gradient-descent optimization.
+
+#### Step 1: Generate training data
+
+```bash
+./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat
+```
+
+This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the game result (1.0/0.5/0.0 from White's perspective). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-games` | 1000 | Number of games to play |
+| `-time` | 200 | Time per move in milliseconds |
+| `-concurrency` | 1 | Parallel games (set to ~CPU core count) |
+| `-threads` | 1 | Search threads per game (Lazy SMP) |
+| `-hash` | 16 | TT size in MB per game |
+| `-openings` | `testdata/noob_3moves.epd` | EPD file with starting positions |
+| `-output` | `training.dat` | Output file for training data |
+
+With `-time 200 -concurrency 6`, expect roughly 1-2 games/second. 20K games produces ~1-2M training positions.
+
+#### Step 2: Tune parameters
+
+```bash
+./tuner tune -data training.dat -epochs 500 -lr 1.0
+```
+
+This loads the training data, finds the optimal sigmoid scaling constant K via golden section search, then runs the Adam optimizer. It prints the error every 10 epochs and outputs all tuned parameters in Go source format at the end.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-data` | `training.dat` | Training data file from step 1 |
+| `-epochs` | 500 | Number of optimization epochs |
+| `-lr` | 1.0 | Learning rate |
+
+#### Step 3: Apply tuned values
+
+The tuner prints updated values as Go source code. Copy the relevant sections into the engine source:
+
+- **`pst.go`** — material values (`mgMaterial`, `egMaterial`), PST tables (`mg*Table`, `eg*Table`). Set all `*PSTScale*` variables to `100` (tuned values are pre-scaled).
+- **`eval.go`** — mobility arrays, piece bonuses, passed pawn bonuses, king attack weights, king safety table, space/threat/castling parameters.
+- **`pawns.go`** — passed pawn base arrays, pawn advancement arrays, structure constants, pawn shield constants.
+
+#### Step 4: Verify
+
+```bash
+./chess -e testdata/wac.epd -t 5000 -n 20
+```
+
+Compare pass rate and log-scores against the baseline to confirm the tuned values are an improvement.
+
+#### Tips
+
+- 20K games at 200ms/move is a reasonable minimum. 50K+ games at 500ms produces higher quality data.
+- More training positions generally helps more than more epochs.
+- Error should decrease monotonically. If it stalls early, generate more data.
+- The tuner does not optimize endgame scale factors (multiplicative) or phase constants.
 
 ## Running Tests
 

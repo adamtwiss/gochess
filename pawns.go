@@ -301,12 +301,13 @@ func (b *Board) probePawnEval() PawnEntry {
 	return entry
 }
 
-// King safety constants
-const (
-	shieldPawnRank2MG    = 15
-	shieldPawnRank3MG    = 10
-	missingShieldPawnMG  = -15
-	semiOpenFileNearKingMG = -10
+// King safety constants (vars for tuner access)
+var (
+	shieldPawnRank2MG          = 15
+	shieldPawnRank3MG          = 10
+	missingShieldPawnMG        = -15
+	missingShieldPawnAdvancedMG = -7 // reduced penalty when pawn is advanced (rank 4)
+	semiOpenFileNearKingMG     = -10
 )
 
 // evaluateKingSafety evaluates king safety for one color.
@@ -366,7 +367,7 @@ func (b *Board) evaluateKingSafety(color Color) (mg, eg int) {
 			hasAdvancedPawn := (color == White && filePawns&Rank4 != 0) ||
 				(color == Black && filePawns&Rank5 != 0)
 			if hasAdvancedPawn {
-				mg += missingShieldPawnMG / 2
+				mg += missingShieldPawnAdvancedMG
 			} else {
 				mg += missingShieldPawnMG
 			}

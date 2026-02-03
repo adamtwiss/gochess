@@ -121,6 +121,10 @@ var (
 	PawnThreatQueenEG = 20
 )
 
+// Tempo bonus for the side to move.
+var TempoMG = 15
+var TempoEG = 8
+
 // OCBScale is the endgame scale factor (out of 128) for opposite-colored bishop endings.
 var OCBScale = 64
 
@@ -250,6 +254,14 @@ func (b *Board) Evaluate() int {
 		wSPeg - bSPeg +
 		wTeg - bTeg +
 		ekEG
+
+	// Tempo bonus for the side to move
+	tempoSign := 1
+	if b.SideToMove == Black {
+		tempoSign = -1
+	}
+	mg += tempoSign * TempoMG
+	eg += tempoSign * TempoEG
 
 	phase := b.computePhase()
 	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
