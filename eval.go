@@ -125,6 +125,11 @@ var (
 var TempoMG = 15
 var TempoEG = 8
 
+// Trade bonus: when ahead, bonus per opponent non-pawn piece traded (encourages
+// simplification) and per own pawn remaining (discourages pawn trades).
+var TradePieceBonus = 3  // bonus per missing enemy non-pawn piece when ahead
+var TradePawnBonus = 5   // bonus per own pawn when ahead
+
 // OCBScale is the endgame scale factor (out of 128) for opposite-colored bishop endings.
 var OCBScale = 64
 
@@ -265,6 +270,32 @@ func (b *Board) Evaluate() int {
 
 	phase := b.computePhase()
 	score := (mg*(TotalPhase-phase) + eg*phase) / TotalPhase
+
+	// Trade bonus: encourage piece trades and discourage pawn trades when ahead.
+	// Scaled by eval magnitude so it's negligible in balanced positions.
+	{
+		wPieces := b.Pieces[WhiteKnight].Count() + b.Pieces[WhiteBishop].Count() +
+			b.Pieces[WhiteRook].Count() + b.Pieces[WhiteQueen].Count()
+		bPieces := b.Pieces[BlackKnight].Count() + b.Pieces[BlackBishop].Count() +
+			b.Pieces[BlackRook].Count() + b.Pieces[BlackQueen].Count()
+		wPawns := b.Pieces[WhitePawn].Count()
+		bPawns := b.Pieces[BlackPawn].Count()
+
+		// Raw trade incentive from White's perspective:
+		// fewer enemy pieces is good, more own pawns is good
+		tradeScore := (7 - bPieces) * TradePieceBonus + wPawns * TradePawnBonus -
+			(7 - wPieces) * TradePieceBonus - bPawns * TradePawnBonus
+
+		// Scale by eval: full effect at ±500cp, zero at 0cp
+		absScore := score
+		if absScore < 0 {
+			absScore = -absScore
+		}
+		if absScore > 500 {
+			absScore = 500
+		}
+		score += tradeScore * absScore / 500
+	}
 
 	// Endgame scale factors (insufficient material / draw detection)
 	wScale, bScale := b.endgameScale()
