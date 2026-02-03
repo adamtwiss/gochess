@@ -134,7 +134,8 @@ func runTune(args []string) {
 		fmt.Fprintf(os.Stderr, "Error loading data: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Loaded %d positions in %v\n", len(tuner.Traces), time.Since(start).Round(time.Millisecond))
+	fmt.Printf("Loaded %d train + %d validation positions in %v\n",
+		len(tuner.Traces), len(tuner.Validation), time.Since(start).Round(time.Millisecond))
 
 	if len(tuner.Traces) == 0 {
 		fmt.Fprintf(os.Stderr, "No training positions loaded\n")
@@ -145,7 +146,8 @@ func runTune(args []string) {
 	fmt.Printf("\nTuning K (scaling constant)...\n")
 	K := tuner.TuneK()
 	initialError := tuner.ComputeErrorPublic(K)
-	fmt.Printf("Optimal K = %.2f, initial error = %.8f\n\n", K, initialError)
+	initialValError := tuner.ComputeValidationError(K)
+	fmt.Printf("Optimal K = %.2f, initial train error = %.8f, val error = %.8f\n\n", K, initialError, initialValError)
 
 	// Run optimizer
 	cfg := chess.DefaultTuneConfig()
@@ -153,12 +155,12 @@ func runTune(args []string) {
 	cfg.LR = *lr
 
 	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f\n", cfg.Epochs, cfg.LR)
-	fmt.Printf("%-8s  %-14s\n", "Epoch", "Error")
-	fmt.Printf("%-8s  %-14s\n", "-----", "-----")
+	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Error", "Val Error")
+	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "-----------", "---------")
 
-	tuner.Tune(K, cfg, func(epoch int, err float64) {
+	tuner.Tune(K, cfg, func(epoch int, trainErr, valErr float64) {
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
-			fmt.Printf("%-8d  %.8f\n", epoch, err)
+			fmt.Printf("%-8d  %.8f    %.8f\n", epoch, trainErr, valErr)
 		}
 	})
 
@@ -169,8 +171,9 @@ func runTune(args []string) {
 	w.Flush()
 
 	finalError := tuner.ComputeErrorPublic(K)
-	fmt.Printf("\nInitial error: %.8f\n", initialError)
-	fmt.Printf("Final error:   %.8f\n", finalError)
-	fmt.Printf("Improvement:   %.8f (%.4f%%)\n", initialError-finalError,
-		(initialError-finalError)/initialError*100)
+	finalValError := tuner.ComputeValidationError(K)
+	fmt.Printf("\nTrain:      initial=%.8f  final=%.8f  improvement=%.4f%%\n",
+		initialError, finalError, (initialError-finalError)/initialError*100)
+	fmt.Printf("Validation: initial=%.8f  final=%.8f  improvement=%.4f%%\n",
+		initialValError, finalValError, (initialValError-finalValError)/initialValError*100)
 }

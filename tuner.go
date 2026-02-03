@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"runtime"
 	"strings"
@@ -39,10 +40,11 @@ type TunerEntry struct {
 
 // Tuner holds the parameter catalog and training data.
 type Tuner struct {
-	Params []TunerParam   // parameter metadata
-	Values []float64      // current parameter values
-	Frozen []bool         // if true, parameter is pinned and not updated during tuning
-	Traces []TunerEntry   // loaded training data
+	Params     []TunerParam   // parameter metadata
+	Values     []float64      // current parameter values
+	Frozen     []bool         // if true, parameter is pinned and not updated during tuning
+	Traces     []TunerEntry   // training data (90%)
+	Validation []TunerEntry   // held-out validation data (10%)
 
 	// Parameter index ranges for output formatting
 	sections []tunerSection
@@ -388,7 +390,20 @@ func (t *Tuner) LoadTrainingData(filename string) error {
 		t.Traces = append(t.Traces, TunerEntry{Trace: trace})
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	// Split into training (90%) and validation (10%)
+	rng := rand.New(rand.NewSource(42)) // deterministic shuffle
+	rng.Shuffle(len(t.Traces), func(i, j int) {
+		t.Traces[i], t.Traces[j] = t.Traces[j], t.Traces[i]
+	})
+	splitIdx := len(t.Traces) * 9 / 10
+	t.Validation = t.Traces[splitIdx:]
+	t.Traces = t.Traces[:splitIdx]
+
+	return nil
 }
 
 // computeTrace mirrors the Evaluate() function but records parameter coefficients.
@@ -1152,6 +1167,46 @@ func (t *Tuner) ComputeErrorPublic(K float64) float64 {
 	return t.computeError(K)
 }
 
+// ComputeValidationError computes MSE on the held-out validation set.
+func (t *Tuner) ComputeValidationError(K float64) float64 {
+	n := len(t.Validation)
+	if n == 0 {
+		return 0
+	}
+
+	numCPU := runtime.NumCPU()
+	chunkSize := (n + numCPU - 1) / numCPU
+	errors := make([]float64, numCPU)
+
+	var wg sync.WaitGroup
+	for cpu := 0; cpu < numCPU; cpu++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			start := id * chunkSize
+			end := start + chunkSize
+			if end > n {
+				end = n
+			}
+			localErr := 0.0
+			for i := start; i < end; i++ {
+				score := scoreFromTrace(&t.Validation[i].Trace, t.Values)
+				predicted := sigmoid(score, K)
+				diff := t.Validation[i].Trace.Result - predicted
+				localErr += diff * diff
+			}
+			errors[id] = localErr
+		}(cpu)
+	}
+	wg.Wait()
+
+	total := 0.0
+	for _, e := range errors {
+		total += e
+	}
+	return total / float64(n)
+}
+
 // TuneConfig controls the tuning process.
 type TuneConfig struct {
 	Epochs  int     // number of optimization epochs
@@ -1173,8 +1228,8 @@ func DefaultTuneConfig() TuneConfig {
 }
 
 // Tune runs the Adam optimizer to minimize prediction error.
-// Calls onEpoch after each epoch with (epoch, error).
-func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, err float64)) {
+// Calls onEpoch after each epoch with (epoch, trainError, validationError).
+func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, trainErr, valErr float64)) {
 	n := len(t.Traces)
 	np := len(t.Values)
 	if n == 0 || np == 0 {
@@ -1260,8 +1315,9 @@ func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, err floa
 		}
 
 		if onEpoch != nil {
-			err := t.computeError(K)
-			onEpoch(epoch, err)
+			trainErr := t.computeError(K)
+			valErr := t.ComputeValidationError(K)
+			onEpoch(epoch, trainErr, valErr)
 		}
 	}
 }
