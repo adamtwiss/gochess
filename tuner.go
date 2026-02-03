@@ -439,17 +439,25 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		}
 	}
 
-	// === Mobility ===
+	// === Mobility (safe: excludes squares attacked by enemy pawns) ===
 	for color := Color(0); color <= 1; color++ {
 		s := sign(color)
 		friendly := b.Occupied[color]
+		enemyPawns := b.Pieces[pieceOf(WhitePawn, 1-color)]
+
+		var enemyPawnAttacks Bitboard
+		if color == White {
+			enemyPawnAttacks = enemyPawns.SouthWest() | enemyPawns.SouthEast()
+		} else {
+			enemyPawnAttacks = enemyPawns.NorthWest() | enemyPawns.NorthEast()
+		}
 
 		// Knights
 		knights := b.Pieces[pieceOf(WhiteKnight, color)]
 		for knights != 0 {
 			sq := knights.PopLSB()
 			attacks := KnightAttacks[sq] &^ friendly
-			count := attacks.Count()
+			count := (attacks &^ enemyPawnAttacks).Count()
 			base := idxMobilityStart + count*2
 			addMG(base, s)
 			addEG(base+1, s)
@@ -460,7 +468,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		for bishops != 0 {
 			sq := bishops.PopLSB()
 			attacks := BishopAttacksBB(sq, b.AllPieces) &^ friendly
-			count := attacks.Count()
+			count := (attacks &^ enemyPawnAttacks).Count()
 			base := idxMobilityStart + 9*2 + count*2
 			addMG(base, s)
 			addEG(base+1, s)
@@ -471,7 +479,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		for rooks != 0 {
 			sq := rooks.PopLSB()
 			attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
-			count := attacks.Count()
+			count := (attacks &^ enemyPawnAttacks).Count()
 			base := idxMobilityStart + (9+14)*2 + count*2
 			addMG(base, s)
 			addEG(base+1, s)
@@ -482,7 +490,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		for queens != 0 {
 			sq := queens.PopLSB()
 			attacks := QueenAttacksBB(sq, b.AllPieces) &^ friendly
-			count := attacks.Count()
+			count := (attacks &^ enemyPawnAttacks).Count()
 			base := idxMobilityStart + (9+14+15)*2 + count*2
 			addMG(base, s)
 			addEG(base+1, s)

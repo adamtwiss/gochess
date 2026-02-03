@@ -363,12 +363,14 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	kingZone := KingAttacks[enemyKingSq] | SquareBB(enemyKingSq)
 	var attackerCount, attackUnits int
 
-	// Precompute friendly pawn attacks for outpost support detection
-	var friendlyPawnAttacks Bitboard
+	// Precompute pawn attacks
+	var friendlyPawnAttacks, enemyPawnAttacks Bitboard
 	if color == White {
 		friendlyPawnAttacks = friendlyPawns.NorthWest() | friendlyPawns.NorthEast()
+		enemyPawnAttacks = enemyPawns.SouthWest() | enemyPawns.SouthEast()
 	} else {
 		friendlyPawnAttacks = friendlyPawns.SouthWest() | friendlyPawns.SouthEast()
+		enemyPawnAttacks = enemyPawns.NorthWest() | enemyPawns.NorthEast()
 	}
 
 	// Passed pawns for rook-behind-passer detection
@@ -379,9 +381,9 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for knights != 0 {
 		sq := knights.PopLSB()
 		attacks := KnightAttacks[sq] &^ friendly
-		count := attacks.Count()
-		mg += KnightMobility[count][0]
-		eg += KnightMobility[count][1]
+		safeMobility := (attacks &^ enemyPawnAttacks).Count()
+		mg += KnightMobility[safeMobility][0]
+		eg += KnightMobility[safeMobility][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
@@ -425,9 +427,9 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for bishops != 0 {
 		sq := bishops.PopLSB()
 		attacks := BishopAttacksBB(sq, b.AllPieces) &^ friendly
-		count := attacks.Count()
-		mg += BishopMobility[count][0]
-		eg += BishopMobility[count][1]
+		safeMobility := (attacks &^ enemyPawnAttacks).Count()
+		mg += BishopMobility[safeMobility][0]
+		eg += BishopMobility[safeMobility][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
@@ -467,9 +469,9 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for rooks != 0 {
 		sq := rooks.PopLSB()
 		attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
-		count := attacks.Count()
-		mg += RookMobility[count][0]
-		eg += RookMobility[count][1]
+		safeMobility := (attacks &^ enemyPawnAttacks).Count()
+		mg += RookMobility[safeMobility][0]
+		eg += RookMobility[safeMobility][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
@@ -551,9 +553,9 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for queens != 0 {
 		sq := queens.PopLSB()
 		attacks := QueenAttacksBB(sq, b.AllPieces) &^ friendly
-		count := attacks.Count()
-		mg += QueenMobility[count][0]
-		eg += QueenMobility[count][1]
+		safeMobility := (attacks &^ enemyPawnAttacks).Count()
+		mg += QueenMobility[safeMobility][0]
+		eg += QueenMobility[safeMobility][1]
 
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
