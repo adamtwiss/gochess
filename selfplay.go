@@ -190,7 +190,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 
 		// Record position for training data (with filtering)
 		plyFromStart := initialPly + totalPlies
-		if shouldRecordPosition(&b, eval, plyFromStart) {
+		if shouldRecordPosition(&b, bestMove, eval, plyFromStart) {
 			positions = append(positions, b.ToFEN())
 		}
 
@@ -212,7 +212,8 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 }
 
 // shouldRecordPosition applies filters for training data quality.
-func shouldRecordPosition(b *Board, whiteRelativeEval int, ply int) bool {
+// Only records quiet positions where the eval is meaningful without search.
+func shouldRecordPosition(b *Board, bestMove Move, whiteRelativeEval int, ply int) bool {
 	// Skip first 8 plies (opening book territory)
 	if ply < 8 {
 		return false
@@ -223,6 +224,21 @@ func shouldRecordPosition(b *Board, whiteRelativeEval int, ply int) bool {
 	}
 	// Skip positions with mate scores
 	if whiteRelativeEval > 20000 || whiteRelativeEval < -20000 {
+		return false
+	}
+	// Skip positions where best move is a capture (not quiet)
+	if b.Squares[bestMove.To()] != Empty || bestMove.Flags() == FlagEnPassant {
+		return false
+	}
+	// Skip positions where best move is a promotion (not quiet)
+	if bestMove.IsPromotion() {
+		return false
+	}
+	// Skip positions where best move gives check (not quiet)
+	b.MakeMove(bestMove)
+	givesCheck := b.InCheck()
+	b.UnmakeMove(bestMove)
+	if givesCheck {
 		return false
 	}
 	return true
