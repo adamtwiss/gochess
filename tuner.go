@@ -27,10 +27,13 @@ type SparseEntry struct {
 
 // TunerTrace captures which parameters contribute to a position's evaluation.
 type TunerTrace struct {
-	MG     []SparseEntry
-	EG     []SparseEntry
-	Phase  int     // game phase (0 = full MG, 24 = full EG)
-	Result float64 // game outcome: 1.0 (white wins), 0.5 (draw), 0.0 (black wins)
+	MG            []SparseEntry
+	EG            []SparseEntry
+	Phase         int     // game phase (0 = full MG, 24 = full EG)
+	Result        float64 // game outcome: 1.0 (white wins), 0.5 (draw), 0.0 (black wins)
+	WScale        int     // endgame scale factor for White winning (0-128)
+	BScale        int     // endgame scale factor for Black winning (0-128)
+	HalfmoveClock int     // for 50-move rule scaling
 }
 
 // TunerEntry is a loaded training position with precomputed trace.
@@ -315,6 +318,8 @@ func (t *Tuner) initTunerParams() {
 	add("OCBScale", OCBScale, func(v int) { OCBScale = v })
 	add("TempoMG", TempoMG, func(v int) { TempoMG = v })
 	add("TempoEG", TempoEG, func(v int) { TempoEG = v })
+	add("TradePieceBonus", TradePieceBonus, func(v int) { TradePieceBonus = v })
+	add("TradePawnBonus", TradePawnBonus, func(v int) { TradePawnBonus = v })
 
 	// Close last section
 	if len(t.sections) > 0 {
@@ -338,7 +343,65 @@ func (t *Tuner) NumParams() int {
 
 // LoadTrainingData reads training positions from a file.
 // Format: "FEN;result" per line, where result is 1.0, 0.5, or 0.0.
+// sparseArena allocates SparseEntry slices from large contiguous chunks,
+// reducing per-slice allocation overhead and GC pressure.
+type sparseArena struct {
+	chunks [][]SparseEntry
+	pos    int
+}
+
+const sparseArenaChunkSize = 65536 // entries per chunk (~256KB)
+
+// copy copies src into the arena and returns a sub-slice of the arena's backing array.
+// The returned slice has len==cap==len(src), so it shares no excess capacity.
+func (a *sparseArena) copy(src []SparseEntry) []SparseEntry {
+	n := len(src)
+	if n == 0 {
+		return nil
+	}
+	if len(a.chunks) == 0 || a.pos+n > len(a.chunks[len(a.chunks)-1]) {
+		sz := sparseArenaChunkSize
+		if n > sz {
+			sz = n
+		}
+		a.chunks = append(a.chunks, make([]SparseEntry, sz))
+		a.pos = 0
+	}
+	chunk := a.chunks[len(a.chunks)-1]
+	copy(chunk[a.pos:], src)
+	result := chunk[a.pos : a.pos+n : a.pos+n]
+	a.pos += n
+	return result
+}
+
+// countFileLines counts newline characters in a file for pre-allocation.
+func countFileLines(filename string) int {
+	f, err := os.Open(filename)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	count := 0
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := f.Read(buf)
+		for i := 0; i < n; i++ {
+			if buf[i] == '\n' {
+				count++
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return count
+}
+
 func (t *Tuner) LoadTrainingData(filename string) error {
+	// Pre-count lines so we can allocate t.Traces once instead of growing via append.
+	lineCount := countFileLines(filename)
+
 	f, err := os.Open(filename)
 	if err != nil {
 		return err
@@ -349,9 +412,11 @@ func (t *Tuner) LoadTrainingData(filename string) error {
 	// Increase buffer for long lines
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
-	lineNum := 0
+	entries := make([]TunerEntry, 0, lineCount)
+	mgArena := &sparseArena{}
+	egArena := &sparseArena{}
+
 	for scanner.Scan() {
-		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
@@ -387,7 +452,11 @@ func (t *Tuner) LoadTrainingData(filename string) error {
 
 		trace := t.computeTrace(&b)
 		trace.Result = result
-		t.Traces = append(t.Traces, TunerEntry{Trace: trace})
+		// Move sparse entries into arena to consolidate allocations.
+		// The small slices from computeTrace become garbage immediately.
+		trace.MG = mgArena.copy(trace.MG)
+		trace.EG = egArena.copy(trace.EG)
+		entries = append(entries, TunerEntry{Trace: trace})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -396,12 +465,12 @@ func (t *Tuner) LoadTrainingData(filename string) error {
 
 	// Split into training (90%) and validation (10%)
 	rng := rand.New(rand.NewSource(42)) // deterministic shuffle
-	rng.Shuffle(len(t.Traces), func(i, j int) {
-		t.Traces[i], t.Traces[j] = t.Traces[j], t.Traces[i]
+	rng.Shuffle(len(entries), func(i, j int) {
+		entries[i], entries[j] = entries[j], entries[i]
 	})
-	splitIdx := len(t.Traces) * 9 / 10
-	t.Validation = t.Traces[splitIdx:]
-	t.Traces = t.Traces[:splitIdx]
+	splitIdx := len(entries) * 9 / 10
+	t.Validation = append(t.Validation, entries[splitIdx:]...)
+	t.Traces = entries[:splitIdx]
 
 	return nil
 }
@@ -1082,7 +1151,58 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 	addMG(miscBase+10, tempoSign) // TempoMG
 	addEG(miscBase+11, tempoSign) // TempoEG
 
+	// === Trade bonus ===
+	// In eval.go this is scaled by min(|score|, 500) / 500.
+	// We use the engine's current evaluation as the constant scale factor
+	// (same approach as PassedPawnKingScale).
+	{
+		evalScore := b.Evaluate()
+		absEval := evalScore
+		if absEval < 0 {
+			absEval = -absEval
+		}
+		if absEval > 500 {
+			absEval = 500
+		}
+
+		wPieces := b.Pieces[WhiteKnight].Count() + b.Pieces[WhiteBishop].Count() +
+			b.Pieces[WhiteRook].Count() + b.Pieces[WhiteQueen].Count()
+		bPieces := b.Pieces[BlackKnight].Count() + b.Pieces[BlackBishop].Count() +
+			b.Pieces[BlackRook].Count() + b.Pieces[BlackQueen].Count()
+		wPawns := b.Pieces[WhitePawn].Count()
+		bPawns := b.Pieces[BlackPawn].Count()
+
+		pieceCoeff := int16((int(wPieces) - int(bPieces)) * absEval / 500)
+		pawnCoeff := int16((int(wPawns) - int(bPawns)) * absEval / 500)
+
+		// Add to both MG and EG with same coefficient to make phase-independent
+		addMG(miscBase+12, pieceCoeff) // TradePieceBonus
+		addEG(miscBase+12, pieceCoeff)
+		addMG(miscBase+13, pawnCoeff) // TradePawnBonus
+		addEG(miscBase+13, pawnCoeff)
+	}
+
+	trace.WScale, trace.BScale = b.endgameScale()
+	trace.HalfmoveClock = int(b.HalfmoveClock)
+
 	return trace
+}
+
+// endgameScaleFactor returns the combined multiplicative scale factor (0.0-1.0)
+// for a position given the raw score sign.
+func endgameScaleFactor(trace *TunerTrace, rawScore float64) float64 {
+	var scale float64
+	if rawScore > 0 {
+		scale = float64(trace.WScale) / 128.0
+	} else if rawScore < 0 {
+		scale = float64(trace.BScale) / 128.0
+	} else {
+		scale = 1.0
+	}
+	if trace.HalfmoveClock > 0 {
+		scale *= float64(100-trace.HalfmoveClock) / 100.0
+	}
+	return scale
 }
 
 // scoreFromTrace computes the evaluation score from a trace and parameter vector.
@@ -1096,7 +1216,8 @@ func scoreFromTrace(trace *TunerTrace, params []float64) float64 {
 		eg += params[e.Index] * float64(e.Coeff)
 	}
 	phase := float64(trace.Phase)
-	return (mg*(float64(TotalPhase)-phase) + eg*phase) / float64(TotalPhase)
+	score := (mg*(float64(TotalPhase)-phase) + eg*phase) / float64(TotalPhase)
+	return score * endgameScaleFactor(trace, score)
 }
 
 // sigmoid maps an evaluation score to a win probability.
@@ -1261,15 +1382,28 @@ func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, trainErr
 
 				for i := start; i < end; i++ {
 					trace := &t.Traces[i].Trace
-					score := scoreFromTrace(trace, t.Values)
+
+					// Inline raw score computation for chain rule with scale factor
+					var mgSum, egSum float64
+					for _, e := range trace.MG {
+						mgSum += t.Values[e.Index] * float64(e.Coeff)
+					}
+					for _, e := range trace.EG {
+						egSum += t.Values[e.Index] * float64(e.Coeff)
+					}
+					phase := float64(trace.Phase)
+					rawScore := (mgSum*(float64(TotalPhase)-phase) + egSum*phase) / float64(TotalPhase)
+					sf := endgameScaleFactor(trace, rawScore)
+					score := rawScore * sf
+
 					sig := sigmoid(score, K)
 					// d(loss)/d(score) = -2 * (result - sig) * sig * (1 - sig) * ln(10) / K
 					// Simplified (absorb constants into gradient, divide by N later)
+					// Chain rule: d(scaledScore)/d(param) = d(rawScore)/d(param) * sf
 					errTerm := (trace.Result - sig) * sig * (1 - sig)
-					phase := float64(trace.Phase)
 
-					mgScale := errTerm * (float64(TotalPhase) - phase) / float64(TotalPhase)
-					egScale := errTerm * phase / float64(TotalPhase)
+					mgScale := errTerm * (float64(TotalPhase) - phase) / float64(TotalPhase) * sf
+					egScale := errTerm * phase / float64(TotalPhase) * sf
 
 					for _, e := range trace.MG {
 						localGrad[e.Index] += mgScale * float64(e.Coeff)
@@ -1598,6 +1732,7 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 		"PawnThreatQueenMG", "PawnThreatQueenEG",
 		"OCBScale",
 		"TempoMG", "TempoEG",
+		"TradePieceBonus", "TradePawnBonus",
 	}
 	for i, name := range miscNames {
 		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxMisc+i])))
@@ -1620,12 +1755,12 @@ func (t *Tuner) VerifyTrace(fen string) (traceScore, evalScore float64, ok bool)
 	evalScore = float64(b.Evaluate())
 
 	// Allow some tolerance due to:
-	// 1. PST scaling (trace uses raw values, eval applies scale/100)
-	// 2. King safety table (non-linear, not in trace)
-	// 3. Endgame scaling (multiplicative, not in trace)
-	// 4. 50-move rule scaling
-	// 5. Eval cache
+	// 1. King safety table (non-linear, not in trace)
+	// 2. King safety attackerCount==1 division by 3 (not in trace)
+	// 3. Trade bonus absScore approximation
+	// 4. int16 rounding in trace coefficients
+	// Note: endgame scaling and 50-move rule scaling are now modeled in trace
 	diff := math.Abs(traceScore - evalScore)
-	ok = diff < 200 // generous tolerance for components we don't trace
+	ok = diff < 150 // tolerance for non-linear components we don't trace
 	return
 }
