@@ -52,7 +52,7 @@ book.go              Opening book: build from PGN, binary format, weighted move 
 uci.go               UCI protocol (position, go, setoption, ponder)
 cli.go               Interactive CLI engine (set, fen, board, eval, moves, search, epd, perft)
 selfplay.go          Self-play game generation for tuning data
-tuner.go             Texel tuner: parameter catalog, trace-based eval, Adam optimizer
+tuner.go             Texel tuner: parameter catalog, trace-based eval, .tbin binary cache, disk-streamed Adam optimizer
 ```
 
 ## Architecture
@@ -174,20 +174,29 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### Texel Tuner
 
-`cmd/tuner/main.go` — Two-phase system for optimizing ~1038 evaluation parameters.
+`cmd/tuner/main.go` — Two-phase system for optimizing ~1147 evaluation parameters.
 
 **Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;result` lines. Games run concurrently with independent Board+TT per game.
 
-**Parameter optimization** (`tuner.go`): Texel tuning via Adam optimizer. A `Tuner` holds the parameter catalog and training data:
+**Binary cache and disk-streamed training** (`tuner.go`): Training data is preprocessed from the `.dat` FEN file into a `.tbin` binary cache, then streamed from disk during tuning. This keeps memory usage at O(batch_size) (~few MB) regardless of dataset size.
 
-- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (22), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), misc (10).
+- `.tbin` file format: 24-byte header (magic `"TBIN"`, version `uint16`, numParams `uint16`, numTrain `uint32`, numValidation `uint32`, trainBytes `uint64`) followed by variable-length records. Each record stores phase, result, scale factors, halfmove clock, and sparse MG/EG coefficient arrays. ~730 bytes/position average.
+- `PreprocessToFile()` reads all FEN lines, shuffles deterministically (seed 42), splits 90/10 train/validation, computes traces via `computeTrace()`, writes binary records.
+- `OpenTraceFile()` reads and validates the `.tbin` header, returning a `TraceFile` handle.
+- `StreamTraining()` / `StreamValidation()` stream records in batches (default 65536) with reusable buffers. The callback receives a `[]TunerTrace` batch that must not be retained.
+- The `.tbin` is auto-created on first run and auto-rebuilt when the source `.dat` file is newer.
+
+**Parameter optimization** (`tuner.go`): Texel tuning via Adam optimizer. The `Tuner` holds the parameter catalog (no in-memory training data):
+
+- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (22), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), misc (14).
 - `computeTrace()` mirrors `Evaluate()` but records sparse MG/EG coefficients per parameter instead of computing a score. Each position produces a `TunerTrace` with `[]SparseEntry` for MG and EG contributions.
 - `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
 - `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
-- `TuneK()` finds optimal K via golden section search on MSE
-- `Tune()` runs Adam optimizer: parallel gradient computation across CPU cores, each position contributes `d(sigmoid)/d(param)` scaled by MG/EG phase blend
+- `TuneK(tf)` finds optimal K via golden section search on MSE over streamed training data
+- `Tune(tf, K, cfg, onEpoch)` runs Adam optimizer: per epoch, streams training batches from disk, computes parallel gradients within each batch, aggregates across all batches, then applies Adam update
+- `ComputeTrainError(tf, K)` / `ComputeValidationError(tf, K)` compute MSE by streaming from the respective region of the `.tbin` file
 
-**What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, etc.), passed pawn enhancements (not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement), king attack unit weights, king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), space/threat/castling bonuses.
+**What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, etc.), passed pawn enhancements (not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement), king attack unit weights, king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), space/threat/castling bonuses, tempo, trade bonuses, OCB scale.
 
 **What's NOT tuned**: Endgame scale factors (multiplicative), phase constants, PST scale factors (folded into PST values), 50-move rule scaling.
 
@@ -217,3 +226,10 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - Tuner PST parameters are pre-scaled (raw × scale/100). Adding a new PST-related eval term requires initializing the tuner param with the effective value, not the raw table value.
 - Tuner traces must mirror `Evaluate()` exactly. When modifying eval, update `computeTrace()` in tuner.go to match. Non-additive eval terms (king safety table lookup, endgame scaling, 50-move scaling) cannot be represented in the trace.
 - Tuner's `PassedPawnKingScale` uses initial engine values as constant coefficients to avoid circular dependency with distance parameters (product of two tunable params).
+- `.tbin` binary cache must be rebuilt (delete it or touch the `.dat` file) whenever `computeTrace()` or the parameter catalog changes. The header stores `numParams` as a sanity check, but structural changes within the same param count won't be caught.
+- `StreamTraining`/`StreamValidation` callbacks must not retain references to the `[]TunerTrace` batch — the backing arrays are reused across batches.
+
+## Maintenance Reminders
+
+- **Keep CLAUDE.md and README.md up to date.** When making changes to search, evaluation, tuner, CLI, or architecture, update the corresponding sections in both files so they stay accurate and useful.
+- **When adding a new evaluation parameter**, consider whether it should be tunable. If so, add it to `initTunerParams()` in `tuner.go`, add the corresponding trace coefficient logic to `computeTrace()`, add it to `PrintParams()`, and update the "What's tuned" list in this file and the README. Delete any existing `.tbin` cache so it gets rebuilt with the new param count.

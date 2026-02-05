@@ -9,7 +9,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Lazy SMP multi-threaded search (configurable thread count)
 - Lockless transposition table, null-move pruning, late move reductions, late move pruning
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
-- Texel tuner for automated evaluation parameter optimization via self-play
+- Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
 - Opening book support (built from PGN databases)
 - Full UCI protocol support for use with chess GUIs
 - EPD test suite runner (WAC, ECM)
@@ -117,7 +117,7 @@ Build an opening book from a PGN database of games:
 
 ### Texel Tuner
 
-The tuner optimizes ~1143 evaluation parameters (material values, piece-square tables, mobility, positional bonuses, pawn structure, king safety table, pawn shield, king attack weights) by minimizing prediction error against game outcomes. The workflow has two steps: generate training data via self-play, then run gradient-descent optimization.
+The tuner optimizes ~1147 evaluation parameters (material values, piece-square tables, mobility, positional bonuses, pawn structure, king safety table, pawn shield, king attack weights, trade bonuses) by minimizing prediction error against game outcomes. Training data is preprocessed into a compact binary cache (`.tbin`) and streamed from disk during optimization, keeping memory usage constant regardless of dataset size. The workflow has two steps: generate training data via self-play, then run gradient-descent optimization.
 
 #### Step 1: Generate training data
 
@@ -145,7 +145,9 @@ With `-time 200 -concurrency 6`, expect roughly 1-2 games/second. 20K games prod
 ./tuner tune -data training.dat -epochs 500 -lr 1.0
 ```
 
-This loads the training data, finds the optimal sigmoid scaling constant K via golden section search, then runs the Adam optimizer. It prints the error every 10 epochs and outputs all tuned parameters in Go source format at the end.
+On first run, this preprocesses the `.dat` file into a binary cache (`training.tbin`) — shuffling positions, computing evaluation traces, and writing a compact binary format (~730 bytes/position). Subsequent runs reuse the cache automatically; the cache is rebuilt if the source `.dat` file is newer.
+
+During tuning, training data is streamed from the `.tbin` file in batches of 65536, keeping memory usage at ~50-100 MB regardless of dataset size. The tuner finds the optimal sigmoid scaling constant K via golden section search, then runs the Adam optimizer. It prints the error every 10 epochs and outputs all tuned parameters in Go source format at the end.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -175,6 +177,7 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 - More training positions generally helps more than more epochs.
 - Error should decrease monotonically. If it stalls early, generate more data.
 - The tuner does not optimize endgame scale factors (multiplicative) or phase constants.
+- The `.tbin` cache is tied to the parameter catalog. If you add or remove tunable parameters, delete the `.tbin` file to force a rebuild.
 
 ## Running Tests
 
