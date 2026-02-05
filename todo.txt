@@ -1,7 +1,7 @@
 
 # Claude's ideas 2nd Feb
 
-  Lazy SMP (multi-threaded search) -- The engine is single-threaded. On modern hardware this leaves a lot of performance
+  [Done] Lazy SMP (multi-threaded search) -- The engine is single-threaded. On modern hardware this leaves a lot of performance
    on the table. Lazy SMP is the standard approach: multiple threads share the transposition table and search the same
   root position, relying on hash collisions and timing differences for natural work distribution. This is probably the
   single biggest strength gain available.
@@ -11,11 +11,11 @@
   optimize all constants via gradient descent against game outcomes. This typically finds non-obvious parameter
   interactions that humans miss.
 
-  Continuation history -- Currently the engine has basic from-to history and counter-moves. Continuation history
+  (in progress - first version failed, tuning mad it netural) Continuation history -- Currently the engine has basic from-to history and counter-moves. Continuation history
   (indexing by the previous 1-2 moves' piece-to-square) significantly improves quiet move ordering, which makes LMR more
    effective and reduces the search tree.
 
-  SEE pruning of quiet moves in main search -- The engine already uses SEE in quiescence, but applying it to prune
+  [Done] SEE pruning of quiet moves in main search -- The engine already uses SEE in quiescence, but applying it to prune
   losing captures and bad quiet moves in the main search (at low depths) is relatively cheap to implement and reduces
   the tree further.
 
@@ -24,3 +24,24 @@
 
   Of the five, Lazy SMP and Texel tuning would give the most visible improvement. Lazy SMP is the more self-contained
   project; Texel tuning requires building a dataset of positions with game results first. What interests you?
+
+
+# Next things to look at:
+
+* Texel tuning (coded, training underway)
+* Syzgy tablebase
+
+
+# Bugs
+This position
+  r4r1k/p2bp1b1/qpp2pB1/2Pp4/Pn1P4/4PNP1/1P1N1KP1/RQ3R2 b - - 2 22
+We seem to evaluate at +3 which seems way out, and later proves false.
+
+The current Texel output performs much worse due to scaling. I think Claude has fixed this. But code is again all mixed in.
+
+
+Texel Training Regression ends up sorting the file which is somehow taking 1.2GB or more of RAM. Scrap sort.
+
+Claude did some weird optimisation of allocation, but it's not helped the RAM Usage. Current code
+includes multiple changes. One is to make sure the piece trading stuuff is tunable (keep), the 
+optimsation is bad.
