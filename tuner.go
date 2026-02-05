@@ -2,13 +2,16 @@ package chess
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // TunerParam describes a single tunable parameter.
@@ -36,18 +39,11 @@ type TunerTrace struct {
 	HalfmoveClock int     // for 50-move rule scaling
 }
 
-// TunerEntry is a loaded training position with precomputed trace.
-type TunerEntry struct {
-	Trace TunerTrace
-}
-
-// Tuner holds the parameter catalog and training data.
+// Tuner holds the parameter catalog.
 type Tuner struct {
-	Params     []TunerParam   // parameter metadata
-	Values     []float64      // current parameter values
-	Frozen     []bool         // if true, parameter is pinned and not updated during tuning
-	Traces     []TunerEntry   // training data (90%)
-	Validation []TunerEntry   // held-out validation data (10%)
+	Params []TunerParam // parameter metadata
+	Values []float64    // current parameter values
+	Frozen []bool       // if true, parameter is pinned and not updated during tuning
 
 	// Parameter index ranges for output formatting
 	sections []tunerSection
@@ -341,92 +337,202 @@ func (t *Tuner) NumParams() int {
 	return len(t.Params)
 }
 
-// LoadTrainingData reads training positions from a file.
-// Format: "FEN;result" per line, where result is 1.0, 0.5, or 0.0.
-// sparseArena allocates SparseEntry slices from large contiguous chunks,
-// reducing per-slice allocation overhead and GC pressure.
-type sparseArena struct {
-	chunks [][]SparseEntry
-	pos    int
+// ---------------------------------------------------------------------------
+// Binary trace file (.tbin) format for disk-streamed training
+// ---------------------------------------------------------------------------
+//
+// Header (24 bytes):
+//   magic:         [4]byte   "TBIN"
+//   version:       uint16    1
+//   numParams:     uint16
+//   numTrain:      uint32
+//   numValidation: uint32
+//   trainBytes:    uint64    (byte size of all training records, for seeking to validation)
+//
+// Records (variable-length, sequential):
+//   phase:         uint8
+//   result:        uint8     (0=black, 1=draw, 2=white)
+//   wScale:        uint8
+//   bScale:        uint8
+//   halfmoveClock: uint8
+//   mgCount:       uint16
+//   egCount:       uint16
+//   mg[mgCount]:   4 bytes each (uint16 index, int16 coeff)
+//   eg[egCount]:   4 bytes each
+
+const (
+	tbinMagic      = "TBIN"
+	tbinVersion    = 1
+	tbinHeaderSize = 24
+)
+
+// TraceFile provides streaming access to a preprocessed .tbin file via mmap.
+type TraceFile struct {
+	Path          string
+	NumTrain      int
+	NumValidation int
+	NumParams     int
+	trainBytes    uint64
+	data          []byte // mmap'd file contents
 }
 
-const sparseArenaChunkSize = 65536 // entries per chunk (~256KB)
-
-// copy copies src into the arena and returns a sub-slice of the arena's backing array.
-// The returned slice has len==cap==len(src), so it shares no excess capacity.
-func (a *sparseArena) copy(src []SparseEntry) []SparseEntry {
-	n := len(src)
-	if n == 0 {
-		return nil
+// Close unmaps the memory-mapped file.
+func (tf *TraceFile) Close() error {
+	if tf.data != nil {
+		err := syscall.Munmap(tf.data)
+		tf.data = nil
+		return err
 	}
-	if len(a.chunks) == 0 || a.pos+n > len(a.chunks[len(a.chunks)-1]) {
-		sz := sparseArenaChunkSize
-		if n > sz {
-			sz = n
-		}
-		a.chunks = append(a.chunks, make([]SparseEntry, sz))
-		a.pos = 0
-	}
-	chunk := a.chunks[len(a.chunks)-1]
-	copy(chunk[a.pos:], src)
-	result := chunk[a.pos : a.pos+n : a.pos+n]
-	a.pos += n
-	return result
+	return nil
 }
 
-// countFileLines counts newline characters in a file for pre-allocation.
-func countFileLines(filename string) int {
-	f, err := os.Open(filename)
+// resultToUint8 encodes a float64 game result to a uint8.
+func resultToUint8(r float64) uint8 {
+	if r == 1.0 {
+		return 2
+	}
+	if r == 0.5 {
+		return 1
+	}
+	return 0
+}
+
+// uint8ToResult decodes a uint8 game result to float64.
+func uint8ToResult(r uint8) float64 {
+	switch r {
+	case 2:
+		return 1.0
+	case 1:
+		return 0.5
+	default:
+		return 0.0
+	}
+}
+
+// writeTraceRecord writes a single TunerTrace as a binary record to w.
+// Returns the number of bytes written.
+func writeTraceRecord(w io.Writer, trace *TunerTrace) (int, error) {
+	// Fixed fields: 5 bytes
+	header := [9]byte{
+		uint8(trace.Phase),
+		resultToUint8(trace.Result),
+		uint8(trace.WScale),
+		uint8(trace.BScale),
+		uint8(trace.HalfmoveClock),
+	}
+	binary.LittleEndian.PutUint16(header[5:7], uint16(len(trace.MG)))
+	binary.LittleEndian.PutUint16(header[7:9], uint16(len(trace.EG)))
+	n, err := w.Write(header[:])
 	if err != nil {
-		return 0
+		return n, err
 	}
-	defer f.Close()
+	total := n
 
-	count := 0
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := f.Read(buf)
-		for i := 0; i < n; i++ {
-			if buf[i] == '\n' {
-				count++
-			}
-		}
+	// MG sparse entries
+	for _, e := range trace.MG {
+		var buf [4]byte
+		binary.LittleEndian.PutUint16(buf[0:2], e.Index)
+		binary.LittleEndian.PutUint16(buf[2:4], uint16(e.Coeff))
+		nn, err := w.Write(buf[:])
+		total += nn
 		if err != nil {
-			break
+			return total, err
 		}
 	}
-	return count
+
+	// EG sparse entries
+	for _, e := range trace.EG {
+		var buf [4]byte
+		binary.LittleEndian.PutUint16(buf[0:2], e.Index)
+		binary.LittleEndian.PutUint16(buf[2:4], uint16(e.Coeff))
+		nn, err := w.Write(buf[:])
+		total += nn
+		if err != nil {
+			return total, err
+		}
+	}
+
+	return total, nil
 }
 
-func (t *Tuner) LoadTrainingData(filename string) error {
-	// Pre-count lines so we can allocate t.Traces once instead of growing via append.
-	lineCount := countFileLines(filename)
+// decodeTraceRecord decodes a single TunerTrace from a byte slice at the given offset.
+// Returns the trace, updated backing slices, and the new offset past this record.
+func decodeTraceRecord(data []byte, offset int, mgBuf, egBuf []SparseEntry) (TunerTrace, []SparseEntry, []SparseEntry, int) {
+	phase := int(data[offset])
+	result := uint8ToResult(data[offset+1])
+	wScale := int(data[offset+2])
+	bScale := int(data[offset+3])
+	halfmove := int(data[offset+4])
+	mgCount := int(binary.LittleEndian.Uint16(data[offset+5:]))
+	egCount := int(binary.LittleEndian.Uint16(data[offset+7:]))
+	offset += 9
 
-	f, err := os.Open(filename)
+	// Grow backing slices if needed, reuse capacity
+	if cap(mgBuf) < mgCount {
+		mgBuf = make([]SparseEntry, mgCount)
+	} else {
+		mgBuf = mgBuf[:mgCount]
+	}
+	for i := 0; i < mgCount; i++ {
+		mgBuf[i] = SparseEntry{
+			Index: binary.LittleEndian.Uint16(data[offset:]),
+			Coeff: int16(binary.LittleEndian.Uint16(data[offset+2:])),
+		}
+		offset += 4
+	}
+
+	if cap(egBuf) < egCount {
+		egBuf = make([]SparseEntry, egCount)
+	} else {
+		egBuf = egBuf[:egCount]
+	}
+	for i := 0; i < egCount; i++ {
+		egBuf[i] = SparseEntry{
+			Index: binary.LittleEndian.Uint16(data[offset:]),
+			Coeff: int16(binary.LittleEndian.Uint16(data[offset+2:])),
+		}
+		offset += 4
+	}
+
+	trace := TunerTrace{
+		Phase:         phase,
+		Result:        result,
+		WScale:        wScale,
+		BScale:        bScale,
+		HalfmoveClock: halfmove,
+		MG:            mgBuf[:mgCount],
+		EG:            egBuf[:egCount],
+	}
+	return trace, mgBuf, egBuf, offset
+}
+
+// PreprocessToFile reads a FEN training file, computes traces, and writes a .tbin binary cache.
+func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
+	// Read all FEN lines into memory
+	f, err := os.Open(inputFEN)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	// Increase buffer for long lines
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	type fenResult struct {
+		fen    string
+		result float64
+	}
+	var lines []fenResult
 
-	entries := make([]TunerEntry, 0, lineCount)
-	mgArena := &sparseArena{}
-	egArena := &sparseArena{}
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
-
 		idx := strings.LastIndex(line, ";")
 		if idx < 0 {
-			continue // skip malformed lines
+			continue
 		}
-
 		fen := strings.TrimSpace(line[:idx])
 		resultStr := strings.TrimSpace(line[idx+1:])
 
@@ -444,35 +550,169 @@ func (t *Tuner) LoadTrainingData(filename string) error {
 				continue
 			}
 		}
-
-		var b Board
-		if err := b.SetFEN(fen); err != nil {
-			continue // skip invalid FENs
-		}
-
-		trace := t.computeTrace(&b)
-		trace.Result = result
-		// Move sparse entries into arena to consolidate allocations.
-		// The small slices from computeTrace become garbage immediately.
-		trace.MG = mgArena.copy(trace.MG)
-		trace.EG = egArena.copy(trace.EG)
-		entries = append(entries, TunerEntry{Trace: trace})
+		lines = append(lines, fenResult{fen: fen, result: result})
 	}
-
 	if err := scanner.Err(); err != nil {
 		return err
 	}
 
-	// Split into training (90%) and validation (10%)
-	rng := rand.New(rand.NewSource(42)) // deterministic shuffle
-	rng.Shuffle(len(entries), func(i, j int) {
-		entries[i], entries[j] = entries[j], entries[i]
+	// Deterministic shuffle
+	rng := rand.New(rand.NewSource(42))
+	rng.Shuffle(len(lines), func(i, j int) {
+		lines[i], lines[j] = lines[j], lines[i]
 	})
-	splitIdx := len(entries) * 9 / 10
-	t.Validation = append(t.Validation, entries[splitIdx:]...)
-	t.Traces = entries[:splitIdx]
+
+	// 90/10 split
+	splitIdx := len(lines) * 9 / 10
+	numTrain := splitIdx
+	numValidation := len(lines) - splitIdx
+
+	// Write binary file
+	out, err := os.Create(outputBin)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	bw := bufio.NewWriterSize(out, 256*1024)
+
+	// Write placeholder header (we'll patch trainBytes later)
+	var headerBuf [tbinHeaderSize]byte
+	copy(headerBuf[0:4], tbinMagic)
+	binary.LittleEndian.PutUint16(headerBuf[4:6], tbinVersion)
+	binary.LittleEndian.PutUint16(headerBuf[6:8], uint16(t.NumParams()))
+	binary.LittleEndian.PutUint32(headerBuf[8:12], uint32(numTrain))
+	binary.LittleEndian.PutUint32(headerBuf[12:16], uint32(numValidation))
+	// trainBytes at [16:24] will be patched
+	if _, err := bw.Write(headerBuf[:]); err != nil {
+		return err
+	}
+
+	// Write records: training first, then validation
+	var trainBytesTotal uint64
+	for i, lr := range lines {
+		var b Board
+		if err := b.SetFEN(lr.fen); err != nil {
+			return fmt.Errorf("invalid FEN at shuffled index %d: %v", i, err)
+		}
+		trace := t.computeTrace(&b)
+		trace.Result = lr.result
+		n, err := writeTraceRecord(bw, &trace)
+		if err != nil {
+			return err
+		}
+		if i < numTrain {
+			trainBytesTotal += uint64(n)
+		}
+	}
+
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+
+	// Patch trainBytes in header
+	binary.LittleEndian.PutUint64(headerBuf[16:24], trainBytesTotal)
+	if _, err := out.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := out.Write(headerBuf[:]); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+// OpenTraceFile mmaps a .tbin file and validates its header.
+// The caller must call Close() when done to unmap the file.
+func OpenTraceFile(filename string, numParams int) (*TraceFile, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := int(fi.Size())
+	if size < tbinHeaderSize {
+		return nil, fmt.Errorf("tbin file too small: %d bytes", size)
+	}
+
+	data, err := syscall.Mmap(int(f.Fd()), 0, size, syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		return nil, fmt.Errorf("mmap failed: %v", err)
+	}
+
+	if string(data[0:4]) != tbinMagic {
+		syscall.Munmap(data)
+		return nil, fmt.Errorf("invalid tbin magic: %q", data[0:4])
+	}
+	version := binary.LittleEndian.Uint16(data[4:6])
+	if version != tbinVersion {
+		syscall.Munmap(data)
+		return nil, fmt.Errorf("unsupported tbin version: %d", version)
+	}
+	fileParams := int(binary.LittleEndian.Uint16(data[6:8]))
+	if fileParams != numParams {
+		syscall.Munmap(data)
+		return nil, fmt.Errorf("tbin param count mismatch: file has %d, tuner has %d", fileParams, numParams)
+	}
+	numTrain := int(binary.LittleEndian.Uint32(data[8:12]))
+	numValidation := int(binary.LittleEndian.Uint32(data[12:16]))
+	trainBytes := binary.LittleEndian.Uint64(data[16:24])
+
+	return &TraceFile{
+		Path:          filename,
+		NumTrain:      numTrain,
+		NumValidation: numValidation,
+		NumParams:     fileParams,
+		trainBytes:    trainBytes,
+		data:          data,
+	}, nil
+}
+
+// streamRecords walks the mmap'd data starting at byteOffset past the header,
+// decoding count records in batches and calling fn for each batch.
+// The batch slices are reused across calls; fn must not retain references to them.
+func (tf *TraceFile) streamRecords(byteOffset int64, count, batchSize int, fn func(batch []TunerTrace)) {
+	offset := tbinHeaderSize + int(byteOffset)
+
+	batch := make([]TunerTrace, 0, batchSize)
+	// Reusable backing slices for sparse entries per record.
+	// We allocate separate slices for each batch slot so the batch elements
+	// don't alias each other's backing arrays.
+	mgBufs := make([][]SparseEntry, batchSize)
+	egBufs := make([][]SparseEntry, batchSize)
+
+	read := 0
+	for read < count {
+		batch = batch[:0]
+		end := read + batchSize
+		if end > count {
+			end = count
+		}
+		for i := read; i < end; i++ {
+			slot := i - read
+			trace, mg, eg, newOffset := decodeTraceRecord(tf.data, offset, mgBufs[slot], egBufs[slot])
+			mgBufs[slot] = mg
+			egBufs[slot] = eg
+			offset = newOffset
+			batch = append(batch, trace)
+		}
+		fn(batch)
+		read = end
+	}
+}
+
+// StreamTraining streams all training records in batches.
+func (tf *TraceFile) StreamTraining(batchSize int, fn func(batch []TunerTrace)) {
+	tf.streamRecords(0, tf.NumTrain, batchSize, fn)
+}
+
+// StreamValidation streams all validation records in batches.
+func (tf *TraceFile) StreamValidation(batchSize int, fn func(batch []TunerTrace)) {
+	tf.streamRecords(int64(tf.trainBytes), tf.NumValidation, batchSize, fn)
 }
 
 // computeTrace mirrors the Evaluate() function but records parameter coefficients.
@@ -1225,8 +1465,8 @@ func sigmoid(score, K float64) float64 {
 	return 1.0 / (1.0 + math.Pow(10.0, -score/K))
 }
 
-// TuneK finds the optimal scaling constant K by minimizing MSE.
-func (t *Tuner) TuneK() float64 {
+// TuneK finds the optimal scaling constant K by minimizing MSE on training data.
+func (t *Tuner) TuneK(tf *TraceFile) float64 {
 	// Golden section search for optimal K in [50, 800]
 	lo, hi := 50.0, 800.0
 	gr := (math.Sqrt(5) + 1) / 2
@@ -1234,7 +1474,7 @@ func (t *Tuner) TuneK() float64 {
 	for hi-lo > 0.1 {
 		c := hi - (hi-lo)/gr
 		d := lo + (hi-lo)/gr
-		if t.computeError(c) < t.computeError(d) {
+		if t.ComputeTrainError(tf, c) < t.ComputeTrainError(tf, d) {
 			hi = d
 		} else {
 			lo = c
@@ -1243,89 +1483,60 @@ func (t *Tuner) TuneK() float64 {
 	return (lo + hi) / 2
 }
 
-// computeError computes the mean squared error for all positions with a given K.
-func (t *Tuner) computeError(K float64) float64 {
-	numCPU := runtime.NumCPU()
-	n := len(t.Traces)
-	if n == 0 {
+const streamBatchSize = 65536
+
+// computeErrorStreaming computes MSE by streaming records from a TraceFile region.
+func (t *Tuner) computeErrorStreaming(tf *TraceFile, byteOffset int64, count int, K float64) float64 {
+	if count == 0 {
 		return 0
 	}
 
-	chunkSize := (n + numCPU - 1) / numCPU
-	errors := make([]float64, numCPU)
+	numCPU := runtime.NumCPU()
+	totalErr := 0.0
 
-	var wg sync.WaitGroup
-	for cpu := 0; cpu < numCPU; cpu++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			start := id * chunkSize
-			end := start + chunkSize
-			if end > n {
-				end = n
-			}
-			localErr := 0.0
-			for i := start; i < end; i++ {
-				score := scoreFromTrace(&t.Traces[i].Trace, t.Values)
-				predicted := sigmoid(score, K)
-				diff := t.Traces[i].Trace.Result - predicted
-				localErr += diff * diff
-			}
-			errors[id] = localErr
-		}(cpu)
-	}
-	wg.Wait()
+	tf.streamRecords(byteOffset, count, streamBatchSize, func(batch []TunerTrace) {
+		n := len(batch)
+		chunkSize := (n + numCPU - 1) / numCPU
+		errors := make([]float64, numCPU)
 
-	total := 0.0
-	for _, e := range errors {
-		total += e
-	}
-	return total / float64(n)
+		var wg sync.WaitGroup
+		for cpu := 0; cpu < numCPU; cpu++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				start := id * chunkSize
+				end := start + chunkSize
+				if end > n {
+					end = n
+				}
+				localErr := 0.0
+				for i := start; i < end; i++ {
+					score := scoreFromTrace(&batch[i], t.Values)
+					predicted := sigmoid(score, K)
+					diff := batch[i].Result - predicted
+					localErr += diff * diff
+				}
+				errors[id] = localErr
+			}(cpu)
+		}
+		wg.Wait()
+
+		for _, e := range errors {
+			totalErr += e
+		}
+	})
+
+	return totalErr / float64(count)
 }
 
-// ComputeErrorPublic is the exported wrapper for computeError.
-func (t *Tuner) ComputeErrorPublic(K float64) float64 {
-	return t.computeError(K)
+// ComputeTrainError computes MSE on the training set.
+func (t *Tuner) ComputeTrainError(tf *TraceFile, K float64) float64 {
+	return t.computeErrorStreaming(tf, 0, tf.NumTrain, K)
 }
 
 // ComputeValidationError computes MSE on the held-out validation set.
-func (t *Tuner) ComputeValidationError(K float64) float64 {
-	n := len(t.Validation)
-	if n == 0 {
-		return 0
-	}
-
-	numCPU := runtime.NumCPU()
-	chunkSize := (n + numCPU - 1) / numCPU
-	errors := make([]float64, numCPU)
-
-	var wg sync.WaitGroup
-	for cpu := 0; cpu < numCPU; cpu++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			start := id * chunkSize
-			end := start + chunkSize
-			if end > n {
-				end = n
-			}
-			localErr := 0.0
-			for i := start; i < end; i++ {
-				score := scoreFromTrace(&t.Validation[i].Trace, t.Values)
-				predicted := sigmoid(score, K)
-				diff := t.Validation[i].Trace.Result - predicted
-				localErr += diff * diff
-			}
-			errors[id] = localErr
-		}(cpu)
-	}
-	wg.Wait()
-
-	total := 0.0
-	for _, e := range errors {
-		total += e
-	}
-	return total / float64(n)
+func (t *Tuner) ComputeValidationError(tf *TraceFile, K float64) float64 {
+	return t.computeErrorStreaming(tf, int64(tf.trainBytes), tf.NumValidation, K)
 }
 
 // TuneConfig controls the tuning process.
@@ -1350,83 +1561,84 @@ func DefaultTuneConfig() TuneConfig {
 
 // Tune runs the Adam optimizer to minimize prediction error.
 // Calls onEpoch after each epoch with (epoch, trainError, validationError).
-func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, trainErr, valErr float64)) {
-	n := len(t.Traces)
+func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoch int, trainErr, valErr float64)) {
+	n := tf.NumTrain
 	np := len(t.Values)
 	if n == 0 || np == 0 {
 		return
 	}
 
 	// Adam state
-	m := make([]float64, np) // first moment
-	v := make([]float64, np) // second moment
+	adam_m := make([]float64, np) // first moment
+	adam_v := make([]float64, np) // second moment
 
 	numCPU := runtime.NumCPU()
-	chunkSize := (n + numCPU - 1) / numCPU
 
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
-		// Compute gradients in parallel
-		gradChunks := make([][]float64, numCPU)
-		var wg sync.WaitGroup
-
-		for cpu := 0; cpu < numCPU; cpu++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				localGrad := make([]float64, np)
-				start := id * chunkSize
-				end := start + chunkSize
-				if end > n {
-					end = n
-				}
-
-				for i := start; i < end; i++ {
-					trace := &t.Traces[i].Trace
-
-					// Inline raw score computation for chain rule with scale factor
-					var mgSum, egSum float64
-					for _, e := range trace.MG {
-						mgSum += t.Values[e.Index] * float64(e.Coeff)
-					}
-					for _, e := range trace.EG {
-						egSum += t.Values[e.Index] * float64(e.Coeff)
-					}
-					phase := float64(trace.Phase)
-					rawScore := (mgSum*(float64(TotalPhase)-phase) + egSum*phase) / float64(TotalPhase)
-					sf := endgameScaleFactor(trace, rawScore)
-					score := rawScore * sf
-
-					sig := sigmoid(score, K)
-					// d(loss)/d(score) = -2 * (result - sig) * sig * (1 - sig) * ln(10) / K
-					// Simplified (absorb constants into gradient, divide by N later)
-					// Chain rule: d(scaledScore)/d(param) = d(rawScore)/d(param) * sf
-					errTerm := (trace.Result - sig) * sig * (1 - sig)
-
-					mgScale := errTerm * (float64(TotalPhase) - phase) / float64(TotalPhase) * sf
-					egScale := errTerm * phase / float64(TotalPhase) * sf
-
-					for _, e := range trace.MG {
-						localGrad[e.Index] += mgScale * float64(e.Coeff)
-					}
-					for _, e := range trace.EG {
-						localGrad[e.Index] += egScale * float64(e.Coeff)
-					}
-				}
-				gradChunks[id] = localGrad
-			}(cpu)
-		}
-		wg.Wait()
-
-		// Sum gradients
+		// Accumulate gradient across all batches
 		grad := make([]float64, np)
-		for _, chunk := range gradChunks {
-			if chunk == nil {
-				continue
+
+		tf.StreamTraining(streamBatchSize, func(batch []TunerTrace) {
+			batchN := len(batch)
+			chunkSize := (batchN + numCPU - 1) / numCPU
+
+			gradChunks := make([][]float64, numCPU)
+			var wg sync.WaitGroup
+
+			for cpu := 0; cpu < numCPU; cpu++ {
+				wg.Add(1)
+				go func(id int) {
+					defer wg.Done()
+					localGrad := make([]float64, np)
+					start := id * chunkSize
+					end := start + chunkSize
+					if end > batchN {
+						end = batchN
+					}
+
+					for i := start; i < end; i++ {
+						trace := &batch[i]
+
+						var mgSum, egSum float64
+						for _, e := range trace.MG {
+							mgSum += t.Values[e.Index] * float64(e.Coeff)
+						}
+						for _, e := range trace.EG {
+							egSum += t.Values[e.Index] * float64(e.Coeff)
+						}
+						phase := float64(trace.Phase)
+						rawScore := (mgSum*(float64(TotalPhase)-phase) + egSum*phase) / float64(TotalPhase)
+						sf := endgameScaleFactor(trace, rawScore)
+						score := rawScore * sf
+
+						sig := sigmoid(score, K)
+						errTerm := (trace.Result - sig) * sig * (1 - sig)
+
+						mgScale := errTerm * (float64(TotalPhase) - phase) / float64(TotalPhase) * sf
+						egScale := errTerm * phase / float64(TotalPhase) * sf
+
+						for _, e := range trace.MG {
+							localGrad[e.Index] += mgScale * float64(e.Coeff)
+						}
+						for _, e := range trace.EG {
+							localGrad[e.Index] += egScale * float64(e.Coeff)
+						}
+					}
+					gradChunks[id] = localGrad
+				}(cpu)
 			}
-			for j := range grad {
-				grad[j] += chunk[j]
+			wg.Wait()
+
+			// Merge batch gradients into epoch gradient
+			for _, chunk := range gradChunks {
+				if chunk == nil {
+					continue
+				}
+				for j := range grad {
+					grad[j] += chunk[j]
+				}
 			}
-		}
+		})
 
 		// Scale by -2 * ln(10) / (K * N) and negate (we want to minimize)
 		scale := -2.0 * math.Log(10) / (K * float64(n))
@@ -1439,18 +1651,18 @@ func (t *Tuner) Tune(K float64, cfg TuneConfig, onEpoch func(epoch int, trainErr
 			if t.Frozen[j] {
 				continue
 			}
-			m[j] = cfg.Beta1*m[j] + (1-cfg.Beta1)*grad[j]
-			v[j] = cfg.Beta2*v[j] + (1-cfg.Beta2)*grad[j]*grad[j]
+			adam_m[j] = cfg.Beta1*adam_m[j] + (1-cfg.Beta1)*grad[j]
+			adam_v[j] = cfg.Beta2*adam_v[j] + (1-cfg.Beta2)*grad[j]*grad[j]
 
-			mHat := m[j] / (1 - math.Pow(cfg.Beta1, float64(epoch)))
-			vHat := v[j] / (1 - math.Pow(cfg.Beta2, float64(epoch)))
+			mHat := adam_m[j] / (1 - math.Pow(cfg.Beta1, float64(epoch)))
+			vHat := adam_v[j] / (1 - math.Pow(cfg.Beta2, float64(epoch)))
 
 			t.Values[j] -= cfg.LR * mHat / (math.Sqrt(vHat) + cfg.Epsilon)
 		}
 
 		if onEpoch != nil {
-			trainErr := t.computeError(K)
-			valErr := t.ComputeValidationError(K)
+			trainErr := t.ComputeTrainError(tf, K)
+			valErr := t.ComputeValidationError(tf, K)
 			onEpoch(epoch, trainErr, valErr)
 		}
 	}

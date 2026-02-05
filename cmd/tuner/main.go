@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"chess"
@@ -127,26 +128,52 @@ func runTune(args []string) {
 		}
 	}
 	fmt.Printf("Parameter count: %d (%d tunable, %d frozen)\n", tuner.NumParams(), tuner.NumParams()-frozenCount, frozenCount)
-	fmt.Printf("Loading training data from %s...\n", *dataFile)
 
-	start := time.Now()
-	if err := tuner.LoadTrainingData(*dataFile); err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading data: %v\n", err)
+	// Derive .tbin filename from data filename
+	tbinFile := strings.TrimSuffix(*dataFile, ".dat") + ".tbin"
+
+	// Check if .tbin needs to be (re)built
+	needBuild := false
+	tbinStat, tbinErr := os.Stat(tbinFile)
+	if tbinErr != nil {
+		needBuild = true
+	} else {
+		datStat, datErr := os.Stat(*dataFile)
+		if datErr == nil && datStat.ModTime().After(tbinStat.ModTime()) {
+			needBuild = true
+			fmt.Printf("Source %s is newer than %s, rebuilding cache...\n", *dataFile, tbinFile)
+		}
+	}
+
+	if needBuild {
+		fmt.Printf("Preprocessing %s → %s...\n", *dataFile, tbinFile)
+		start := time.Now()
+		if err := chess.PreprocessToFile(tuner, *dataFile, tbinFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Error preprocessing: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Preprocessing done in %v\n", time.Since(start).Round(time.Millisecond))
+	}
+
+	// Open trace file (mmap)
+	tf, err := chess.OpenTraceFile(tbinFile, tuner.NumParams())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening trace file: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Loaded %d train + %d validation positions in %v\n",
-		len(tuner.Traces), len(tuner.Validation), time.Since(start).Round(time.Millisecond))
+	defer tf.Close()
+	fmt.Printf("Trace file: %d train + %d validation positions\n", tf.NumTrain, tf.NumValidation)
 
-	if len(tuner.Traces) == 0 {
-		fmt.Fprintf(os.Stderr, "No training positions loaded\n")
+	if tf.NumTrain == 0 {
+		fmt.Fprintf(os.Stderr, "No training positions in trace file\n")
 		os.Exit(1)
 	}
 
 	// Tune K
 	fmt.Printf("\nTuning K (scaling constant)...\n")
-	K := tuner.TuneK()
-	initialError := tuner.ComputeErrorPublic(K)
-	initialValError := tuner.ComputeValidationError(K)
+	K := tuner.TuneK(tf)
+	initialError := tuner.ComputeTrainError(tf, K)
+	initialValError := tuner.ComputeValidationError(tf, K)
 	fmt.Printf("Optimal K = %.2f, initial train error = %.8f, val error = %.8f\n\n", K, initialError, initialValError)
 
 	// Run optimizer
@@ -158,7 +185,7 @@ func runTune(args []string) {
 	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Error", "Val Error")
 	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "-----------", "---------")
 
-	tuner.Tune(K, cfg, func(epoch int, trainErr, valErr float64) {
+	tuner.Tune(tf, K, cfg, func(epoch int, trainErr, valErr float64) {
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
 			fmt.Printf("%-8d  %.8f    %.8f\n", epoch, trainErr, valErr)
 		}
@@ -170,8 +197,8 @@ func runTune(args []string) {
 	tuner.PrintParams(w)
 	w.Flush()
 
-	finalError := tuner.ComputeErrorPublic(K)
-	finalValError := tuner.ComputeValidationError(K)
+	finalError := tuner.ComputeTrainError(tf, K)
+	finalValError := tuner.ComputeValidationError(tf, K)
 	fmt.Printf("\nTrain:      initial=%.8f  final=%.8f  improvement=%.4f%%\n",
 		initialError, finalError, (initialError-finalError)/initialError*100)
 	fmt.Printf("Validation: initial=%.8f  final=%.8f  improvement=%.4f%%\n",
