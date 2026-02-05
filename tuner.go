@@ -1546,6 +1546,7 @@ type TuneConfig struct {
 	Beta1   float64 // Adam beta1 (default 0.9)
 	Beta2   float64 // Adam beta2 (default 0.999)
 	Epsilon float64 // Adam epsilon (default 1e-8)
+	Lambda  float64 // L2 regularization toward initial values (default 1e-4)
 }
 
 // DefaultTuneConfig returns sensible defaults.
@@ -1556,10 +1557,16 @@ func DefaultTuneConfig() TuneConfig {
 		Beta1:   0.9,
 		Beta2:   0.999,
 		Epsilon: 1e-8,
+		Lambda:  1e-4,
 	}
 }
 
 // Tune runs the Adam optimizer to minimize prediction error.
+// After each Adam step, applies constraints:
+//   - L2 regularization toward initial parameter values (cfg.Lambda)
+//   - PST center-normalization (prevents PSTs from absorbing material offsets)
+//   - King safety table monotonicity clamp
+//
 // Calls onEpoch after each epoch with (epoch, trainError, validationError).
 func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoch int, trainErr, valErr float64)) {
 	n := tf.NumTrain
@@ -1567,6 +1574,10 @@ func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoc
 	if n == 0 || np == 0 {
 		return
 	}
+
+	// Snapshot initial values for L2 regularization anchor
+	initialValues := make([]float64, np)
+	copy(initialValues, t.Values)
 
 	// Adam state
 	adam_m := make([]float64, np) // first moment
@@ -1646,6 +1657,15 @@ func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoc
 			grad[j] *= scale
 		}
 
+		// Add L2 regularization gradient: lambda * 2 * (param - initial)
+		if cfg.Lambda > 0 {
+			for j := range grad {
+				if !t.Frozen[j] {
+					grad[j] += cfg.Lambda * 2 * (t.Values[j] - initialValues[j])
+				}
+			}
+		}
+
 		// Adam update
 		for j := 0; j < np; j++ {
 			if t.Frozen[j] {
@@ -1658,6 +1678,61 @@ func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoc
 			vHat := adam_v[j] / (1 - math.Pow(cfg.Beta2, float64(epoch)))
 
 			t.Values[j] -= cfg.LR * mHat / (math.Sqrt(vHat) + cfg.Epsilon)
+		}
+
+		// --- Post-update constraints ---
+
+		// PST center-normalization: for each piece type with material (Pawn..Queen),
+		// subtract the PST mean and add it to the corresponding material value.
+		// This prevents PSTs from absorbing material-level offsets.
+		for pt := 0; pt < 5; pt++ { // Pawn=0..Queen=4
+			// MG
+			pstBase := idxPSTMG + pt*64
+			matIdx := idxMaterialMG + pt
+			sum := 0.0
+			for sq := 0; sq < 64; sq++ {
+				sum += t.Values[pstBase+sq]
+			}
+			mean := sum / 64.0
+			for sq := 0; sq < 64; sq++ {
+				t.Values[pstBase+sq] -= mean
+			}
+			t.Values[matIdx] += mean
+
+			// EG
+			pstBase = idxPSTEG + pt*64
+			matIdx = idxMaterialEG + pt
+			sum = 0.0
+			for sq := 0; sq < 64; sq++ {
+				sum += t.Values[pstBase+sq]
+			}
+			mean = sum / 64.0
+			for sq := 0; sq < 64; sq++ {
+				t.Values[pstBase+sq] -= mean
+			}
+			t.Values[matIdx] += mean
+		}
+
+		// King PST: center-normalize without material (King has no material value).
+		// Just subtract the mean to keep values centered around 0.
+		for _, pstBase := range []int{idxPSTMG + 5*64, idxPSTEG + 5*64} {
+			sum := 0.0
+			for sq := 0; sq < 64; sq++ {
+				sum += t.Values[pstBase+sq]
+			}
+			mean := sum / 64.0
+			for sq := 0; sq < 64; sq++ {
+				t.Values[pstBase+sq] -= mean
+			}
+		}
+
+		// King safety table monotonicity: clamp so entry[i] >= entry[i-1]
+		for i := 1; i < 100; i++ {
+			idx := idxKingSafetyTbl + i
+			prev := idxKingSafetyTbl + i - 1
+			if t.Values[idx] < t.Values[prev] {
+				t.Values[idx] = t.Values[prev]
+			}
 		}
 
 		if onEpoch != nil {

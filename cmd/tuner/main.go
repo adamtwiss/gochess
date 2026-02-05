@@ -111,6 +111,7 @@ func runTune(args []string) {
 	dataFile := fs.String("data", "training.dat", "training data file")
 	epochs := fs.Int("epochs", 500, "number of optimization epochs")
 	lr := fs.Float64("lr", 1.0, "learning rate")
+	lambda := fs.Float64("lambda", 1e-4, "L2 regularization strength toward initial values")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
@@ -180,8 +181,9 @@ func runTune(args []string) {
 	cfg := chess.DefaultTuneConfig()
 	cfg.Epochs = *epochs
 	cfg.LR = *lr
+	cfg.Lambda = *lambda
 
-	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f\n", cfg.Epochs, cfg.LR)
+	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f, lambda=%.1e\n", cfg.Epochs, cfg.LR, cfg.Lambda)
 	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Error", "Val Error")
 	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "-----------", "---------")
 
