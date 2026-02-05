@@ -1546,7 +1546,7 @@ type TuneConfig struct {
 	Beta1   float64 // Adam beta1 (default 0.9)
 	Beta2   float64 // Adam beta2 (default 0.999)
 	Epsilon float64 // Adam epsilon (default 1e-8)
-	Lambda  float64 // L2 regularization toward initial values (default 1e-6)
+	Lambda  float64 // L2 regularization toward initial values (default 0, disabled)
 }
 
 // DefaultTuneConfig returns sensible defaults.
@@ -1557,7 +1557,7 @@ func DefaultTuneConfig() TuneConfig {
 		Beta1:   0.9,
 		Beta2:   0.999,
 		Epsilon: 1e-8,
-		Lambda:  1e-6,
+		Lambda:  0,
 	}
 }
 

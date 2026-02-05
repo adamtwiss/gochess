@@ -111,7 +111,7 @@ func runTune(args []string) {
 	dataFile := fs.String("data", "training.dat", "training data file")
 	epochs := fs.Int("epochs", 500, "number of optimization epochs")
 	lr := fs.Float64("lr", 1.0, "learning rate")
-	lambda := fs.Float64("lambda", 1e-6, "L2 regularization strength toward initial values")
+	lambda := fs.Float64("lambda", 0, "L2 regularization strength toward initial values (0=disabled)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
