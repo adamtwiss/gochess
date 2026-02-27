@@ -239,11 +239,11 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 	}
 
 	// Compute time allocation
-	var allocMS int
+	var softMS, hardMS int
 	if params.ponder {
-		allocMS = 0 // infinite during ponder
+		softMS, hardMS = 0, 0 // infinite during ponder
 	} else {
-		allocMS = computeSearchTime(params.movetime, params.wtime, params.btime,
+		softMS, hardMS = computeSearchTime(params.movetime, params.wtime, params.btime,
 			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove)
 	}
 
@@ -259,11 +259,14 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 	now := time.Now()
 	info := &SearchInfo{
 		StartTime: now,
-		MaxTime:   time.Duration(allocMS) * time.Millisecond,
+		MaxTime:   time.Duration(hardMS) * time.Millisecond,
 		TT:        e.tt,
 	}
-	if allocMS > 0 {
-		atomic.StoreInt64(&info.Deadline, now.Add(info.MaxTime).UnixNano())
+	if hardMS > 0 {
+		atomic.StoreInt64(&info.Deadline, now.Add(time.Duration(hardMS)*time.Millisecond).UnixNano())
+	}
+	if softMS > 0 && softMS != hardMS {
+		atomic.StoreInt64(&info.SoftDeadline, now.Add(time.Duration(softMS)*time.Millisecond).UnixNano())
 	}
 	info.OnDepth = func(d, score int, nodes uint64, pv []Move) {
 		elapsed := time.Since(info.StartTime)
@@ -394,10 +397,14 @@ func (e *UCIEngine) cmdPonderhit() {
 	}
 
 	p := e.ponderParams
-	allocMS := computeSearchTime(p.movetime, p.wtime, p.btime,
+	softMS, hardMS := computeSearchTime(p.movetime, p.wtime, p.btime,
 		p.winc, p.binc, p.movestogo, p.infinite, e.ponderSide)
-	if allocMS > 0 {
-		atomic.StoreInt64(&e.searchInfo.Deadline, time.Now().Add(time.Duration(allocMS)*time.Millisecond).UnixNano())
+	phNow := time.Now()
+	if hardMS > 0 {
+		atomic.StoreInt64(&e.searchInfo.Deadline, phNow.Add(time.Duration(hardMS)*time.Millisecond).UnixNano())
+	}
+	if softMS > 0 && softMS != hardMS {
+		atomic.StoreInt64(&e.searchInfo.SoftDeadline, phNow.Add(time.Duration(softMS)*time.Millisecond).UnixNano())
 	}
 	e.pondering = false
 	if e.ponderDone != nil {
@@ -478,13 +485,16 @@ func (e *UCIEngine) cmdDebug() {
 	e.send("FEN: %s", e.board.ToFEN())
 }
 
-// computeSearchTime calculates the time allocation in milliseconds for a search.
-func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infinite bool, side Color) int {
+// computeSearchTime calculates soft and hard time allocations in milliseconds.
+// Soft limit is the base allocation where dynamic time management may stop early.
+// Hard limit (~3x soft, capped at 75% remaining) is never exceeded.
+// For movetime mode, soft == hard (no dynamic scaling).
+func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infinite bool, side Color) (int, int) {
 	if infinite {
-		return 0
+		return 0, 0
 	}
 	if movetime > 0 {
-		return movetime
+		return movetime, movetime // fixed: soft == hard
 	}
 
 	var timeLeft, inc int
@@ -497,7 +507,7 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 	}
 
 	if timeLeft <= 0 {
-		return 0 // no clock info, rely on depth limit
+		return 0, 0 // no clock info, rely on depth limit
 	}
 
 	movesLeft := movestogo
@@ -505,20 +515,30 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 		movesLeft = 30 // sudden death default
 	}
 
-	alloc := timeLeft/movesLeft + inc*3/4
+	softAlloc := timeLeft/movesLeft + inc*3/4
 
 	// Cap at half remaining time
 	maxAlloc := timeLeft / 2
-	if alloc > maxAlloc {
-		alloc = maxAlloc
+	if softAlloc > maxAlloc {
+		softAlloc = maxAlloc
 	}
 
 	// Floor at 10ms
-	if alloc < 10 {
-		alloc = 10
+	if softAlloc < 10 {
+		softAlloc = 10
 	}
 
-	return alloc
+	// Hard limit: 3x soft, capped at 75% remaining
+	hardAlloc := softAlloc * 3
+	maxHard := timeLeft * 3 / 4
+	if hardAlloc > maxHard {
+		hardAlloc = maxHard
+	}
+	if hardAlloc < softAlloc {
+		hardAlloc = softAlloc
+	}
+
+	return softAlloc, hardAlloc
 }
 
 // formatScore formats a score for UCI info output.

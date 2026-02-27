@@ -93,6 +93,12 @@ type SearchInfo struct {
 	// Accessed atomically. 0 means no deadline (use MaxTime/StartTime fallback).
 	Deadline int64
 
+	// SoftDeadline is the soft time limit (UnixNano). The search may stop here
+	// if the position is stable (best move not changing, score not fluctuating).
+	// 0 means fall back to Deadline-only logic (used by EPD/benchmark/movetime).
+	// Accessed atomically.
+	SoftDeadline int64
+
 	// Killer moves: 2 slots per ply, max 64 ply
 	Killers [64][2]Move
 
@@ -149,6 +155,12 @@ type SearchInfo struct {
 	// HelperInfos holds pointers to helper thread SearchInfos.
 	// Only used by the main thread (ThreadIndex 0) for node aggregation in OnDepth.
 	HelperInfos []*SearchInfo
+
+	// Dynamic time management: best-move stability tracking (main thread only, no atomics needed)
+	tmPrevBestMove   Move // best move from previous iteration
+	tmPrevScore      int  // score from previous iteration
+	tmBestMoveStable int  // consecutive iterations with unchanged best move
+	tmHasData        bool // true after first completed iteration
 
 	// Pre-allocated search structures (avoid per-node heap allocations)
 	pickers [MaxPly + MaxQSDepth]MovePicker
@@ -290,10 +302,80 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			info.OnDepth(depth, score, atomic.LoadUint64(&info.Nodes), info.PV)
 		}
 
-		// Check if remaining time is less than the last iteration took
-		if d := atomic.LoadInt64(&info.Deadline); d > 0 {
-			now := time.Now().UnixNano()
-			remaining := d - now
+		// Dynamic time management: soft/hard deadline check
+		softDL := atomic.LoadInt64(&info.SoftDeadline)
+		hardDL := atomic.LoadInt64(&info.Deadline)
+		now := time.Now().UnixNano()
+
+		if softDL > 0 && depth >= 4 {
+			// Update stability tracking
+			if info.tmHasData {
+				if bestMove != info.tmPrevBestMove {
+					info.tmBestMoveStable = 0
+				} else {
+					info.tmBestMoveStable++
+				}
+			}
+
+			// Score delta (ignore mate-range swings)
+			scoreDelta := 0
+			if info.tmHasData {
+				scoreDelta = abs(score - info.tmPrevScore)
+				isMateRange := score > MateScore-200 || score < -MateScore+200 ||
+					info.tmPrevScore > MateScore-200 || info.tmPrevScore < -MateScore+200
+				if isMateRange {
+					scoreDelta = 0
+				}
+			}
+
+			// Save for next iteration
+			info.tmPrevBestMove = bestMove
+			info.tmPrevScore = score
+			info.tmHasData = true
+
+			// Time scaling factor (1.0 = use soft limit as-is)
+			scale := 1.0
+
+			// Stable best move → stop early
+			if info.tmBestMoveStable >= 5 {
+				scale *= 0.5
+			} else if info.tmBestMoveStable >= 3 {
+				scale *= 0.7
+			} else if info.tmBestMoveStable >= 1 {
+				scale *= 0.85
+			}
+
+			// Unstable score → extend time
+			if scoreDelta > 50 {
+				scale *= 1.4
+			} else if scoreDelta > 25 {
+				scale *= 1.2
+			}
+
+			// Compute adjusted soft deadline
+			softDuration := softDL - info.StartTime.UnixNano()
+			adjustedSoft := info.StartTime.UnixNano() + int64(float64(softDuration)*scale)
+
+			// Clamp to hard deadline
+			if hardDL > 0 && adjustedSoft > hardDL {
+				adjustedSoft = hardDL
+			}
+
+			if now >= adjustedSoft {
+				break // soft stop
+			}
+
+			// Also check if next iteration would exceed hard deadline
+			if hardDL > 0 {
+				remaining := hardDL - now
+				iterElapsed := now - iterStart.UnixNano()
+				if remaining > 0 && remaining < iterElapsed {
+					break
+				}
+			}
+		} else if hardDL > 0 {
+			// No soft deadline: existing behavior (EPD/benchmark/movetime/depth<4)
+			remaining := hardDL - now
 			iterElapsed := now - iterStart.UnixNano()
 			if remaining > 0 && remaining < iterElapsed {
 				break

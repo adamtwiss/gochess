@@ -205,25 +205,30 @@ func TestComputeSearchTime(t *testing.T) {
 		movetime, wtime, btime, winc, binc, movestogo int
 		infinite                                      bool
 		side                                          Color
-		want                                          int
+		wantSoft, wantHard                            int
 	}{
-		{"movetime", 5000, 0, 0, 0, 0, 0, false, White, 5000},
-		{"infinite", 0, 0, 0, 0, 0, 0, true, White, 0},
-		{"no clock", 0, 0, 0, 0, 0, 0, false, White, 0},
-		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 1000},             // 30000/30 = 1000
-		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 1000},             // 30000/30 = 1000
-		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2500},           // 30000/30 + 2000*3/4 = 1000+1500 = 2500
-		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 3000},               // 30000/10 = 3000
-		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 66},                    // 2000/30=66, cap=1000, 66<1000
-		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10},                   // 100/30=3 → floor at 10
-		{"movetime overrides clock", 3000, 60000, 60000, 0, 0, 0, false, White, 3000},
+		{"movetime", 5000, 0, 0, 0, 0, 0, false, White, 5000, 5000},
+		{"infinite", 0, 0, 0, 0, 0, 0, true, White, 0, 0},
+		{"no clock", 0, 0, 0, 0, 0, 0, false, White, 0, 0},
+		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 1000, 3000},             // soft=30000/30=1000, hard=3*1000=3000
+		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 1000, 3000},             // soft=30000/30=1000, hard=3000
+		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2500, 7500},           // soft=1000+1500=2500, hard=7500
+		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 3000, 9000},               // soft=30000/10=3000, hard=9000
+		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 66, 198},                     // soft=2000/30=66, hard=198
+		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 30},                     // soft=floor(10), hard=30
+		{"movetime overrides clock", 3000, 60000, 60000, 0, 0, 0, false, White, 3000, 3000},
+		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 33, 99},               // soft=1000/30=33, hard=min(99,750)=99
+		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 300, 450},          // soft=min(600/1,300)=300, hard=min(900,450)=450
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := computeSearchTime(tt.movetime, tt.wtime, tt.btime, tt.winc, tt.binc, tt.movestogo, tt.infinite, tt.side)
-			if got != tt.want {
-				t.Errorf("computeSearchTime() = %d, want %d", got, tt.want)
+			gotSoft, gotHard := computeSearchTime(tt.movetime, tt.wtime, tt.btime, tt.winc, tt.binc, tt.movestogo, tt.infinite, tt.side)
+			if gotSoft != tt.wantSoft {
+				t.Errorf("computeSearchTime() soft = %d, want %d", gotSoft, tt.wantSoft)
+			}
+			if gotHard != tt.wantHard {
+				t.Errorf("computeSearchTime() hard = %d, want %d", gotHard, tt.wantHard)
 			}
 		})
 	}
