@@ -429,6 +429,12 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 	// --- Knights ---
 	knights := b.Pieces[pieceOf(WhiteKnight, color)]
+	knightCount := knights.Count()
+
+	// Knight closed position bonus: constant per knight, compute once
+	mg += knightCount * totalPawns * KnightClosedPositionMG
+	eg += knightCount * totalPawns * KnightClosedPositionEG
+
 	for knights != 0 {
 		sq := knights.PopLSB()
 		attacks := KnightAttacks[sq] &^ friendly
@@ -460,10 +466,6 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 				}
 			}
 		}
-
-		// Knight closed position bonus (more valuable with more pawns)
-		mg += totalPawns * KnightClosedPositionMG
-		eg += totalPawns * KnightClosedPositionEG
 	}
 
 	// --- Bishops ---
@@ -475,6 +477,11 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		mg += BishopPairMG
 		eg += BishopPairEG
 	}
+
+	// Bishop open position bonus: constant per bishop, compute once
+	missingPawns := 16 - totalPawns
+	mg += bishopCount * missingPawns * BishopOpenPositionMG
+	eg += bishopCount * missingPawns * BishopOpenPositionEG
 
 	for bishops != 0 {
 		sq := bishops.PopLSB()
@@ -488,11 +495,6 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 			attackerCount++
 			attackUnits += BishopAttackUnits + BishopKingZoneBonus*kzAttacks.Count()
 		}
-
-		// Open position bonus: more valuable with fewer pawns
-		missingPawns := 16 - totalPawns
-		mg += missingPawns * BishopOpenPositionMG
-		eg += missingPawns * BishopOpenPositionEG
 
 		// Bad bishop: penalty per friendly pawn on same square color
 		var sameColorMask Bitboard
@@ -511,12 +513,22 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 
 	// Doubled rooks: bonus when two rooks share a file
 	if rooks.Count() >= 2 {
-		for f := 0; f < 8; f++ {
-			if (rooks & FileMasks[f]).Count() >= 2 {
-				mg += DoubledRooksMG
-				eg += DoubledRooksEG
-			}
+		r := rooks
+		sq1 := r.PopLSB()
+		sq2 := r.PopLSB()
+		if sq1.File() == sq2.File() {
+			mg += DoubledRooksMG
+			eg += DoubledRooksEG
 		}
+	}
+
+	// Precompute for trapped rook detection
+	friendlyKingSq := b.Pieces[pieceOf(WhiteKing, color)].LSB()
+	friendlyKingFile := friendlyKingSq.File()
+	friendlyKingRank := friendlyKingSq.Rank()
+	backRank := 0
+	if color == Black {
+		backRank = 7
 	}
 
 	for rooks != 0 {
@@ -578,26 +590,16 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		}
 
 		// Trapped rook: corner rook with king blocking escape route
-		backRank := 0
-		if color == Black {
-			backRank = 7
-		}
-		if rank == backRank {
-			kingSq := b.Pieces[pieceOf(WhiteKing, color)].LSB()
-			kingFile := kingSq.File()
-			kingRank := kingSq.Rank()
-			if kingRank == backRank {
-				rookFile := sq.File()
-				// Kingside trap: rook on h-file, king on f/g-file
-				if rookFile == 7 && (kingFile == 5 || kingFile == 6) {
-					mg += TrappedRookPenaltyMG
-					eg += TrappedRookPenaltyEG
-				}
-				// Queenside trap: rook on a-file, king on b/c-file
-				if rookFile == 0 && (kingFile == 1 || kingFile == 2) {
-					mg += TrappedRookPenaltyMG
-					eg += TrappedRookPenaltyEG
-				}
+		if rank == backRank && friendlyKingRank == backRank {
+			// Kingside trap: rook on h-file, king on f/g-file
+			if file == 7 && (friendlyKingFile == 5 || friendlyKingFile == 6) {
+				mg += TrappedRookPenaltyMG
+				eg += TrappedRookPenaltyEG
+			}
+			// Queenside trap: rook on a-file, king on b/c-file
+			if file == 0 && (friendlyKingFile == 1 || friendlyKingFile == 2) {
+				mg += TrappedRookPenaltyMG
+				eg += TrappedRookPenaltyEG
 			}
 		}
 	}
@@ -646,13 +648,8 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	// --- King safety: structural factors ---
 
 	// Weak squares: king-zone squares not defended by enemy pawns
-	var enemyPawnDefense Bitboard
-	if enemy == White {
-		enemyPawnDefense = enemyPawns.NorthWest() | enemyPawns.NorthEast()
-	} else {
-		enemyPawnDefense = enemyPawns.SouthWest() | enemyPawns.SouthEast()
-	}
-	weakKingZone := kingZone &^ enemyPawnDefense &^ SquareBB(enemyKingSq)
+	// (reuse enemyPawnAttacks computed above — identical bitboard)
+	weakKingZone := kingZone &^ enemyPawnAttacks &^ SquareBB(enemyKingSq)
 	weakSquareCount := weakKingZone.Count()
 
 	// Open/semi-open files toward enemy king
