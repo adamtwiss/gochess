@@ -35,6 +35,11 @@ func main() {
 	// Book loading flag
 	bookFile := flag.String("book", "", "opening book file for UCI mode")
 
+	// Benchmark flags
+	benchmark := flag.Bool("benchmark", false, "run multi-suite benchmark")
+	benchSave := flag.String("save", "", "save benchmark results to JSON file")
+	benchCompare := flag.String("compare", "", "compare against saved benchmark JSON file")
+
 	// Mode flags
 	forceUCI := flag.Bool("uci", false, "force UCI protocol mode (default when stdin is not a terminal)")
 
@@ -45,6 +50,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  chess                                          # interactive mode\n")
 		fmt.Fprintf(os.Stderr, "  chess -uci                                     # UCI mode\n")
 		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20 -threads 4\n")
+		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200                            # run benchmark\n")
+		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200 -save base.json            # save results\n")
+		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200 -compare base.json         # compare\n")
 		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -eco eco.pgn -bookout book.bin\n")
 		fmt.Fprintf(os.Stderr, "  chess -book book.bin\n")
 	}
@@ -65,6 +73,11 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("Book written to %s\n", *bookOut)
+		return
+	}
+
+	if *benchmark {
+		runBenchmark(*maxTimeMS, *hashMB, *depth, *threads, *benchSave, *benchCompare)
 		return
 	}
 
@@ -250,4 +263,150 @@ func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Durat
 		formatHitrate(result.PawnProbes, result.PawnHits))
 
 	return result, nil
+}
+
+func runBenchmark(timeLimitMs, hashMB, depth, threads int, saveFile, compareFile string) {
+	suites := chess.DefaultBenchmarkSuites()
+
+	fmt.Printf("=== Chess Engine Benchmark ===\n")
+	fmt.Printf("Time: %dms/pos  Hash: %dMB  Threads: %d\n\n", timeLimitMs, hashMB, threads)
+
+	result, err := chess.RunBenchmark(suites, timeLimitMs, hashMB, depth, threads, func(p chess.BenchmarkProgress) {
+		status := "FAIL"
+		if p.Solved {
+			status = "PASS"
+		}
+		fmt.Printf("  [%s] %s %s %d/%d  score=%.1f\n",
+			status, p.Suite, p.ID, p.PositionNum, p.TotalInSuite, p.Score)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Benchmark error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+
+	if compareFile != "" {
+		baseline, err := chess.LoadBenchmarkResult(compareFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading baseline: %v\n", err)
+			os.Exit(1)
+		}
+		printBenchmarkComparison(result, baseline)
+	} else {
+		printBenchmarkResults(result)
+	}
+
+	if saveFile != "" {
+		if err := chess.SaveBenchmarkResult(saveFile, result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving results: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nResults saved to %s\n", saveFile)
+	}
+}
+
+func printBenchmarkResults(r *chess.BenchmarkResult) {
+	fmt.Printf("%-12s %10s %10s %9s %10s\n", "Suite", "Solved", "Score", "Avg/pos", "kNPS")
+	fmt.Println(strings.Repeat("-", 55))
+
+	for _, s := range r.Suites {
+		avg := 0.0
+		if s.Total > 0 {
+			avg = s.Score / float64(s.Total)
+		}
+		knps := formatKNPSNum(s.TotalNodes, s.DurationMs)
+		fmt.Printf("%-12s %5d/%-4d %10.1f %9.2f %10s\n",
+			s.Name, s.Solved, s.Total, s.Score, avg, knps)
+	}
+
+	fmt.Println(strings.Repeat("-", 55))
+	total := r.TotalPositions()
+	avg := 0.0
+	if total > 0 {
+		avg = r.TotalScore() / float64(total)
+	}
+	knps := formatKNPSNum(r.TotalNodes(), r.TotalDuration())
+	fmt.Printf("%-12s %5d/%-4d %10.1f %9.2f %10s\n",
+		"TOTAL", r.TotalSolved(), total, r.TotalScore(), avg, knps)
+}
+
+func printBenchmarkComparison(current, baseline *chess.BenchmarkResult) {
+	fmt.Printf("%-12s %18s %22s %16s\n", "Suite", "Solved", "Score", "Avg/pos")
+	fmt.Println(strings.Repeat("-", 72))
+
+	// Build baseline lookup by suite name
+	baseMap := make(map[string]*chess.BenchmarkSuiteResult)
+	for i := range baseline.Suites {
+		baseMap[baseline.Suites[i].Name] = &baseline.Suites[i]
+	}
+
+	for _, s := range current.Suites {
+		b, ok := baseMap[s.Name]
+		if !ok {
+			// No baseline for this suite, just print current
+			avg := 0.0
+			if s.Total > 0 {
+				avg = s.Score / float64(s.Total)
+			}
+			fmt.Printf("%-12s %5d/%-4d         %10.1f              %6.2f\n",
+				s.Name, s.Solved, s.Total, s.Score, avg)
+			continue
+		}
+
+		curAvg := 0.0
+		baseAvg := 0.0
+		if s.Total > 0 {
+			curAvg = s.Score / float64(s.Total)
+		}
+		if b.Total > 0 {
+			baseAvg = b.Score / float64(b.Total)
+		}
+		avgDelta := curAvg - baseAvg
+
+		sign := "+"
+		if avgDelta < 0 {
+			sign = ""
+		}
+
+		fmt.Printf("%-12s %3d->%3d/%-4d %8.1f->%7.1f %6.2f->%5.2f (%s%.2f)\n",
+			s.Name, b.Solved, s.Solved, s.Total,
+			b.Score, s.Score,
+			baseAvg, curAvg, sign, avgDelta)
+	}
+
+	fmt.Println(strings.Repeat("-", 72))
+
+	curTotal := current.TotalPositions()
+	baseTotal := baseline.TotalPositions()
+	curAvg := 0.0
+	baseAvg := 0.0
+	if curTotal > 0 {
+		curAvg = current.TotalScore() / float64(curTotal)
+	}
+	if baseTotal > 0 {
+		baseAvg = baseline.TotalScore() / float64(baseTotal)
+	}
+	avgDelta := curAvg - baseAvg
+	sign := "+"
+	if avgDelta < 0 {
+		sign = ""
+	}
+
+	fmt.Printf("%-12s %3d->%3d/%-4d %8.1f->%7.1f %6.2f->%5.2f (%s%.2f)\n",
+		"TOTAL", baseline.TotalSolved(), current.TotalSolved(), curTotal,
+		baseline.TotalScore(), current.TotalScore(),
+		baseAvg, curAvg, sign, avgDelta)
+}
+
+func formatKNPSNum(nodes uint64, durationMs float64) string {
+	if durationMs <= 0 {
+		return "-"
+	}
+	knps := float64(nodes) / durationMs // nodes/ms = knps
+	whole := int(knps + 0.5)
+	if whole >= 1000 {
+		return fmt.Sprintf("%d,%03d", whole/1000, whole%1000)
+	}
+	return fmt.Sprintf("%d", whole)
 }

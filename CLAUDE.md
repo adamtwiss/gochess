@@ -16,6 +16,9 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -e testdata/wac.epd -t 5000 -n 20              # Run EPD test suite
 ./chess -e testdata/wac.epd -t 5000 -n 20 -threads 4   # Run EPD with Lazy SMP (4 threads)
 ./chess -uci                                            # Start UCI mode
+./chess -benchmark -t 200                               # Run multi-suite benchmark (quick)
+./chess -benchmark -t 200 -save base.json               # Save benchmark results to JSON
+./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
 ./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin  # Build opening book
 
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data
@@ -48,6 +51,7 @@ see.go               Static Exchange Evaluation for capture ordering and quiet m
 san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
 epd.go               EPD file loading and test suite runner
 pgn.go               PGN game parsing (tags, moves)
+benchmark.go         Multi-suite benchmark: continuous scoring (time-to-solve), JSON save/load, comparison
 book.go              Opening book: build from PGN, binary format, weighted move selection
 uci.go               UCI protocol (position, go, setoption, ponder)
 cli.go               Interactive CLI engine (set, fen, board, eval, moves, search, epd, perft)
@@ -205,10 +209,11 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### CLI
 
-`cmd/chess/main.go` — Four modes:
+`cmd/chess/main.go` — Five modes:
 
 - **Interactive CLI**: Default when stdin is a terminal and no flags given. Provides commands: `set`, `fen`, `board`, `reset`, `moves`, `search`, `eval`, `epd`, `perft`, `uci`. Implemented in `cli.go` (`CLIEngine`).
 - **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output), `-threads` (Lazy SMP thread count)
+- **Benchmark**: `-benchmark` runs WAC, ECM, SBD, Arasan suites with continuous time-to-solve scoring. `-save FILE` writes JSON results, `-compare FILE` shows delta against a baseline. Reuses `-t`, `-hash`, `-d`, `-threads`.
 - **UCI mode**: `-uci`, with optional `-book` (opening book path)
 - **Book building**: `-buildbook`, `-pgn`, `-eco`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
 
