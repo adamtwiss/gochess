@@ -873,6 +873,9 @@ func (b *Board) endgameScale() (wScale, bScale int) {
 		} else if wRooks == 1 && wMinors == 0 && wQueens == 0 && bMinors == 1 && bMajors == 0 {
 			// KR vs KB or KR vs KN — usually drawn
 			wScale = 16
+		} else if wMajors == 0 && wMinors == 2 && bMinors >= 1 {
+			// KBB vs KB/KN, KBN vs KB/KN — can't force mate with extra minor
+			wScale = 16
 		}
 	}
 
@@ -882,6 +885,9 @@ func (b *Board) endgameScale() (wScale, bScale int) {
 		} else if bKnights == 2 && bBishops == 0 && bMajors == 0 {
 			bScale = 0
 		} else if bRooks == 1 && bMinors == 0 && bQueens == 0 && wMinors == 1 && wMajors == 0 {
+			bScale = 16
+		} else if bMajors == 0 && bMinors == 2 && wMinors >= 1 {
+			// KBB vs KB/KN, KBN vs KB/KN — can't force mate with extra minor
 			bScale = 16
 		}
 	}

@@ -151,7 +151,7 @@ Tapered evaluation blending middlegame and endgame scores based on game phase (p
 - **Positional bonuses** (eval.go): Bishop pair, knight outposts (supported/unsupported), knight closed-position bonus (scales with pawn count), rook on open/semi-open file, rook on 7th rank, doubled rooks on same file, trapped rook penalty, bad bishop penalty (per friendly pawn on same square color), bishop open position scaling, castling rights MG bonus.
 - **Passed pawn enhancements** (eval.go): Not-blocked bonus, free path to promotion, king proximity (friendly close / enemy far), protected passers, connected passers, rook behind passer. These depend on piece positions so they are not cached in the pawn table.
 - **Space and threats** (eval.go): Space evaluation (safe squares in center files), pawn threats (pawns attacking enemy pieces).
-- **Endgame scaling** (eval.go): Per-side scale factors (0-128) for draw/insufficient material detection. Handles KNN, KR vs KB/KN, opposite-colored bishop drawishness (OCBScale=64), and 50-move rule scaling.
+- **Endgame scaling** (eval.go): Per-side scale factors (0-128) for draw/insufficient material detection. Handles KNN, KR vs KB/KN, pawnless 2 minors vs 1+ minor (KBB/KBN vs KB/KN, scale 16), opposite-colored bishop drawishness (OCBScale=64), and 50-move rule scaling.
 - **Eval cache** (eval.go): `EvalTable` caches full `Evaluate()` results keyed by Zobrist hash. Auto-initialized at 1 MB. Avoids redundant recomputation on transpositions.
 - **Phase calculation**: Knight=1, Bishop=1, Rook=2, Queen=4, Total=24. Phase increases as pieces are traded.
 
