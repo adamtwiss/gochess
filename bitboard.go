@@ -30,6 +30,10 @@ const (
 	LightSquares Bitboard = 0x55AA55AA55AA55AA
 	DarkSquares  Bitboard = 0xAA55AA55AA55AA55
 
+	// Wing masks
+	QueensideMask Bitboard = FileA | FileB | FileC | FileD
+	KingsideMask  Bitboard = FileE | FileF | FileG | FileH
+
 	// Useful combinations
 	NotFileA Bitboard = ^FileA
 	NotFileH Bitboard = ^FileH

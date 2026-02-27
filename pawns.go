@@ -203,6 +203,11 @@ var candidatePassedMG = [8]int{0, 0, 5, 7, 12, 20, 0, 0}
 var candidatePassedEG = [8]int{0, 0, 10, 15, 25, 45, 0, 0}
 var CandidatePassedEnabled = true
 
+// Pawn majority: bonus per pawn advantage on a wing (queenside/kingside)
+var PawnMajorityMG = 5
+var PawnMajorityEG = 15
+var PawnMajorityEnabled = true
+
 // evaluatePawnStructure evaluates pawn structure for one color.
 // Returns mg and eg scores and a bitboard of passed pawns.
 func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) {
@@ -284,6 +289,24 @@ func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) 
 		// Pawn advancement bonus
 		mg += pawnAdvancementMG[relativeRank]
 		eg += pawnAdvancementEG[relativeRank]
+	}
+
+	// Pawn majority: bonus when we have more pawns on a wing than the opponent
+	if PawnMajorityEnabled {
+		friendly := b.Pieces[pieceOf(WhitePawn, color)]
+		enemy := b.Pieces[pieceOf(WhitePawn, 1-color)]
+		for _, wingMask := range [2]Bitboard{QueensideMask, KingsideMask} {
+			if passed&wingMask != 0 {
+				continue
+			}
+			ours := (friendly & wingMask).Count()
+			theirs := (enemy & wingMask).Count()
+			if ours > theirs {
+				advantage := ours - theirs
+				mg += PawnMajorityMG * advantage
+				eg += PawnMajorityEG * advantage
+			}
+		}
 	}
 
 	return
