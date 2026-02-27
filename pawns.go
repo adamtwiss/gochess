@@ -198,6 +198,11 @@ const (
 var pawnAdvancementMG = [8]int{0, 0, 0, 5, 15, 25, 40, 0}
 var pawnAdvancementEG = [8]int{0, 0, 0, 5, 10, 20, 35, 0}
 
+// Candidate passed pawn: no enemy pawn ahead on own file, friendly support >= enemy sentries
+var candidatePassedMG = [8]int{0, 0, 5, 7, 12, 20, 0, 0}
+var candidatePassedEG = [8]int{0, 0, 10, 15, 25, 45, 0, 0}
+var CandidatePassedEnabled = true
+
 // evaluatePawnStructure evaluates pawn structure for one color.
 // Returns mg and eg scores and a bitboard of passed pawns.
 func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) {
@@ -258,6 +263,16 @@ func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) 
 			mg += passedPawnMG[relativeRank]
 			eg += passedPawnEG[relativeRank]
 			passed |= SquareBB(sq)
+		} else if CandidatePassedEnabled {
+			// Candidate passed pawn: no enemy on own file ahead, friendly support >= enemy sentries
+			if ForwardFileMask[color][sq]&enemyPawns == 0 {
+				adjSentries := (PassedPawnMask[color][sq] & AdjacentFiles[file] & enemyPawns).Count()
+				friendlyAdj := (AdjacentFiles[file] & allFriendlyPawns).Count()
+				if friendlyAdj >= adjSentries {
+					mg += candidatePassedMG[relativeRank]
+					eg += candidatePassedEG[relativeRank]
+				}
+			}
 		}
 
 		// Connected pawns: defended by another pawn
