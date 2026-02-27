@@ -500,9 +500,12 @@ func (b *Board) IsLegal(m Move, pinned Bitboard, inCheck bool) bool {
 	return LineBB[kingSq][from]&SquareBB(to) != 0
 }
 
-// IsLegalSlow is a convenience wrapper that computes pinned pieces internally.
-// Use in non-performance-critical paths (PV extraction, GenerateLegalMoves).
+// IsLegalSlow is a convenience wrapper that checks both pseudo-legality and
+// legality. Use in non-performance-critical paths (PV extraction).
 func (b *Board) IsLegalSlow(m Move) bool {
+	if !b.IsPseudoLegal(m) {
+		return false
+	}
 	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
 	return b.IsLegal(m, pinned, checkers != 0)
 }

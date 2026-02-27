@@ -910,6 +910,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		}
 
+		// Save moved piece before MakeMove for consistent history indexing
+		movedPiece := b.Squares[move.From()]
+
 		b.MakeMove(move)
 
 		// Check extension: extend search by 1 ply when move gives check
@@ -1028,7 +1031,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// Continuous history adjustment: good history reduces less, bad more
 				histScore := info.History[move.From()][move.To()]
 				if contHistPtr != nil {
-					histScore += int32(contHistPtr[b.Squares[move.To()]][move.To()])
+					histScore += int32(contHistPtr[movedPiece][move.To()])
 				}
 				reduction -= int(histScore / 5000)
 

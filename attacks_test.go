@@ -234,6 +234,12 @@ func TestPinnedPieces(t *testing.T) {
 			us:     White,
 			pinned: []string{"e2", "d2"},
 		},
+		{
+			name:   "two friendly pieces on ray (neither pinned)",
+			fen:    "4k3/8/8/8/4r3/4N3/4N3/4K3 w - - 0 1",
+			us:     White,
+			pinned: nil,
+		},
 	}
 
 	for _, tc := range tests {
@@ -273,6 +279,8 @@ func TestIsLegalMatchesMakeUnmake(t *testing.T) {
 		"r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/3P1N1P/PPP1NPP1/R2Q1RK1 w - - 0 1", // Position 6
 		"r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",     // Ruy Lopez-ish
 		"rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 1",           // EP available
+		"rnb1kbnr/pppp1ppp/8/4q3/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 1",            // In check (queen)
+		"4k3/8/8/8/1b6/2N5/3PP3/r3K2R w K - 0 1",                                  // Double check (rook + bishop)
 	}
 
 	for _, fen := range positions {
