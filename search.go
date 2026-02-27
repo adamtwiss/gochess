@@ -299,7 +299,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		}
 
 		if info.OnDepth != nil {
-			info.OnDepth(depth, score, atomic.LoadUint64(&info.Nodes), info.PV)
+			info.OnDepth(depth, score, info.Nodes, info.PV)
 		}
 
 		// Dynamic time management: soft/hard deadline check
@@ -462,7 +462,7 @@ func (b *Board) SearchParallel(maxDepth int, info *SearchInfo, numThreads int) (
 			// Aggregate nodes from all helpers
 			totalNodes := nodes
 			for _, h := range helpers {
-				totalNodes += atomic.LoadUint64(&h.Nodes)
+				totalNodes += h.Nodes
 			}
 			callerOnDepth(d, score, totalNodes, pv)
 		}
@@ -489,7 +489,7 @@ func (b *Board) SearchParallel(maxDepth int, info *SearchInfo, numThreads int) (
 
 	// Aggregate final node count
 	for _, h := range helpers {
-		result.Nodes += atomic.LoadUint64(&h.Nodes)
+		result.Nodes += h.Nodes
 	}
 
 	return bestMove, result
@@ -653,7 +653,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	info.pvLen[ply] = 0
 
 	// Check time periodically
-	if atomic.LoadUint64(&info.Nodes)&4095 == 0 {
+	if info.Nodes&4095 == 0 {
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
 			atomic.StoreInt32(&info.Stopped, 1)
 			return 0
@@ -664,7 +664,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		return 0
 	}
 
-	atomic.AddUint64(&info.Nodes, 1)
+	info.Nodes++
 
 	// Draw detection: repetition and 50-move rule
 	if ply > 0 {
@@ -1217,7 +1217,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		return b.EvaluateRelative()
 	}
 
-	atomic.AddUint64(&info.Nodes, 1)
+	info.Nodes++
 
 	// Stand pat - evaluate the current position
 	standPat := b.EvaluateRelative()
