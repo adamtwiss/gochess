@@ -270,6 +270,15 @@ func (t *Tuner) initTunerParams() {
 	add("backwardPawnEG", backwardPawnEG, nil)
 	add("connectedPawnMG", connectedPawnMG, nil)
 	add("connectedPawnEG", connectedPawnEG, nil)
+	add("PawnMajorityMG", PawnMajorityMG, func(v int) { PawnMajorityMG = v })
+	add("PawnMajorityEG", PawnMajorityEG, func(v int) { PawnMajorityEG = v })
+	for i := 0; i < 8; i++ {
+		ii := i
+		add(fmt.Sprintf("queensidePawnAdvMG[%d]", i), queensidePawnAdvMG[i],
+			func(v int) { queensidePawnAdvMG[ii] = v })
+		add(fmt.Sprintf("queensidePawnAdvEG[%d]", i), queensidePawnAdvEG[i],
+			func(v int) { queensidePawnAdvEG[ii] = v })
+	}
 
 	// === King attack weights ===
 	idxKingAttack = len(t.Params)
@@ -1147,6 +1156,29 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 			// Pawn advancement
 			addMG(base+16+relativeRank*2, s)   // pawnAdvancementMG[relativeRank]
 			addEG(base+16+relativeRank*2+1, s) // pawnAdvancementEG[relativeRank]
+
+			// Queenside pawn advancement (files a, b, c)
+			if file <= 2 {
+				addMG(base+42+relativeRank*2, s)   // queensidePawnAdvMG[relativeRank]
+				addEG(base+42+relativeRank*2+1, s) // queensidePawnAdvEG[relativeRank]
+			}
+		}
+
+		// Pawn majority
+		passed := pawnEntry.Passed[color]
+		friendly := b.Pieces[pieceOf(WhitePawn, color)]
+		enemy := b.Pieces[pieceOf(WhitePawn, 1-color)]
+		for _, wingMask := range [2]Bitboard{QueensideMask, KingsideMask} {
+			if passed&wingMask != 0 {
+				continue
+			}
+			ours := (friendly & wingMask).Count()
+			theirs := (enemy & wingMask).Count()
+			if ours > theirs {
+				coeff := int16(ours-theirs) * s
+				addMG(base+40, coeff) // PawnMajorityMG
+				addEG(base+41, coeff) // PawnMajorityEG
+			}
 		}
 	}
 
@@ -2041,6 +2073,25 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 	fmt.Fprintf(w, "const backwardPawnEG = %d\n", int(math.Round(t.Values[base+37])))
 	fmt.Fprintf(w, "const connectedPawnMG = %d\n", int(math.Round(t.Values[base+38])))
 	fmt.Fprintf(w, "const connectedPawnEG = %d\n", int(math.Round(t.Values[base+39])))
+	fmt.Fprintf(w, "var PawnMajorityMG = %d\n", int(math.Round(t.Values[base+40])))
+	fmt.Fprintf(w, "var PawnMajorityEG = %d\n", int(math.Round(t.Values[base+41])))
+
+	w.WriteString("var queensidePawnAdvMG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+42+i*2])))
+	}
+	w.WriteString("}\n")
+	w.WriteString("var queensidePawnAdvEG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+42+i*2+1])))
+	}
+	w.WriteString("}\n")
 	w.WriteString("\n")
 
 	// King attack

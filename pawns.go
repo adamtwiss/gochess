@@ -204,9 +204,15 @@ var candidatePassedEG = [8]int{0, 0, 10, 15, 25, 45, 0, 0}
 var CandidatePassedEnabled = true
 
 // Pawn majority: bonus per pawn advantage on a wing (queenside/kingside)
-var PawnMajorityMG = 5
-var PawnMajorityEG = 15
+var PawnMajorityMG = 10
+var PawnMajorityEG = 25
 var PawnMajorityEnabled = true
+
+// Queenside pawn advancement bonus by relative rank (files a, b, c only).
+// Stacks on top of base pawnAdvancement bonus. Rewards advancing queenside
+// pawns which are strategically dangerous (further from king, create outside passers).
+var queensidePawnAdvMG = [8]int{0, 0, 0, 2, 7, 12, 20, 0}
+var queensidePawnAdvEG = [8]int{0, 0, 0, 3, 5, 10, 18, 0}
 
 // evaluatePawnStructure evaluates pawn structure for one color.
 // Returns mg and eg scores and a bitboard of passed pawns.
@@ -289,6 +295,12 @@ func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) 
 		// Pawn advancement bonus
 		mg += pawnAdvancementMG[relativeRank]
 		eg += pawnAdvancementEG[relativeRank]
+
+		// Queenside pawn advancement bonus (files a, b, c)
+		if file <= 2 {
+			mg += queensidePawnAdvMG[relativeRank]
+			eg += queensidePawnAdvEG[relativeRank]
+		}
 	}
 
 	// Pawn majority: bonus when we have more pawns on a wing than the opponent
