@@ -120,6 +120,8 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Principal Variation Search (PVS)**: After first move, search with zero window (alpha, alpha+1). Re-search with full window if it fails high.
 - **Aspiration windows**: Starting at depth 4, iterative deepening uses a narrow window (delta=25) around previous score. Widens progressively on fail high/low.
 - **Check extensions**: Extend search by 1 ply when move gives check.
+- **Recapture extensions**: Extend by 1 ply when recapturing on the same square the opponent just captured on, to fully resolve tactical exchanges. Gated on `RecaptureExtEnabled`.
+- **Passed pawn push extensions**: Extend by 1 ply for quiet pawn pushes to 6th or 7th rank that are verified as passed pawns (via `PassedPawnMask`). Helps resolve promotion races and endgame tactics. Gated on `PassedPawnExtEnabled`.
 - **Quiescence search**: Captures only at leaf nodes, pruned by SEE >= 0. Stand-pat evaluation as lower bound. Depth-limited to 32.
 - **Killer moves**: 2 slots per ply, updated on beta cutoff with quiet moves.
 - **Counter-move heuristic**: `CounterMoves[piece][toSquare]` indexed by opponent's previous move. Stored on beta cutoff, used as a MovePicker stage between killers and quiets.

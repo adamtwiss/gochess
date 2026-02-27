@@ -43,6 +43,12 @@ var RazoringEnabled = true
 // DeltaPruningEnabled controls whether delta pruning in quiescence is used
 var DeltaPruningEnabled = true
 
+// RecaptureExtEnabled controls whether recapture extensions are used
+var RecaptureExtEnabled = true
+
+// PassedPawnExtEnabled controls whether passed pawn push extensions are used
+var PassedPawnExtEnabled = true
+
 // Late Move Pruning: at shallow depths, skip quiet moves past this move count.
 // Indexed by depth (0 unused). Roughly 3 + depth*depth.
 var lmpThreshold = [9]int{0, 5, 8, 12, 18, 25, 34, 44, 56}
@@ -120,6 +126,10 @@ type SearchInfo struct {
 	// Singular extension statistics
 	SingularTests      uint64
 	SingularExtensions uint64
+
+	// Recapture and passed pawn extension statistics
+	RecaptureExtensions  uint64
+	PassedPawnExtensions uint64
 
 	// OnDepth is called after each completed iteration of iterative deepening.
 	// Parameters: depth, score, cumulative nodes, PV for this depth.
@@ -843,6 +853,39 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if singularExtension > 0 && extension == 0 {
 			extension = singularExtension
 		}
+
+		// Recapture extension: extend when recapturing on the same square
+		// the opponent just captured on, to resolve tactical exchanges fully.
+		if RecaptureExtEnabled && extension == 0 && isCap && len(b.UndoStack) >= 2 {
+			prevUndo := b.UndoStack[len(b.UndoStack)-2] // opponent's move (current move is at top)
+			if prevUndo.Captured != Empty && move.To() == prevUndo.Move.To() {
+				extension = 1
+				info.RecaptureExtensions++
+			}
+		}
+
+		// Passed pawn push extension: extend pawn pushes to 6th or 7th rank
+		// to help resolve critical promotion races and endgame tactics.
+		if PassedPawnExtEnabled && extension == 0 && !isCap {
+			movedPiece := b.Squares[move.To()]
+			moverColor := b.SideToMove ^ 1 // side that just moved (MakeMove flips SideToMove)
+			if movedPiece == pieceOf(WhitePawn, moverColor) {
+				rank := move.To().Rank()
+				relRank := rank              // White: rank 0-7
+				if moverColor == Black {
+					relRank = 7 - rank // Black: flip so 7th = rank 1
+				}
+				if relRank >= 5 { // 6th rank (index 5) or 7th rank (index 6)
+					// Check if it's actually a passed pawn
+					enemyPawns := b.Pieces[pieceOf(WhitePawn, moverColor^1)]
+					if PassedPawnMask[moverColor][move.To()]&enemyPawns == 0 {
+						extension = 1
+						info.PassedPawnExtensions++
+					}
+				}
+			}
+		}
+
 		newDepth := depth - 1 + extension
 
 		var score int
