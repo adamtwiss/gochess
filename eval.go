@@ -132,6 +132,16 @@ var (
 	PawnThreatQueenEG = 20
 )
 
+// Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
+var KingCenterBonusEG = -15       // per center-distance unit (penalty, both sides)
+var KingProximityAdvantageEG = 5  // per unit closer to enemy king (stronger side)
+var KingCornerPushEG = 10         // per center-distance unit of weaker king (stronger side)
+
+// Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
+var KingCenterBonusEG = -15       // per center-distance unit (penalty, both sides)
+var KingProximityAdvantageEG = 5  // per unit closer to enemy king (stronger side)
+var KingCornerPushEG = 10         // per center-distance unit of weaker king (stronger side)
+
 // Feature toggles for king safety improvements
 var SafeCheckEnabled = true
 var NoQueenScaleEnabled = true
@@ -924,33 +934,37 @@ func (b *Board) endgameScale() (wScale, bScale int) {
 	return
 }
 
-// evaluateEndgameKings returns king-distance bonuses for endgames.
-// Only active when the stronger side has a major piece and opponent has no queens.
+// evaluateEndgameKings returns king activity bonuses for endgames.
+// Two components:
+// 1. Unconditional centralization — both kings penalized per center-distance (EG only).
+// 2. Material advantage bonuses — stronger side rewarded for proximity and pushing
+//    enemy king to edge. No piece-type gates; uses weighted material count.
 // Returns (mg, eg) — mg is always 0, bonuses are EG only.
 func (b *Board) evaluateEndgameKings() (mg, eg int) {
+	wKingSq := b.Pieces[WhiteKing].LSB()
+	bKingSq := b.Pieces[BlackKing].LSB()
+
+	// 1. Unconditional centralization (both sides)
+	// KingCenterBonusEG is negative, so further from center = bigger penalty
+	wCenterDist := centerDistance(wKingSq)
+	bCenterDist := centerDistance(bKingSq)
+	eg += wCenterDist * KingCenterBonusEG // White penalty (negative contribution)
+	eg -= bCenterDist * KingCenterBonusEG // Black penalty (flipped sign)
+
+	// 2. Material advantage bonuses
 	wMaterial := b.Pieces[WhiteKnight].Count() + b.Pieces[WhiteBishop].Count() +
 		b.Pieces[WhiteRook].Count()*3 + b.Pieces[WhiteQueen].Count()*6
 	bMaterial := b.Pieces[BlackKnight].Count() + b.Pieces[BlackBishop].Count() +
 		b.Pieces[BlackRook].Count()*3 + b.Pieces[BlackQueen].Count()*6
 
-	wKingSq := b.Pieces[WhiteKing].LSB()
-	bKingSq := b.Pieces[BlackKing].LSB()
 	dist := chebyshevDistance(wKingSq, bKingSq)
 
-	// White is stronger and has a major piece, opponent has no queens
-	if wMaterial > bMaterial &&
-		(b.Pieces[WhiteQueen].Count() > 0 || b.Pieces[WhiteRook].Count() > 0) &&
-		b.Pieces[BlackQueen].Count() == 0 {
-		eg += centerDistance(bKingSq) * 10
-		eg += (7 - dist) * 5
-	}
-
-	// Black is stronger and has a major piece, opponent has no queens
-	if bMaterial > wMaterial &&
-		(b.Pieces[BlackQueen].Count() > 0 || b.Pieces[BlackRook].Count() > 0) &&
-		b.Pieces[WhiteQueen].Count() == 0 {
-		eg -= centerDistance(wKingSq) * 10
-		eg -= (7 - dist) * 5
+	if wMaterial > bMaterial {
+		eg += (7 - dist) * KingProximityAdvantageEG
+		eg += bCenterDist * KingCornerPushEG
+	} else if bMaterial > wMaterial {
+		eg -= (7 - dist) * KingProximityAdvantageEG
+		eg -= wCenterDist * KingCornerPushEG
 	}
 
 	return

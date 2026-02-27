@@ -70,6 +70,7 @@ var (
 	idxSafeCheck     int // safe check bonuses + no-queen scale
 	idxKingSafetyTbl int // king safety table (100 entries, MG only)
 	idxPawnShield    int // pawn shield constants (5 entries, MG only)
+	idxEndgameKing   int // endgame king activity (3 entries, EG only)
 	idxMisc          int // space, threats, castling, OCB
 )
 
@@ -308,6 +309,13 @@ func (t *Tuner) initTunerParams() {
 	add("missingShieldPawnMG", missingShieldPawnMG, func(v int) { missingShieldPawnMG = v })
 	add("missingShieldPawnAdvancedMG", missingShieldPawnAdvancedMG, func(v int) { missingShieldPawnAdvancedMG = v })
 	add("semiOpenFileNearKingMG", semiOpenFileNearKingMG, func(v int) { semiOpenFileNearKingMG = v })
+
+	// === Endgame King Activity (3 entries, EG only) ===
+	idxEndgameKing = len(t.Params)
+	addSection("Endgame King", idxEndgameKing)
+	add("KingCenterBonusEG", KingCenterBonusEG, func(v int) { KingCenterBonusEG = v })
+	add("KingProximityAdvantageEG", KingProximityAdvantageEG, func(v int) { KingProximityAdvantageEG = v })
+	add("KingCornerPushEG", KingCornerPushEG, func(v int) { KingCornerPushEG = v })
 
 	// === Misc: space, threats, castling, OCB ===
 	idxMisc = len(t.Params)
@@ -1426,6 +1434,33 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		}
 	}
 
+	// === Endgame King Activity ===
+	{
+		wKingSq := b.Pieces[WhiteKing].LSB()
+		bKingSq := b.Pieces[BlackKing].LSB()
+		wCenterDist := int16(centerDistance(wKingSq))
+		bCenterDist := int16(centerDistance(bKingSq))
+
+		// Unconditional centralization: White - Black center distance diff
+		addEG(idxEndgameKing+0, wCenterDist-bCenterDist) // KingCenterBonusEG
+
+		// Material advantage bonuses
+		wMat := b.Pieces[WhiteKnight].Count() + b.Pieces[WhiteBishop].Count() +
+			b.Pieces[WhiteRook].Count()*3 + b.Pieces[WhiteQueen].Count()*6
+		bMat := b.Pieces[BlackKnight].Count() + b.Pieces[BlackBishop].Count() +
+			b.Pieces[BlackRook].Count()*3 + b.Pieces[BlackQueen].Count()*6
+
+		dist := int16(chebyshevDistance(wKingSq, bKingSq))
+
+		if wMat > bMat {
+			addEG(idxEndgameKing+1, 7-dist)     // KingProximityAdvantageEG
+			addEG(idxEndgameKing+2, bCenterDist) // KingCornerPushEG
+		} else if bMat > wMat {
+			addEG(idxEndgameKing+1, -(7 - dist))  // KingProximityAdvantageEG
+			addEG(idxEndgameKing+2, -wCenterDist)  // KingCornerPushEG
+		}
+	}
+
 	// === Tempo ===
 	tempoSign := int16(1)
 	if b.SideToMove == Black {
@@ -2061,6 +2096,18 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 	}
 	for i, name := range shieldNames {
 		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxPawnShield+i])))
+	}
+	w.WriteString("\n")
+
+	// Endgame King
+	w.WriteString("=== Endgame King ===\n")
+	egKingNames := []string{
+		"KingCenterBonusEG",
+		"KingProximityAdvantageEG",
+		"KingCornerPushEG",
+	}
+	for i, name := range egKingNames {
+		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxEndgameKing+i])))
 	}
 	w.WriteString("\n")
 
