@@ -34,6 +34,15 @@ var SingularExtEnabled = true
 // SEEQuietPruneEnabled controls whether SEE-based quiet move pruning is used
 var SEEQuietPruneEnabled = true
 
+// IIREnabled controls whether Internal Iterative Reductions are used
+var IIREnabled = true
+
+// RazoringEnabled controls whether razoring is used
+var RazoringEnabled = true
+
+// DeltaPruningEnabled controls whether delta pruning in quiescence is used
+var DeltaPruningEnabled = true
+
 // Late Move Pruning: at shallow depths, skip quiet moves past this move count.
 // Indexed by depth (0 unused). Roughly 3 + depth*depth.
 var lmpThreshold = [9]int{0, 5, 8, 12, 18, 25, 34, 44, 56}
@@ -616,6 +625,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	inCheck := b.InCheck()
 
+	// Internal Iterative Reduction: reduce depth when no TT move exists.
+	// Searching without a good move to try first is less efficient.
+	if IIREnabled && depth >= 5 && ttMove == NoMove && !inCheck {
+		depth--
+	}
+
 	// Null-move pruning
 	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
 	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
@@ -660,6 +675,17 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			margin := depth * 120
 			if staticEval-margin >= beta {
 				return staticEval - margin
+			}
+		}
+
+		// Razoring: at shallow depths, if eval is far below alpha, drop to quiescence
+		if RazoringEnabled && depth <= 2 && ply > 0 {
+			razoringMargin := 400 + depth*100
+			if staticEval+razoringMargin < alpha {
+				score := b.quiescence(alpha, beta, info)
+				if score < alpha {
+					return score
+				}
 			}
 		}
 	} else {
@@ -1043,7 +1069,19 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 			break
 		}
 
-		// Skip bad captures (SEE < 0) - delta pruning
+		// Delta pruning: skip captures that can't possibly raise alpha
+		// even with the maximum material gain
+		if DeltaPruningEnabled && !move.IsPromotion() {
+			capturedPiece := b.Squares[move.To()]
+			if move.Flags() == FlagEnPassant {
+				capturedPiece = pieceOf(WhitePawn, 1-b.SideToMove)
+			}
+			if capturedPiece != Empty && standPat+SEEPieceValues[capturedPiece]+200 <= alpha {
+				continue
+			}
+		}
+
+		// Skip bad captures (SEE < 0)
 		if !b.SEESign(move, 0) {
 			continue
 		}
