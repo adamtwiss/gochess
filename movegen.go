@@ -388,30 +388,134 @@ func (b *Board) InCheck() bool {
 	return b.IsAttacked(kingSq, 1-us)
 }
 
-// IsLegal returns true if the move is legal (doesn't leave king in check)
-func (b *Board) IsLegal(m Move) bool {
-	us := b.SideToMove
+// PinnedPieces returns a bitboard of friendly pieces pinned to the king.
+func (b *Board) PinnedPieces(us Color) Bitboard {
+	pinned, _ := b.PinnedAndCheckers(us)
+	return pinned
+}
 
-	// Make the move temporarily
-	b.MakeMove(m)
-
-	// Check if our king is in check
+// PinnedAndCheckers returns both pinned pieces and the set of enemy pieces
+// giving check. Computing both together shares the sliding-piece ray work
+// and avoids a separate InCheck() call.
+func (b *Board) PinnedAndCheckers(us Color) (pinned, checkers Bitboard) {
+	them := 1 - us
 	kingSq := b.Pieces[pieceOf(WhiteKing, us)].LSB()
-	inCheck := b.IsAttacked(kingSq, 1-us)
+	ourPieces := b.Occupied[us]
 
-	// Unmake the move
-	b.UnmakeMove(m)
+	// Non-sliding checkers
+	checkers = PawnAttacks[us][kingSq] & b.Pieces[pieceOf(WhitePawn, them)]
+	checkers |= KnightAttacks[kingSq] & b.Pieces[pieceOf(WhiteKnight, them)]
 
-	return !inCheck
+	// Sliding pieces: snipers are enemy sliders that could see the king on an empty board
+	enemyRQ := b.Pieces[pieceOf(WhiteRook, them)] | b.Pieces[pieceOf(WhiteQueen, them)]
+	enemyBQ := b.Pieces[pieceOf(WhiteBishop, them)] | b.Pieces[pieceOf(WhiteQueen, them)]
+	snipers := (RookAttacksBB(kingSq, 0) & enemyRQ) | (BishopAttacksBB(kingSq, 0) & enemyBQ)
+
+	for snipers != 0 {
+		sniperSq := snipers.PopLSB()
+		between := BetweenBB[kingSq][sniperSq] & b.AllPieces
+		if between == 0 {
+			// No pieces between → checker
+			checkers |= SquareBB(sniperSq)
+		} else if between&(between-1) == 0 && between&ourPieces != 0 {
+			// Exactly one of our pieces between → pinned
+			pinned |= between
+		}
+	}
+
+	return
+}
+
+// IsLegal returns true if the move is legal (doesn't leave king in check).
+// pinned should be precomputed via PinnedPieces(). inCheck indicates whether
+// the side to move is currently in check (avoids recomputing).
+func (b *Board) IsLegal(m Move, pinned Bitboard, inCheck bool) bool {
+	us := b.SideToMove
+	from := m.From()
+	to := m.To()
+	flags := m.Flags()
+
+	// Castling: fully validated during generation (king doesn't pass through attack).
+	if flags == FlagCastle {
+		return true
+	}
+
+	kingSq := b.Pieces[pieceOf(WhiteKing, us)].LSB()
+	them := 1 - us
+
+	// En passant: always use full make/unmake (two pieces removed from same rank
+	// can create discovered checks in unusual ways).
+	if flags == FlagEnPassant {
+		b.MakeMove(m)
+		check := b.IsAttacked(kingSq, them)
+		b.UnmakeMove(m)
+		return !check
+	}
+
+	// King moves: check destination with king removed from occupancy
+	// (so sliding pieces aren't blocked by the king itself).
+	if from == kingSq {
+		occ := b.AllPieces &^ SquareBB(from)
+
+		// Pawn attacks
+		if PawnAttacks[us][to]&b.Pieces[pieceOf(WhitePawn, them)] != 0 {
+			return false
+		}
+		// Knight attacks
+		if KnightAttacks[to]&b.Pieces[pieceOf(WhiteKnight, them)] != 0 {
+			return false
+		}
+		// King attacks (opponent king)
+		if KingAttacks[to]&b.Pieces[pieceOf(WhiteKing, them)] != 0 {
+			return false
+		}
+		// Bishop/Queen attacks (using modified occupancy)
+		bq := b.Pieces[pieceOf(WhiteBishop, them)] | b.Pieces[pieceOf(WhiteQueen, them)]
+		if BishopAttacksBB(to, occ)&bq != 0 {
+			return false
+		}
+		// Rook/Queen attacks (using modified occupancy)
+		rq := b.Pieces[pieceOf(WhiteRook, them)] | b.Pieces[pieceOf(WhiteQueen, them)]
+		if RookAttacksBB(to, occ)&rq != 0 {
+			return false
+		}
+		return true
+	}
+
+	// Non-king moves when in check: must block or capture the checker.
+	// Fall back to full make/unmake since this is rare (~5% of nodes).
+	if inCheck {
+		b.MakeMove(m)
+		check := b.IsAttacked(kingSq, them)
+		b.UnmakeMove(m)
+		return !check
+	}
+
+	// Not in check, non-king move: if piece is not pinned, always legal.
+	if pinned&SquareBB(from) == 0 {
+		return true
+	}
+
+	// Pinned piece: legal only if it moves along the pin line.
+	return LineBB[kingSq][from]&SquareBB(to) != 0
+}
+
+// IsLegalSlow is a convenience wrapper that computes pinned pieces internally.
+// Use in non-performance-critical paths (PV extraction, GenerateLegalMoves).
+func (b *Board) IsLegalSlow(m Move) bool {
+	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
+	return b.IsLegal(m, pinned, checkers != 0)
 }
 
 // GenerateLegalMoves returns all legal moves
 func (b *Board) GenerateLegalMoves() []Move {
 	pseudoLegal := b.GenerateAllMoves()
 	legal := make([]Move, 0, len(pseudoLegal))
+	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
+	inCheck := checkers != 0
 
 	for _, m := range pseudoLegal {
-		if b.IsLegal(m) {
+		if b.IsLegal(m, pinned, inCheck) {
 			legal = append(legal, m)
 		}
 	}

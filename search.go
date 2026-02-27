@@ -624,7 +624,7 @@ func (b *Board) extendPVFromTT(pv []Move, maxLen int, tt *TranspositionTable) []
 			break
 		}
 		m := entry.Move
-		if !b.IsPseudoLegal(m) || !b.IsLegal(m) {
+		if !b.IsPseudoLegal(m) || !b.IsLegalSlow(m) {
 			break
 		}
 		pv = append(pv, m)
@@ -724,7 +724,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		return b.quiescence(alpha, beta, info)
 	}
 
-	inCheck := b.InCheck()
+	// Compute pinned pieces and checkers together (shares slider ray work).
+	// This replaces separate InCheck() + PinnedPieces() calls.
+	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
+	inCheck := checkers != 0
 
 	// Internal Iterative Reduction: reduce depth when no TT move exists.
 	// Searching without a good move to try first is less efficient.
@@ -844,7 +847,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// Check legality (MovePicker returns pseudo-legal moves)
-		if !b.IsLegal(move) {
+		if !b.IsLegal(move, pinned, inCheck) {
 			continue
 		}
 
@@ -1235,6 +1238,10 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 	info.pickers[qsIdx].InitQuiescence(b, &info.CaptHistory)
 	picker := &info.pickers[qsIdx]
 
+	// Precompute pinned pieces and in-check once per node for fast legality checking
+	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
+	qsInCheck := checkers != 0
+
 	for {
 		move := picker.Next()
 		if move == NoMove {
@@ -1259,7 +1266,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		}
 
 		// Check legality
-		if !b.IsLegal(move) {
+		if !b.IsLegal(move, pinned, qsInCheck) {
 			continue
 		}
 

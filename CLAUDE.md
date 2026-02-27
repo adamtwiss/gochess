@@ -89,9 +89,25 @@ Flag values: `FlagNone=0, FlagEnPassant=1, FlagCastle=2, FlagPromoteN=4, FlagPro
 Magic bitboards for sliding pieces (attacks.go). Pre-computed tables for knight, king, pawn attacks.
 
 - `GenerateAllMoves()` — pseudo-legal moves (fast, doesn't verify king safety)
-- `GenerateLegalMoves()` — filters via `IsLegal()` (make/unmake + king check)
+- `GenerateLegalMoves()` — filters via `IsLegal()` (pin-aware fast path)
 - `GenerateCaptures()` — captures + promotions (for quiescence)
 - `GenerateQuiets()` — non-captures, non-promotions
+
+### Move Legality (Pin-Aware Fast Path)
+
+`IsLegal(m, pinned, inCheck)` uses precomputed data to avoid full make/unmake for most moves:
+
+- **Precomputed tables**: `LineBB[64][64]` (all squares on line through two squares) and `BetweenBB[64][64]` (squares strictly between two aligned squares). Initialized in `initLineBB()`.
+- **`PinnedAndCheckers(us)`**: Returns `(pinned, checkers Bitboard)` in a single pass. Finds enemy snipers (sliders that could see the king on an empty board), then classifies: 0 pieces between → checker, 1 friendly piece between → pinned.
+- **Fast paths in IsLegal**:
+  1. Castling → always true (validated during generation)
+  2. En passant → full make/unmake (rare, tricky discovered checks)
+  3. King moves → check destination with king removed from occupancy (inline IsAttacked)
+  4. Non-king, in check → full make/unmake (must verify check resolution)
+  5. Non-king, not pinned, not in check → always true (single bitboard AND)
+  6. Pinned piece → legal iff moves along pin line: `LineBB[kingSq][from] & SquareBB(to) != 0`
+- **Search integration**: `negamax` and `quiescence` call `PinnedAndCheckers` once per node, replacing separate `InCheck()` + `PinnedPieces()` calls. The `pinned` and `inCheck` values are passed to `IsLegal` for each move.
+- **`IsLegalSlow(m)`**: Convenience wrapper computing both pinned and inCheck internally. Used in non-hot paths (PV extraction, `GenerateLegalMoves`).
 
 ### Move Ordering (MovePicker)
 

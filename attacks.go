@@ -87,11 +87,21 @@ var bishopRelevantBits = [64]int{
 	6, 5, 5, 5, 5, 5, 5, 6,
 }
 
+// LineBB[sq1][sq2] contains all squares on the line through sq1 and sq2
+// (including both endpoints). Zero if sq1 and sq2 are not on the same
+// rank, file, or diagonal.
+var LineBB [64][64]Bitboard
+
+// BetweenBB[sq1][sq2] contains the squares strictly between sq1 and sq2
+// on a rank, file, or diagonal. Zero if not aligned or adjacent.
+var BetweenBB [64][64]Bitboard
+
 func init() {
 	initKnightAttacks()
 	initKingAttacks()
 	initPawnAttacks()
 	initMagics()
+	initLineBB()
 }
 
 func initKnightAttacks() {
@@ -387,4 +397,31 @@ func BishopAttacksBB(sq Square, occupied Bitboard) Bitboard {
 // QueenAttacksBB returns the queen attack bitboard (rook + bishop attacks)
 func QueenAttacksBB(sq Square, occupied Bitboard) Bitboard {
 	return RookAttacksBB(sq, occupied) | BishopAttacksBB(sq, occupied)
+}
+
+// initLineBB initializes LineBB and BetweenBB lookup tables.
+func initLineBB() {
+	for sq1 := Square(0); sq1 < 64; sq1++ {
+		for sq2 := Square(0); sq2 < 64; sq2++ {
+			if sq1 == sq2 {
+				continue
+			}
+			// Check if sq2 is on a rook ray from sq1
+			rookRay := rookAttacksSlow(sq1, 0)
+			if rookRay.IsSet(sq2) {
+				// They share a rank or file
+				// Line = attacks from sq1 + attacks from sq2 (on empty board) + both squares
+				LineBB[sq1][sq2] = (rookAttacksSlow(sq1, 0) & rookAttacksSlow(sq2, 0)) | SquareBB(sq1) | SquareBB(sq2)
+				// Between = squares on the ray from sq1 blocked by sq2, excluding endpoints
+				BetweenBB[sq1][sq2] = rookAttacksSlow(sq1, SquareBB(sq2)) & rookAttacksSlow(sq2, SquareBB(sq1))
+				continue
+			}
+			// Check if sq2 is on a bishop ray from sq1
+			bishopRay := bishopAttacksSlow(sq1, 0)
+			if bishopRay.IsSet(sq2) {
+				LineBB[sq1][sq2] = (bishopAttacksSlow(sq1, 0) & bishopAttacksSlow(sq2, 0)) | SquareBB(sq1) | SquareBB(sq2)
+				BetweenBB[sq1][sq2] = bishopAttacksSlow(sq1, SquareBB(sq2)) & bishopAttacksSlow(sq2, SquareBB(sq1))
+			}
+		}
+	}
 }
