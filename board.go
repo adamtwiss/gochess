@@ -121,6 +121,10 @@ type Board struct {
 	// Eval cache for caching Evaluate() results
 	EvalTable *EvalTable
 
+	// Incremental PST+material scores per color
+	PSTScoreMG [2]int
+	PSTScoreEG [2]int
+
 	// Undo stack for MakeMove/UnmakeMove (per-board to avoid sharing issues)
 	UndoStack []UndoInfo
 }
@@ -143,6 +147,10 @@ func (b *Board) Clear() {
 	b.FullmoveNum = 1
 	b.HashKey = 0
 	b.PawnHashKey = 0
+	b.PSTScoreMG[White] = 0
+	b.PSTScoreMG[Black] = 0
+	b.PSTScoreEG[White] = 0
+	b.PSTScoreEG[Black] = 0
 	// Reset undo stack (keep capacity if already allocated)
 	if b.UndoStack == nil {
 		b.UndoStack = make([]UndoInfo, 0, 256)
@@ -154,10 +162,13 @@ func (b *Board) Clear() {
 // putPiece places a piece on a square, updating all board representations
 func (b *Board) putPiece(piece Piece, sq Square) {
 	bb := SquareBB(sq)
+	color := piece.Color()
 	b.Squares[sq] = piece
 	b.Pieces[piece] |= bb
-	b.Occupied[piece.Color()] |= bb
+	b.Occupied[color] |= bb
 	b.AllPieces |= bb
+	b.PSTScoreMG[color] += pstCombinedMG[piece][sq]
+	b.PSTScoreEG[color] += pstCombinedEG[piece][sq]
 }
 
 // removePiece removes a piece from a square, updating all board representations
@@ -167,10 +178,13 @@ func (b *Board) removePiece(sq Square) Piece {
 		return Empty
 	}
 	bb := SquareBB(sq)
+	color := piece.Color()
 	b.Squares[sq] = Empty
 	b.Pieces[piece] &^= bb
-	b.Occupied[piece.Color()] &^= bb
+	b.Occupied[color] &^= bb
 	b.AllPieces &^= bb
+	b.PSTScoreMG[color] -= pstCombinedMG[piece][sq]
+	b.PSTScoreEG[color] -= pstCombinedEG[piece][sq]
 	return piece
 }
 
@@ -180,12 +194,15 @@ func (b *Board) movePiece(from, to Square) {
 	fromBB := SquareBB(from)
 	toBB := SquareBB(to)
 	moveBB := fromBB | toBB
+	color := piece.Color()
 
 	b.Squares[from] = Empty
 	b.Squares[to] = piece
 	b.Pieces[piece] ^= moveBB
-	b.Occupied[piece.Color()] ^= moveBB
+	b.Occupied[color] ^= moveBB
 	b.AllPieces ^= moveBB
+	b.PSTScoreMG[color] += pstCombinedMG[piece][to] - pstCombinedMG[piece][from]
+	b.PSTScoreEG[color] += pstCombinedEG[piece][to] - pstCombinedEG[piece][from]
 }
 
 // Reset sets the board to the standard starting position

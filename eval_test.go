@@ -1100,6 +1100,92 @@ func TestEndgameScale(t *testing.T) {
 	}
 }
 
+func TestIncrementalPSTMatchesFullRecompute(t *testing.T) {
+	fens := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+		"r1bqkb1r/pppppppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+		"r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+		"4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+		"4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+		"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+		"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+	}
+
+	for _, fen := range fens {
+		var b Board
+		b.SetFEN(fen)
+		wMG, wEG := b.evaluatePST(White)
+		bMG, bEG := b.evaluatePST(Black)
+
+		if b.PSTScoreMG[White] != wMG {
+			t.Errorf("FEN %q: White MG incremental=%d, recomputed=%d", fen, b.PSTScoreMG[White], wMG)
+		}
+		if b.PSTScoreEG[White] != wEG {
+			t.Errorf("FEN %q: White EG incremental=%d, recomputed=%d", fen, b.PSTScoreEG[White], wEG)
+		}
+		if b.PSTScoreMG[Black] != bMG {
+			t.Errorf("FEN %q: Black MG incremental=%d, recomputed=%d", fen, b.PSTScoreMG[Black], bMG)
+		}
+		if b.PSTScoreEG[Black] != bEG {
+			t.Errorf("FEN %q: Black EG incremental=%d, recomputed=%d", fen, b.PSTScoreEG[Black], bEG)
+		}
+	}
+}
+
+func TestIncrementalPSTMakeMoveUnmake(t *testing.T) {
+	fens := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+		"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+		"r1bqkb1r/pppppppp/2n2n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+		// Promotion position
+		"4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+		// En passant position
+		"4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+		// Castling position
+		"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+	}
+
+	for _, fen := range fens {
+		var b Board
+		b.SetFEN(fen)
+
+		moves := b.GenerateLegalMoves()
+		for _, m := range moves {
+			// Save pre-move scores
+			origWMG := b.PSTScoreMG[White]
+			origWEG := b.PSTScoreEG[White]
+			origBMG := b.PSTScoreMG[Black]
+			origBEG := b.PSTScoreEG[Black]
+
+			b.MakeMove(m)
+
+			// Verify incremental matches full recompute after MakeMove
+			wMG, wEG := b.evaluatePST(White)
+			bMG, bEG := b.evaluatePST(Black)
+			if b.PSTScoreMG[White] != wMG || b.PSTScoreEG[White] != wEG ||
+				b.PSTScoreMG[Black] != bMG || b.PSTScoreEG[Black] != bEG {
+				t.Errorf("FEN %q move %s: after MakeMove, incremental=[%d,%d,%d,%d] recomputed=[%d,%d,%d,%d]",
+					fen, m.String(),
+					b.PSTScoreMG[White], b.PSTScoreEG[White], b.PSTScoreMG[Black], b.PSTScoreEG[Black],
+					wMG, wEG, bMG, bEG)
+			}
+
+			b.UnmakeMove(m)
+
+			// Verify PST scores restored after UnmakeMove
+			if b.PSTScoreMG[White] != origWMG || b.PSTScoreEG[White] != origWEG ||
+				b.PSTScoreMG[Black] != origBMG || b.PSTScoreEG[Black] != origBEG {
+				t.Errorf("FEN %q move %s: after UnmakeMove, PST=[%d,%d,%d,%d] original=[%d,%d,%d,%d]",
+					fen, m.String(),
+					b.PSTScoreMG[White], b.PSTScoreEG[White], b.PSTScoreMG[Black], b.PSTScoreEG[Black],
+					origWMG, origWEG, origBMG, origBEG)
+			}
+		}
+	}
+}
+
 func TestEndgameKingDistance(t *testing.T) {
 	var b Board
 	// KR vs K, enemy king on edge — uses rook to test endgame king distance

@@ -65,6 +65,7 @@ tuner.go             Texel tuner: parameter catalog, trace-based eval, .tbin bin
 
 - **Hybrid storage**: `Board.Squares[64]` for piece-by-square lookup, `Board.Pieces[13]` bitboards for piece-type iteration
 - **Occupancy**: `Board.Occupied[2]` (by color) and `Board.AllPieces` for attack generation
+- **Incremental PST**: `Board.PSTScoreMG[2]` and `Board.PSTScoreEG[2]` track running PST+material totals per color, updated by `putPiece`/`removePiece`/`movePiece`
 - **Undo stack**: `Board.UndoStack []UndoInfo` stores move, captured piece, castling, en passant, halfmove clock, HashKey, and PawnHashKey per move
 
 ### Piece Indexing
@@ -145,7 +146,7 @@ The TT uses a lockless scheme for concurrent access by multiple search threads:
 
 Tapered evaluation blending middlegame and endgame scores based on game phase (piece count). `Evaluate()` returns White-relative centipawns; `EvaluateRelative()` returns side-to-move relative.
 
-- **Piece-square tables** (pst.go): PeSTO tables for all piece types, separate MG/EG values with per-piece-type scaling factors (35-85%). Material values added separately: MG (P=82, N=337, B=365, R=477, Q=1025), EG (P=94, N=281, B=297, R=512, Q=936). SEE uses simplified values (P=100, N=320, B=330, R=500, Q=900).
+- **Piece-square tables** (pst.go): PeSTO tables for all piece types, separate MG/EG values with per-piece-type scaling factors (35-85%). Material values added separately: MG (P=82, N=337, B=365, R=477, Q=1025), EG (P=94, N=281, B=297, R=512, Q=936). SEE uses simplified values (P=100, N=320, B=330, R=500, Q=900). **Incremental PST**: Combined PST+material tables (`pstCombinedMG[piece][sq]`, `pstCombinedEG[piece][sq]`) bake material + scaled positional values together. `Board.PSTScoreMG[color]` and `Board.PSTScoreEG[color]` are maintained incrementally by `putPiece`/`removePiece`/`movePiece`, eliminating per-Evaluate full-board scans. `evaluatePST()` is retained for testing/verification.
 - **Pawn structure** (pawns.go): Cached via pawn hash table. Evaluates doubled, isolated, backward, connected, and passed pawns. Pawn advancement bonus. Precomputed masks: `PassedPawnMask`, `ForwardFileMask`, `OutpostMask`, `AdjacentFiles`.
 - **Mobility** (eval.go): Non-linear bonus arrays indexed by move count — `KnightMobility[9]`, `BishopMobility[14]`, `RookMobility[15]`, `QueenMobility[28]` — each with separate MG/EG values.
 - **King safety** (eval.go + pawns.go): Table-driven system. Per-piece attack unit weights (Knight=7, Bishop=5, Rook=8, Queen=13) plus king-zone square bonuses accumulate into an attack score. **Safe check bonus**: after piece loops, for each piece type, checks if any reachable check square is "safe" (not defended by enemy pawns, not occupied by friendly pieces); if so, adds a fixed bonus per piece type (Knight=6, Bishop=3, Rook=7, Queen=5). Uses binary detection (any safe check exists), not per-square counting. Gated on `attackerCount >= 1`. **No-queen scaling**: when the attacking side has no queen, the final king safety penalty is scaled down to `NoQueenAttackScale/128` (~31%). `KingSafetyTable[100]` maps total attack units to centipawn penalties. Pawn shield evaluation (ranks 2-3 around king) and semi-open file penalty near king in pawns.go.

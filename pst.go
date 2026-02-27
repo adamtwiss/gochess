@@ -171,6 +171,12 @@ var (
 var mgPST [7]*[64]int
 var egPST [7]*[64]int
 
+// Combined PST+material tables for incremental evaluation.
+// Indexed by piece (1-12) and square (0-63). Black pieces have sq^56
+// mirroring baked in, so callers just index [piece][square] directly.
+var pstCombinedMG [13][64]int
+var pstCombinedEG [13][64]int
+
 func init() {
 	mgPST[WhitePawn] = &mgPawnTable
 	mgPST[WhiteKnight] = &mgKnightTable
@@ -185,4 +191,38 @@ func init() {
 	egPST[WhiteRook] = &egRookTable
 	egPST[WhiteQueen] = &egQueenTable
 	egPST[WhiteKing] = &egKingTable
+
+	// Build combined PST+material tables
+	for pt := WhitePawn; pt <= WhiteKing; pt++ {
+		var scaleMG, scaleEG int
+		switch pt {
+		case WhitePawn:
+			scaleMG = PawnPSTScaleMG
+			scaleEG = PawnPSTScaleEG
+		case WhiteKing:
+			scaleMG = KingPSTScaleMG
+			scaleEG = KingPSTScaleEG
+		default:
+			scaleMG = PiecePSTScaleMG
+			scaleEG = PiecePSTScaleEG
+		}
+		mgTable := mgPST[pt]
+		egTable := egPST[pt]
+		mgMat := mgMaterial[pt]
+		egMat := egMaterial[pt]
+
+		// White piece: direct index
+		for sq := 0; sq < 64; sq++ {
+			pstCombinedMG[pt][sq] = mgMat + mgTable[sq]*scaleMG/100
+			pstCombinedEG[pt][sq] = egMat + egTable[sq]*scaleEG/100
+		}
+
+		// Black piece: bake in sq^56 mirror
+		blackPt := pt + 6
+		for sq := 0; sq < 64; sq++ {
+			idx := sq ^ 56
+			pstCombinedMG[blackPt][sq] = mgMat + mgTable[idx]*scaleMG/100
+			pstCombinedEG[blackPt][sq] = egMat + egTable[idx]*scaleEG/100
+		}
+	}
 }

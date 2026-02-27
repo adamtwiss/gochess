@@ -211,8 +211,8 @@ func (b *Board) Evaluate() int {
 		return int(e.Score)
 	}
 
-	wMG, wEG := b.evaluatePST(White)
-	bMG, bEG := b.evaluatePST(Black)
+	wMG, wEG := b.PSTScoreMG[White], b.PSTScoreEG[White]
+	bMG, bEG := b.PSTScoreMG[Black], b.PSTScoreEG[Black]
 
 	// Pawn structure (cached via pawn hash table)
 	if b.PawnTable == nil {
