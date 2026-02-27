@@ -42,7 +42,7 @@ search.go            Negamax, alpha-beta, iterative deepening, LMR, LMP, PVS, La
 eval.go              Tapered eval: PST, mobility, king safety, positional bonuses, eval cache
 pst.go               PeSTO piece-square tables, material values, phase constants
 pawns.go             Pawn structure eval (doubled/isolated/passed), pawn hash table, pawn shield
-tt.go                Transposition table (lockless, two-slot buckets: depth-preferred + always-replace)
+tt.go                Transposition table (lockless, 4-slot buckets with Stockfish-style age/depth replacement)
 zobrist.go           Zobrist hash keys, incremental hashing
 see.go               Static Exchange Evaluation for capture ordering and quiet move pruning
 san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
@@ -105,7 +105,7 @@ Selection sort within each stage (partial sort, only finds next-best on demand).
 
 Negamax with alpha-beta pruning, iterative deepening with time control.
 
-- **Transposition table**: Probe before search, store after. Two-slot buckets: slot 0 is depth-preferred, slot 1 is always-replace. Lockless thread-safe via packed atomic `uint64` fields with XOR verification (see Lazy SMP section). Mate scores adjusted by ply distance to prevent stale mate evaluations.
+- **Transposition table**: Probe before search, store after. 4-slot buckets with Stockfish-style replacement scoring (`depth - 4*age`): stale entries from older generations are cheaply evicted, current-generation deep entries are preserved. Lockless thread-safe via packed atomic `uint64` fields with XOR verification (see Lazy SMP section). Mate scores adjusted by ply distance to prevent stale mate evaluations.
 - **Null-move pruning**: Skip turn and search with reduced depth (R=3 if depth>=7, else R=2). Requires depth >= 3, non-pawn material, not in check.
 - **Reverse Futility Pruning**: At shallow depths (depth <= 3), prune whole node if static eval minus margin (depth * 120) exceeds beta.
 - **Futility pruning**: At depth <= 2, skip quiet non-checking moves when static eval plus margin cannot raise alpha.

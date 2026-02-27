@@ -307,7 +307,11 @@ func (b *Board) Evaluate() int {
 
 	// 50-move rule scaling
 	if b.HalfmoveClock > 0 {
-		score = score * (100 - int(b.HalfmoveClock)) / 100
+		hmc := int(b.HalfmoveClock)
+		if hmc > 100 {
+			hmc = 100
+		}
+		score = score * (100 - hmc) / 100
 	}
 
 	// Eval cache store
