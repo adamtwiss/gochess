@@ -137,11 +137,6 @@ var KingCenterBonusEG = -15       // per center-distance unit (penalty, both sid
 var KingProximityAdvantageEG = 5  // per unit closer to enemy king (stronger side)
 var KingCornerPushEG = 10         // per center-distance unit of weaker king (stronger side)
 
-// Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
-var KingCenterBonusEG = -15       // per center-distance unit (penalty, both sides)
-var KingProximityAdvantageEG = 5  // per unit closer to enemy king (stronger side)
-var KingCornerPushEG = 10         // per center-distance unit of weaker king (stronger side)
-
 // Feature toggles for king safety improvements
 var SafeCheckEnabled = true
 var NoQueenScaleEnabled = true

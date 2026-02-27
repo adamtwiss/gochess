@@ -148,6 +148,15 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 	maxTimeMs := float64(maxTime.Milliseconds())
 	suiteStart := time.Now()
 
+	// STS weighted scoring accumulators
+	type themeStats struct {
+		score    int
+		count    int
+	}
+	themes := make(map[string]*themeStats)
+	var themeOrder []string // preserve first-seen order
+	hasWeighted := false
+
 	fmt.Printf("EPD Test Suite: %s\n", filename)
 	fmt.Printf("Positions: %d, Depth: %d, Time: %v, Hash: %dMB, Threads: %d\n\n",
 		len(positions), depth, maxTime, hashMB, threads)
@@ -184,6 +193,23 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 			failed++
 		}
 
+		// Track STS weighted scoring
+		if result.HasWeighted {
+			hasWeighted = true
+			theme := chess.ExtractSTSTheme(pos.ID)
+			if theme == "" {
+				theme = "(unknown)"
+			}
+			ts, ok := themes[theme]
+			if !ok {
+				ts = &themeStats{}
+				themes[theme] = ts
+				themeOrder = append(themeOrder, theme)
+			}
+			ts.score += result.WeightedScore
+			ts.count++
+		}
+
 		expected := strings.Join(pos.BestMoves, "/")
 		status := "PASS"
 		if !result.Passed {
@@ -191,16 +217,26 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 		}
 
 		if verbose {
-			fmt.Printf("[%s] %s: found %s, expected %s\n\n", status, id, result.BestMoveSAN, expected)
+			if result.HasWeighted {
+				fmt.Printf("[%s] %s: found %s, expected %s, score=%d\n\n", status, id, result.BestMoveSAN, expected, result.WeightedScore)
+			} else {
+				fmt.Printf("[%s] %s: found %s, expected %s\n\n", status, id, result.BestMoveSAN, expected)
+			}
 		} else {
 			solveStr := "-"
 			if result.SolveDepth > 0 {
 				solveStr = fmt.Sprintf("d%d/%v", result.SolveDepth, result.SolveTime.Round(time.Millisecond))
 			}
 			nps := chess.FormatKNPS(result.SearchInfo.Nodes, result.TimeTaken)
-			fmt.Printf("[%s] %-12s found %-8s expected %-12s depth=%-3d solve=%-14s %-14s time=%v\n",
-				status, id, result.BestMoveSAN, expected,
-				result.SearchInfo.Depth, solveStr, nps, result.TimeTaken.Round(time.Millisecond))
+			if result.HasWeighted {
+				fmt.Printf("[%s] %-12s found %-8s expected %-12s score=%-4d depth=%-3d solve=%-14s %-14s time=%v\n",
+					status, id, result.BestMoveSAN, expected,
+					result.WeightedScore, result.SearchInfo.Depth, solveStr, nps, result.TimeTaken.Round(time.Millisecond))
+			} else {
+				fmt.Printf("[%s] %-12s found %-8s expected %-12s depth=%-3d solve=%-14s %-14s time=%v\n",
+					status, id, result.BestMoveSAN, expected,
+					result.SearchInfo.Depth, solveStr, nps, result.TimeTaken.Round(time.Millisecond))
+			}
 		}
 	}
 
@@ -222,6 +258,34 @@ func runEPD(filename string, depth int, maxTime time.Duration, maxPositions int,
 	fmt.Printf("Total nodes: %d\n", totalNodes)
 	fmt.Printf("Average: %s\n", chess.FormatKNPS(totalNodes, elapsed))
 	fmt.Printf("Total time: %v\n", elapsed.Round(time.Millisecond))
+
+	// STS per-theme summary
+	if hasWeighted {
+		fmt.Printf("\n=== THEME SCORES ===\n")
+		fmt.Printf("%-50s %6s %6s %5s\n", "Theme", "Score", "Max", "Pct")
+		fmt.Println(strings.Repeat("-", 71))
+
+		totalScore := 0
+		totalMax := 0
+		for _, theme := range themeOrder {
+			ts := themes[theme]
+			maxScore := ts.count * 100
+			pct := 0.0
+			if maxScore > 0 {
+				pct = float64(ts.score) / float64(maxScore) * 100
+			}
+			fmt.Printf("%-50s %6d %6d %4.1f%%\n", theme, ts.score, maxScore, pct)
+			totalScore += ts.score
+			totalMax += maxScore
+		}
+
+		fmt.Println(strings.Repeat("-", 71))
+		totalPct := 0.0
+		if totalMax > 0 {
+			totalPct = float64(totalScore) / float64(totalMax) * 100
+		}
+		fmt.Printf("%-50s %6d %6d %4.1f%%\n", "TOTAL", totalScore, totalMax, totalPct)
+	}
 }
 
 func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Duration, tt *chess.TranspositionTable, threads int) (*chess.EPDTestResult, error) {

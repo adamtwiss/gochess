@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -117,6 +118,9 @@ type EPDTestResult struct {
 	SolveDepth int           // depth where correct move was first stably found (0 = never solved)
 	SolveTime  time.Duration // elapsed time at that depth
 	SolveNodes uint64        // cumulative nodes at that depth
+
+	WeightedScore int  // STS weighted score (0-100), -1 if not applicable
+	HasWeighted   bool // true if position had c8/c9 weighted scoring data
 
 	// Hash table stats (probes, hits)
 	TTProbes, TTHits     uint64
@@ -234,6 +238,12 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 		result.Passed = true
 	}
 
+	// Check for STS weighted scoring (c8/c9 fields)
+	if weights := ParseSTSWeights(epd, &b); weights != nil {
+		result.HasWeighted = true
+		result.WeightedScore = weights[bestMove] // 0 if not in map
+	}
+
 	// Compute solve time: walk backwards from the last depth to find
 	// the earliest point where the correct move was found and held.
 	if result.Passed && len(records) > 0 {
@@ -281,6 +291,106 @@ func EPDLogScore(budget, cost float64) float64 {
 		cost = 1
 	}
 	return math.Log2(budget) - math.Log2(cost)
+}
+
+// ParseSTSWeights parses STS-style c8 (scores) and c9 (coordinate moves) operands
+// into a map from Move to score (0-100). The Board is needed to resolve coordinate
+// notation (e.g., "f4f5") to Move values with correct flags.
+// Returns nil if c8/c9 are missing or malformed.
+func ParseSTSWeights(epd *EPDPosition, b *Board) map[Move]int {
+	c8, ok8 := epd.RawOperands["c8"]
+	c9, ok9 := epd.RawOperands["c9"]
+	if !ok8 || !ok9 {
+		return nil
+	}
+
+	scores := strings.Fields(c8)
+	coords := strings.Fields(c9)
+	if len(scores) != len(coords) || len(scores) == 0 {
+		return nil
+	}
+
+	// Generate all pseudo-legal moves for matching
+	allMoves := b.GenerateAllMoves()
+
+	result := make(map[Move]int, len(scores))
+	for i, coord := range coords {
+		if len(coord) < 4 {
+			continue
+		}
+		from := ParseSquare(coord[0:2])
+		to := ParseSquare(coord[2:4])
+		if from == NoSquare || to == NoSquare {
+			continue
+		}
+
+		score := 0
+		fmt.Sscanf(scores[i], "%d", &score)
+
+		// Find matching pseudo-legal move (to get correct flags)
+		for _, m := range allMoves {
+			if m.From() == from && m.To() == to {
+				// For promotions in coordinate notation (5+ chars), match promotion piece
+				if len(coord) >= 5 {
+					promoChar := coord[4]
+					switch promoChar {
+					case 'q':
+						if m.Flags() != FlagPromoteQ {
+							continue
+						}
+					case 'r':
+						if m.Flags() != FlagPromoteR {
+							continue
+						}
+					case 'b':
+						if m.Flags() != FlagPromoteB {
+							continue
+						}
+					case 'n':
+						if m.Flags() != FlagPromoteN {
+							continue
+						}
+					}
+				}
+				result[m] = score
+				break
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// ExtractSTSTheme extracts the theme name from an STS position ID.
+// e.g., "STS(v1.0) Undermine.001" -> "Undermine"
+// Returns "" if the ID doesn't match STS format.
+func ExtractSTSTheme(id string) string {
+	// Strip "STS(vN.N) " prefix
+	idx := strings.Index(id, ") ")
+	if idx < 0 || !strings.HasPrefix(id, "STS(") {
+		return ""
+	}
+	rest := id[idx+2:] // e.g., "Undermine.001"
+
+	// Strip ".NNN" suffix
+	dotIdx := strings.LastIndex(rest, ".")
+	if dotIdx < 0 {
+		return ""
+	}
+	theme := rest[:dotIdx]
+
+	// Normalize "Knight Outposts/Centralization/Repositioning" vs
+	// "Knight Outposts/Repositioning/Centralization" by sorting slash-separated parts
+	if strings.Contains(theme, "/") {
+		parts := strings.Split(theme, "/")
+		sort.Strings(parts)
+		theme = strings.Join(parts, "/")
+	}
+
+	return theme
 }
 
 // EPDSuiteResult holds the results of running an entire EPD test suite
