@@ -14,6 +14,7 @@ type MovePicker struct {
 	counterMove Move
 	history     *[64][64]int32
 	contHist    *[13][64]int16 // continuation history sub-table for prev move's piece+square
+	captHist    *[13][64][7]int16
 	stage       int
 	moves       []Move
 	scores      []int
@@ -39,27 +40,28 @@ const (
 )
 
 // NewMovePicker creates a new move picker for the main search
-func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16) *MovePicker {
+func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16, captHist *[13][64][7]int16) *MovePicker {
 	mp := &MovePicker{}
-	mp.Init(b, ttMove, ply, killers, history, counterMove, contHist)
+	mp.Init(b, ttMove, ply, killers, history, counterMove, contHist, captHist)
 	return mp
 }
 
 // NewMovePickerQuiescence creates a move picker for quiescence search (captures only)
-func NewMovePickerQuiescence(b *Board) *MovePicker {
+func NewMovePickerQuiescence(b *Board, captHist *[13][64][7]int16) *MovePicker {
 	mp := &MovePicker{}
-	mp.InitQuiescence(b)
+	mp.InitQuiescence(b, captHist)
 	return mp
 }
 
 // Init resets a MovePicker for reuse, avoiding heap allocations on subsequent calls
-func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16) {
+func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16, captHist *[13][64][7]int16) {
 	mp.board = b
 	mp.ttMove = ttMove
 	mp.killers = killers
 	mp.counterMove = counterMove
 	mp.history = history
 	mp.contHist = contHist
+	mp.captHist = captHist
 	mp.ply = ply
 	mp.stage = stageTTMove
 	mp.index = 0
@@ -73,9 +75,10 @@ func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, hist
 }
 
 // InitQuiescence resets a MovePicker for quiescence search reuse
-func (mp *MovePicker) InitQuiescence(b *Board) {
+func (mp *MovePicker) InitQuiescence(b *Board, captHist *[13][64][7]int16) {
 	mp.board = b
 	mp.ttMove = NoMove
+	mp.captHist = captHist
 	mp.stage = stageGenerateCaptures
 	mp.index = 0
 	mp.skipQuiet = true
@@ -190,10 +193,10 @@ func (mp *MovePicker) generateAndScoreCaptures() {
 		see := mp.board.SEE(m)
 		if see < 0 {
 			mp.badMoves = append(mp.badMoves, m)
-			mp.badScores = append(mp.badScores, see)
+			mp.badScores = append(mp.badScores, see+mp.captHistScore(m))
 		} else {
 			mp.moves[j] = m
-			mp.scores = append(mp.scores, mp.mvvLva(m))
+			mp.scores = append(mp.scores, mp.mvvLva(m)+mp.captHistScore(m))
 			j++
 		}
 	}
@@ -277,6 +280,20 @@ func (mp *MovePicker) mvvLva(m Move) int {
 
 	// MVV-LVA: maximize victim value, minimize attacker value
 	return victimValue*10 - attackerValue
+}
+
+// captHistScore returns the capture history score for a capture move
+func (mp *MovePicker) captHistScore(m Move) int {
+	if mp.captHist == nil {
+		return 0
+	}
+	piece := mp.board.Squares[m.From()]
+	victim := mp.board.Squares[m.To()]
+	ct := capturedType(victim)
+	if ct == 0 && m.Flags() == FlagEnPassant {
+		ct = 1
+	}
+	return int(mp.captHist[piece][m.To()][ct])
 }
 
 // isCapture returns true if the move is a capture

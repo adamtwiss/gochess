@@ -227,7 +227,7 @@ func TestMovePickerBasic(t *testing.T) {
 	var killers [2]Move
 	var history [64][64]int32
 
-	picker := NewMovePicker(&b, NoMove, 0, killers, &history, NoMove, nil)
+	picker := NewMovePicker(&b, NoMove, 0, killers, &history, NoMove, nil, nil)
 
 	moveCount := 0
 	for {
@@ -259,7 +259,7 @@ func TestMovePickerTTMoveFirst(t *testing.T) {
 	var killers [2]Move
 	var history [64][64]int32
 
-	picker := NewMovePicker(&b, ttMove, 0, killers, &history, NoMove, nil)
+	picker := NewMovePicker(&b, ttMove, 0, killers, &history, NoMove, nil, nil)
 
 	// First move should be the TT move
 	firstMove := picker.Next()
@@ -288,7 +288,7 @@ func BenchmarkMovePicker(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		picker := NewMovePicker(&board, NoMove, 0, killers, &history, NoMove, nil)
+		picker := NewMovePicker(&board, NoMove, 0, killers, &history, NoMove, nil, nil)
 		for {
 			if picker.Next() == NoMove {
 				break

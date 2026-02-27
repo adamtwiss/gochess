@@ -109,6 +109,11 @@ type SearchInfo struct {
 	// ~1.3MB per thread (int16).
 	ContHistory [13][64][13][64]int16
 
+	// Capture history: indexed by [movingPiece][toSquare][capturedPieceType].
+	// Tracks which captures caused beta cutoffs, improving ordering among
+	// equal-MVV-LVA captures. ~11.4KB per thread (int16).
+	CaptHistory [13][64][7]int16
+
 	// LMR statistics (for debugging/analysis)
 	LMRAttempts   uint64 // Times LMR was attempted
 	LMRReSearches uint64 // Times we had to re-search at full depth
@@ -208,6 +213,9 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 
 	// Clear continuation history
 	info.ContHistory = [13][64][13][64]int16{}
+
+	// Clear capture history
+	info.CaptHistory = [13][64][7]int16{}
 
 	// Clear excluded moves
 	for i := range info.ExcludedMove {
@@ -429,6 +437,7 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 		}
 	}
 	info.ContHistory = [13][64][13][64]int16{}
+	info.CaptHistory = [13][64][7]int16{}
 	for i := range info.ExcludedMove {
 		info.ExcludedMove[i] = NoMove
 	}
@@ -726,7 +735,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 
 	// Use MovePicker for staged move generation (reuse pre-allocated picker)
-	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr)
+	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr, &info.CaptHistory)
 	picker := &info.pickers[ply]
 
 	bestMove := NoMove
@@ -736,6 +745,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Track quiet moves searched before beta cutoff for history penalty
 	var quietsTried [64]Move
 	quietsCount := 0
+
+	// Track captures searched before beta cutoff for capture history penalty
+	var capturesTried [32]Move
+	capturesCount := 0
 
 	for {
 		move := picker.Next()
@@ -896,6 +909,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			quietsCount++
 		}
 
+		// Track captures for capture history penalty on beta cutoff
+		if isCap && capturesCount < len(capturesTried) {
+			capturesTried[capturesCount] = move
+			capturesCount++
+		}
+
 		// Late Move Reductions (LMR) + Principal Variation Search (PVS)
 		isKiller := move == killers[0] || move == killers[1]
 
@@ -1030,6 +1049,34 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 								}
 							}
 						}
+					} else {
+						// Capture caused beta cutoff — update capture history
+						bonus := int32(depth * depth)
+						piece := b.Squares[move.From()]
+						cpt := capturedType(b.Squares[move.To()])
+						if move.Flags() == FlagEnPassant {
+							cpt = 1 // pawn
+						}
+						ch := int32(info.CaptHistory[piece][move.To()][cpt]) + bonus
+						if ch > 32000 {
+							ch = 32000
+						}
+						info.CaptHistory[piece][move.To()][cpt] = int16(ch)
+
+						// Penalize captures tried before cutoff
+						for i := 0; i < capturesCount-1; i++ {
+							c := capturesTried[i]
+							cp := b.Squares[c.From()]
+							ct := capturedType(b.Squares[c.To()])
+							if c.Flags() == FlagEnPassant {
+								ct = 1
+							}
+							cv := int32(info.CaptHistory[cp][c.To()][ct]) - bonus
+							if cv < -32000 {
+								cv = -32000
+							}
+							info.CaptHistory[cp][c.To()][ct] = int16(cv)
+						}
 					}
 					break
 				}
@@ -1103,7 +1150,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 
 	// Use MovePicker for captures only (reuse pre-allocated picker)
 	qsIdx := MaxPly + qsDepth
-	info.pickers[qsIdx].InitQuiescence(b)
+	info.pickers[qsIdx].InitQuiescence(b, &info.CaptHistory)
 	picker := &info.pickers[qsIdx]
 
 	for {
@@ -1152,4 +1199,13 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 // isCapture returns true if the move is a capture
 func isCapture(m Move, b *Board) bool {
 	return b.Squares[m.To()] != Empty || m.Flags() == FlagEnPassant
+}
+
+// capturedType returns the piece type (1-6) of a captured piece, color-normalized.
+// For white pieces (1-6), returns as-is. For black pieces (7-12), subtracts 6.
+func capturedType(p Piece) int {
+	if p >= BlackPawn {
+		return int(p - 6)
+	}
+	return int(p)
 }
