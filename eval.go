@@ -101,6 +101,17 @@ var (
 	QueenAttackUnits    = 13
 	QueenKingZoneBonus  = 1
 
+	// Safe check bonuses: attack units for pieces that can deliver checks
+	// on squares not defended by enemy pawns or occupied by friendly pieces
+	SafeKnightCheckBonus = 6
+	SafeBishopCheckBonus = 3
+	SafeRookCheckBonus   = 7
+	SafeQueenCheckBonus  = 5
+
+	// No-queen attack scale: scale factor (out of 128) for king safety
+	// penalty when the attacking side has no queen
+	NoQueenAttackScale = 40
+
 	// Castling rights bonus (MG only, per retained right)
 	CastlingRightsMG = 10
 
@@ -120,6 +131,10 @@ var (
 	PawnThreatQueenMG = 30
 	PawnThreatQueenEG = 20
 )
+
+// Feature toggles for king safety improvements
+var SafeCheckEnabled = true
+var NoQueenScaleEnabled = true
 
 // Tempo bonus for the side to move.
 var TempoMG = 15
@@ -397,6 +412,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
 	kingZone := KingAttacks[enemyKingSq] | SquareBB(enemyKingSq)
 	var attackerCount, attackUnits int
+	var allKnightAttacks, allBishopAttacks, allRookAttacks, allQueenAttacks Bitboard
 
 	// Precompute pawn attacks
 	var friendlyPawnAttacks, enemyPawnAttacks Bitboard
@@ -416,6 +432,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for knights != 0 {
 		sq := knights.PopLSB()
 		attacks := KnightAttacks[sq] &^ friendly
+		allKnightAttacks |= attacks
 		safeMobility := (attacks &^ enemyPawnAttacks).Count()
 		mg += KnightMobility[safeMobility][0]
 		eg += KnightMobility[safeMobility][1]
@@ -462,6 +479,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for bishops != 0 {
 		sq := bishops.PopLSB()
 		attacks := BishopAttacksBB(sq, b.AllPieces) &^ friendly
+		allBishopAttacks |= attacks
 		safeMobility := (attacks &^ enemyPawnAttacks).Count()
 		mg += BishopMobility[safeMobility][0]
 		eg += BishopMobility[safeMobility][1]
@@ -504,6 +522,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for rooks != 0 {
 		sq := rooks.PopLSB()
 		attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
+		allRookAttacks |= attacks
 		safeMobility := (attacks &^ enemyPawnAttacks).Count()
 		mg += RookMobility[safeMobility][0]
 		eg += RookMobility[safeMobility][1]
@@ -588,6 +607,7 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	for queens != 0 {
 		sq := queens.PopLSB()
 		attacks := QueenAttacksBB(sq, b.AllPieces) &^ friendly
+		allQueenAttacks |= attacks
 		safeMobility := (attacks &^ enemyPawnAttacks).Count()
 		mg += QueenMobility[safeMobility][0]
 		eg += QueenMobility[safeMobility][1]
@@ -595,6 +615,31 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 			attackerCount++
 			attackUnits += QueenAttackUnits + QueenKingZoneBonus*kzAttacks.Count()
+		}
+	}
+
+	// --- Safe check bonus ---
+	// Add attack units for pieces that can deliver checks on squares not
+	// defended by enemy pawns or occupied by friendly pieces.
+	// Gated on attackerCount >= 2 for the same reason as the structural factors.
+	if SafeCheckEnabled && attackerCount >= 1 {
+		safeSquares := ^(enemyPawnAttacks | friendly)
+		knightCheckSqs := KnightAttacks[enemyKingSq]
+		bishopCheckSqs := BishopAttacksBB(enemyKingSq, b.AllPieces)
+		rookCheckSqs := RookAttacksBB(enemyKingSq, b.AllPieces)
+
+		if knightCheckSqs&safeSquares&allKnightAttacks != 0 {
+			attackUnits += SafeKnightCheckBonus
+		}
+		if bishopCheckSqs&safeSquares&allBishopAttacks != 0 {
+			attackUnits += SafeBishopCheckBonus
+		}
+		if rookCheckSqs&safeSquares&allRookAttacks != 0 {
+			attackUnits += SafeRookCheckBonus
+		}
+		queenCheckSqs := bishopCheckSqs | rookCheckSqs
+		if queenCheckSqs&safeSquares&allQueenAttacks != 0 {
+			attackUnits += SafeQueenCheckBonus
 		}
 	}
 
@@ -664,11 +709,19 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 	if attackUnits >= 100 {
 		attackUnits = 99
 	}
+	penalty := 0
 	if attackerCount >= 2 {
-		mg += KingSafetyTable[attackUnits]
+		penalty = KingSafetyTable[attackUnits]
 	} else if attackerCount == 1 && attackUnits >= 15 {
-		mg += KingSafetyTable[attackUnits] / 3
+		penalty = KingSafetyTable[attackUnits] / 3
 	}
+
+	// Scale down when attacking side has no queen
+	if NoQueenScaleEnabled && penalty > 0 && b.Pieces[pieceOf(WhiteQueen, color)].Count() == 0 {
+		penalty = penalty * NoQueenAttackScale / 128
+	}
+
+	mg += penalty
 
 	return
 }

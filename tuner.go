@@ -67,6 +67,7 @@ var (
 	idxPassedStart   int // passed pawn bonuses
 	idxPawnStart     int // pawn structure
 	idxKingAttack    int // king attack weights
+	idxSafeCheck     int // safe check bonuses + no-queen scale
 	idxKingSafetyTbl int // king safety table (100 entries, MG only)
 	idxPawnShield    int // pawn shield constants (5 entries, MG only)
 	idxMisc          int // space, threats, castling, OCB
@@ -280,6 +281,15 @@ func (t *Tuner) initTunerParams() {
 	add("RookKingZoneBonus", RookKingZoneBonus, func(v int) { RookKingZoneBonus = v })
 	add("QueenAttackUnits", QueenAttackUnits, func(v int) { QueenAttackUnits = v })
 	add("QueenKingZoneBonus", QueenKingZoneBonus, func(v int) { QueenKingZoneBonus = v })
+
+	// === Safe check bonuses + no-queen scale ===
+	idxSafeCheck = len(t.Params)
+	addSection("Safe Check", idxSafeCheck)
+	add("SafeKnightCheckBonus", SafeKnightCheckBonus, func(v int) { SafeKnightCheckBonus = v })
+	add("SafeBishopCheckBonus", SafeBishopCheckBonus, func(v int) { SafeBishopCheckBonus = v })
+	add("SafeRookCheckBonus", SafeRookCheckBonus, func(v int) { SafeRookCheckBonus = v })
+	add("SafeQueenCheckBonus", SafeQueenCheckBonus, func(v int) { SafeQueenCheckBonus = v })
+	add("NoQueenAttackScale", NoQueenAttackScale, func(v int) { NoQueenAttackScale = v })
 
 	// === King safety table (100 entries, MG only) ===
 	idxKingSafetyTbl = len(t.Params)
@@ -1211,12 +1221,14 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
 		kingZone := KingAttacks[enemyKingSq] | SquareBB(enemyKingSq)
 		var attackerCount, attackUnits int
+		var allKnightAttacks, allBishopAttacks, allRookAttacks, allQueenAttacks Bitboard
 
 		// Knights
 		kn := b.Pieces[pieceOf(WhiteKnight, color)]
 		for kn != 0 {
 			sq := kn.PopLSB()
 			attacks := KnightAttacks[sq] &^ friendly
+			allKnightAttacks |= attacks
 			if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 				attackerCount++
 				attackUnits += KnightAttackUnits + KnightKingZoneBonus*kzAttacks.Count()
@@ -1228,6 +1240,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		for bi != 0 {
 			sq := bi.PopLSB()
 			attacks := BishopAttacksBB(sq, b.AllPieces) &^ friendly
+			allBishopAttacks |= attacks
 			if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 				attackerCount++
 				attackUnits += BishopAttackUnits + BishopKingZoneBonus*kzAttacks.Count()
@@ -1239,6 +1252,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		for ro != 0 {
 			sq := ro.PopLSB()
 			attacks := RookAttacksBB(sq, b.AllPieces) &^ friendly
+			allRookAttacks |= attacks
 			if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 				attackerCount++
 				attackUnits += RookAttackUnits + RookKingZoneBonus*kzAttacks.Count()
@@ -1250,9 +1264,38 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		for qu != 0 {
 			sq := qu.PopLSB()
 			attacks := QueenAttacksBB(sq, b.AllPieces) &^ friendly
+			allQueenAttacks |= attacks
 			if kzAttacks := attacks & kingZone; kzAttacks != 0 {
 				attackerCount++
 				attackUnits += QueenAttackUnits + QueenKingZoneBonus*kzAttacks.Count()
+			}
+		}
+
+		// Safe check bonus (same as eval.go)
+		if attackerCount >= 1 {
+			var enemyPawnAtk Bitboard
+			if enemy == White {
+				enemyPawnAtk = enemyPawns.NorthWest() | enemyPawns.NorthEast()
+			} else {
+				enemyPawnAtk = enemyPawns.SouthWest() | enemyPawns.SouthEast()
+			}
+			safeSquares := ^(enemyPawnAtk | friendly)
+			knightCheckSqs := KnightAttacks[enemyKingSq]
+			bishopCheckSqs := BishopAttacksBB(enemyKingSq, b.AllPieces)
+			rookCheckSqs := RookAttacksBB(enemyKingSq, b.AllPieces)
+
+			if knightCheckSqs&safeSquares&allKnightAttacks != 0 {
+				attackUnits += SafeKnightCheckBonus
+			}
+			if bishopCheckSqs&safeSquares&allBishopAttacks != 0 {
+				attackUnits += SafeBishopCheckBonus
+			}
+			if rookCheckSqs&safeSquares&allRookAttacks != 0 {
+				attackUnits += SafeRookCheckBonus
+			}
+			queenCheckSqs := bishopCheckSqs | rookCheckSqs
+			if queenCheckSqs&safeSquares&allQueenAttacks != 0 {
+				attackUnits += SafeQueenCheckBonus
 			}
 		}
 
@@ -1975,6 +2018,18 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 	}
 	for i, name := range attackNames {
 		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxKingAttack+i])))
+	}
+	w.WriteString("\n")
+
+	// Safe check bonuses + no-queen scale
+	w.WriteString("=== Safe Check ===\n")
+	safeCheckNames := []string{
+		"SafeKnightCheckBonus", "SafeBishopCheckBonus",
+		"SafeRookCheckBonus", "SafeQueenCheckBonus",
+		"NoQueenAttackScale",
+	}
+	for i, name := range safeCheckNames {
+		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxSafeCheck+i])))
 	}
 	w.WriteString("\n")
 

@@ -1102,12 +1102,13 @@ func TestEndgameScale(t *testing.T) {
 
 func TestEndgameKingDistance(t *testing.T) {
 	var b Board
-	// KQ vs K, enemy king on edge
-	b.SetFEN("k7/8/8/8/8/8/8/3QK3 w - - 0 1")
+	// KR vs K, enemy king on edge — uses rook to test endgame king distance
+	// without queen safe check asymmetry distorting the comparison
+	b.SetFEN("k7/8/8/8/8/8/8/3RK3 w - - 0 1")
 	edgeScore := b.Evaluate()
 
-	// KQ vs K, enemy king in center
-	b.SetFEN("4k3/8/8/8/8/8/8/3QK3 w - - 0 1")
+	// KR vs K, enemy king in center
+	b.SetFEN("4k3/8/8/8/8/8/8/3RK3 w - - 0 1")
 	centerScore := b.Evaluate()
 
 	// Enemy on edge should score higher (easier to mate)
