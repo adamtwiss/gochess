@@ -96,7 +96,7 @@ Staged generation for search efficiency:
 2. Good captures (SEE >= 0, scored by MVV-LVA)
 3. Killer moves (2 per ply, caused beta cutoffs in sibling nodes)
 4. Counter-move (move that refuted opponent's previous move)
-5. Quiet moves (scored by history heuristic)
+5. Quiet moves (scored by history + continuation history)
 6. Bad captures (SEE < 0, last resort)
 
 Selection sort within each stage (partial sort, only finds next-best on demand).
@@ -120,6 +120,7 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Killer moves**: 2 slots per ply, updated on beta cutoff with quiet moves.
 - **Counter-move heuristic**: `CounterMoves[piece][toSquare]` indexed by opponent's previous move. Stored on beta cutoff, used as a MovePicker stage between killers and quiets.
 - **History heuristic**: `history[from][to] += depth * depth` on beta cutoff. Quiet moves tried before the cutoff move receive a matching penalty (`-= depth * depth`). Used to score quiet moves in move ordering and to adjust LMR reductions.
+- **Continuation history**: `ContHistory[prevPiece][prevTo][curPiece][curTo]` (int16, ~1.3MB per thread). Captures the pattern "after piece X moved to square Y, quiet move Z tends to be good/bad". Updated alongside History on quiet beta cutoffs (bonus) and for quiet moves tried before cutoff (penalty). Added to quiet move scores in MovePicker and to the LMR history adjustment. Nil-safe: disabled at root and after null moves.
 - **Time management**: Checks clock every 4096 nodes. Iterative deepening allows stopping between depths. Early exit if remaining time is less than last iteration took.
 - **Lazy SMP**: Multi-threaded search via `SearchParallel()`. All threads search the same root position independently, sharing only the transposition table. Each thread has its own `Board` copy (with undo stack for repetition detection), `SearchInfo` (killers, history, counter-moves), eval cache, and pawn hash table. Helper threads use depth diversification (a skip table indexed by thread index and depth) to ensure threads are at different depths at any given time, improving TT entry diversity. The main thread (thread 0) runs normally with the `OnDepth` callback; helper threads run a stripped-down iterative deepening loop. Node counts from all threads are aggregated for NPS reporting. Default: 1 thread (no behavior change). Configurable via UCI `Threads` option (1-256) and `-threads` CLI flag.
 

@@ -88,6 +88,12 @@ type SearchInfo struct {
 	// Counter-move heuristic: indexed by [piece][toSquare] of the previous move
 	CounterMoves [13][64]Move
 
+	// Continuation history: indexed by [prevPiece][prevTo][curPiece][curTo].
+	// Captures the pattern "after piece X moved to square Y, quiet move Z tends
+	// to cause beta cutoffs". Updated alongside History on quiet beta cutoffs.
+	// ~1.3MB per thread (int16).
+	ContHistory [13][64][13][64]int16
+
 	// LMR statistics (for debugging/analysis)
 	LMRAttempts   uint64 // Times LMR was attempted
 	LMRReSearches uint64 // Times we had to re-search at full depth
@@ -180,6 +186,9 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			info.CounterMoves[i][j] = NoMove
 		}
 	}
+
+	// Clear continuation history
+	info.ContHistory = [13][64][13][64]int16{}
 
 	// Clear excluded moves
 	for i := range info.ExcludedMove {
@@ -400,6 +409,7 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 			info.CounterMoves[i][j] = NoMove
 		}
 	}
+	info.ContHistory = [13][64][13][64]int16{}
 	for i := range info.ExcludedMove {
 		info.ExcludedMove[i] = NoMove
 	}
@@ -664,8 +674,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		killers = info.Killers[ply]
 	}
 
-	// Counter-move lookup: what move refuted the opponent's last move?
+	// Counter-move and continuation history lookup from opponent's last move
 	var counterMove Move
+	var contHistPtr *[13][64]int16
 	if len(b.UndoStack) > 0 {
 		undo := b.UndoStack[len(b.UndoStack)-1]
 		pm := undo.Move
@@ -673,12 +684,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			prevPiece := b.Squares[pm.To()]
 			if prevPiece != Empty {
 				counterMove = info.CounterMoves[prevPiece][pm.To()]
+				contHistPtr = &info.ContHistory[prevPiece][pm.To()]
 			}
 		}
 	}
 
 	// Use MovePicker for staged move generation (reuse pre-allocated picker)
-	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove)
+	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr)
 	picker := &info.pickers[ply]
 
 	bestMove := NoMove
@@ -842,6 +854,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 				// Continuous history adjustment: good history reduces less, bad more
 				histScore := info.History[move.From()][move.To()]
+				if contHistPtr != nil {
+					histScore += int32(contHistPtr[b.Squares[move.To()]][move.To()])
+				}
 				reduction -= int(histScore / 5000)
 
 				// Clamp: never extend (negative), never reduce past depth 1
@@ -909,10 +924,30 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 						info.storeKiller(ply, move)
 						info.History[move.From()][move.To()] += bonus
 
+						// Update continuation history
+						if contHistPtr != nil {
+							curPiece := b.Squares[move.From()]
+							ch := int32(contHistPtr[curPiece][move.To()]) + bonus
+							if ch > 32000 {
+								ch = 32000
+							}
+							contHistPtr[curPiece][move.To()] = int16(ch)
+						}
+
 						// Penalize all quiet moves tried before the cutoff move
 						for i := 0; i < quietsCount-1; i++ {
 							q := quietsTried[i]
 							info.History[q.From()][q.To()] -= bonus
+
+							// Penalize continuation history
+							if contHistPtr != nil {
+								qPiece := b.Squares[q.From()]
+								ch := int32(contHistPtr[qPiece][q.To()]) - bonus
+								if ch < -32000 {
+									ch = -32000
+								}
+								contHistPtr[qPiece][q.To()] = int16(ch)
+							}
 						}
 
 						// Store counter-move

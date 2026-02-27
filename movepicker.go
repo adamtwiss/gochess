@@ -13,6 +13,7 @@ type MovePicker struct {
 	killers     [2]Move
 	counterMove Move
 	history     *[64][64]int32
+	contHist    *[13][64]int16 // continuation history sub-table for prev move's piece+square
 	stage       int
 	moves       []Move
 	scores      []int
@@ -38,9 +39,9 @@ const (
 )
 
 // NewMovePicker creates a new move picker for the main search
-func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move) *MovePicker {
+func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16) *MovePicker {
 	mp := &MovePicker{}
-	mp.Init(b, ttMove, ply, killers, history, counterMove)
+	mp.Init(b, ttMove, ply, killers, history, counterMove, contHist)
 	return mp
 }
 
@@ -52,12 +53,13 @@ func NewMovePickerQuiescence(b *Board) *MovePicker {
 }
 
 // Init resets a MovePicker for reuse, avoiding heap allocations on subsequent calls
-func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move) {
+func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16) {
 	mp.board = b
 	mp.ttMove = ttMove
 	mp.killers = killers
 	mp.counterMove = counterMove
 	mp.history = history
+	mp.contHist = contHist
 	mp.ply = ply
 	mp.stage = stageTTMove
 	mp.index = 0
@@ -208,6 +210,10 @@ func (mp *MovePicker) generateAndScoreQuiets() {
 		score := 0
 		if mp.history != nil {
 			score = int(mp.history[mp.moves[i].From()][mp.moves[i].To()])
+		}
+		if mp.contHist != nil {
+			piece := mp.board.Squares[mp.moves[i].From()]
+			score += int(mp.contHist[piece][mp.moves[i].To()])
 		}
 		mp.scores = append(mp.scores, score)
 	}
