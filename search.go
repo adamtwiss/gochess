@@ -820,7 +820,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 
 	// Use MovePicker for staged move generation (reuse pre-allocated picker)
-	info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr, &info.CaptHistory)
+	if inCheck {
+		info.pickers[ply].InitEvasion(b, ttMove, ply, checkers, pinned, &info.History, contHistPtr, &info.CaptHistory)
+	} else {
+		info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr, &info.CaptHistory)
+	}
 	picker := &info.pickers[ply]
 
 	bestMove := NoMove
@@ -846,8 +850,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			continue
 		}
 
-		// Check legality (MovePicker returns pseudo-legal moves)
-		if !b.IsLegal(move, pinned, inCheck) {
+		// Check legality (MovePicker returns pseudo-legal moves; evasion moves are already legal)
+		if !inCheck && !b.IsLegal(move, pinned, false) {
 			continue
 		}
 
@@ -1225,7 +1229,49 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 
 	info.Nodes++
 
-	// Stand pat - evaluate the current position
+	// Precompute pinned pieces and checkers
+	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
+	qsInCheck := checkers != 0
+
+	qsIdx := MaxPly + qsDepth
+
+	// When in check, generate all evasion moves (captures + blocks + king moves)
+	if qsInCheck {
+		info.pickers[qsIdx].InitEvasion(b, NoMove, 0, checkers, pinned, nil, nil, &info.CaptHistory)
+		picker := &info.pickers[qsIdx]
+		bestScore := -Infinity
+		moveCount := 0
+
+		for {
+			move := picker.Next()
+			if move == NoMove {
+				break
+			}
+			moveCount++
+
+			b.MakeMove(move)
+			score := -b.quiescenceWithDepth(-beta, -alpha, info, qsDepth+1)
+			b.UnmakeMove(move)
+
+			if score > bestScore {
+				bestScore = score
+			}
+			if score >= beta {
+				return beta
+			}
+			if score > alpha {
+				alpha = score
+			}
+		}
+
+		// Checkmate detection
+		if moveCount == 0 {
+			return -MateScore + int(info.Depth) + qsDepth
+		}
+		return bestScore
+	}
+
+	// Stand pat - evaluate the current position (only when not in check)
 	standPat := b.EvaluateRelative()
 
 	if standPat >= beta {
@@ -1237,13 +1283,8 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 	}
 
 	// Use MovePicker for captures only (reuse pre-allocated picker)
-	qsIdx := MaxPly + qsDepth
 	info.pickers[qsIdx].InitQuiescence(b, &info.CaptHistory)
 	picker := &info.pickers[qsIdx]
-
-	// Precompute pinned pieces and in-check once per node for fast legality checking
-	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
-	qsInCheck := checkers != 0
 
 	for {
 		move := picker.Next()
@@ -1269,7 +1310,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		}
 
 		// Check legality
-		if !b.IsLegal(move, pinned, qsInCheck) {
+		if !b.IsLegal(move, pinned, false) {
 			continue
 		}
 

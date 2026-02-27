@@ -92,6 +92,7 @@ Magic bitboards for sliding pieces (attacks.go). Pre-computed tables for knight,
 - `GenerateLegalMoves()` — filters via `IsLegal()` (pin-aware fast path)
 - `GenerateCaptures()` — captures + promotions (for quiescence)
 - `GenerateQuiets()` — non-captures, non-promotions
+- `GenerateEvasionsAppend()` — fully legal evasion moves when in check (no IsLegal filtering needed)
 
 ### Move Legality (Pin-Aware Fast Path)
 
@@ -102,23 +103,38 @@ Magic bitboards for sliding pieces (attacks.go). Pre-computed tables for knight,
 - **Fast paths in IsLegal**:
   1. Castling → always true (validated during generation)
   2. En passant → full make/unmake (rare, tricky discovered checks)
-  3. King moves → check destination with king removed from occupancy (inline IsAttacked)
+  3. King moves → `isAttackedWithOcc(to, them, occ)` with king removed from occupancy
   4. Non-king, in check → full make/unmake (must verify check resolution)
   5. Non-king, not pinned, not in check → always true (single bitboard AND)
   6. Pinned piece → legal iff moves along pin line: `LineBB[kingSq][from] & SquareBB(to) != 0`
-- **Search integration**: `negamax` and `quiescence` call `PinnedAndCheckers` once per node, replacing separate `InCheck()` + `PinnedPieces()` calls. The `pinned` and `inCheck` values are passed to `IsLegal` for each move.
+- **`isAttackedWithOcc(sq, by, occ)`**: Like `IsAttacked` but uses custom occupancy for sliding pieces. Shared by IsLegal king path and evasion generator.
+- **Search integration**: `negamax` and `quiescence` call `PinnedAndCheckers` once per node. When in check, `InitEvasion` uses `GenerateEvasionsAppend` to produce fully legal moves, skipping `IsLegal`. When not in check, `IsLegal` filters pseudo-legal moves as before.
 - **`IsLegalSlow(m)`**: Convenience wrapper computing both pinned and inCheck internally. Used in non-hot paths (PV extraction, `GenerateLegalMoves`).
+
+### Evasion Move Generator
+
+`GenerateEvasionsAppend(moves, checkers, pinned)` generates all legal moves when in check, without needing `IsLegal` filtering:
+
+- **King evasions** (always): moves to squares not attacked by enemy, using occupancy with king removed so sliders see through.
+- **Double check**: only king moves are legal (non-king section skipped entirely).
+- **Single check**: non-pinned pieces can capture the checker or block the check ray (`BetweenBB[kingSq][checkerSq]`).
+- **Key insight**: pinned pieces can never resolve check (the checker must be on a different line than the pin), so they're excluded from non-king evasion generation.
+- **En passant**: only generated if the captured pawn IS the checking piece, validated via make/unmake.
+- **Integration**: `MovePicker.InitEvasion()` uses a flat scored list (captures above quiets) with selection sort. Used by both negamax (when in check) and quiescence (fixes correctness bug where QS missed quiet evasions).
 
 ### Move Ordering (MovePicker)
 
 Staged generation for search efficiency:
 
+**Normal mode** (not in check):
 1. TT move (from transposition table)
 2. Good captures (SEE >= 0, scored by MVV-LVA + capture history)
 3. Killer moves (2 per ply, caused beta cutoffs in sibling nodes)
 4. Counter-move (move that refuted opponent's previous move)
 5. Quiet moves (scored by history + continuation history)
 6. Bad captures (SEE < 0, scored by SEE + capture history)
+
+**Evasion mode** (in check): TT move → all evasion moves in a single scored list (captures: 10000+MVV-LVA+captHist, queen promotions: 9000, quiets: history+contHist, underpromotions: -1000).
 
 Selection sort within each stage (partial sort, only finds next-best on demand).
 
@@ -139,7 +155,7 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Check extensions**: Extend search by 1 ply when move gives check.
 - **Recapture extensions**: Extend by 1 ply when recapturing on the same square the opponent just captured on, to fully resolve tactical exchanges. Gated on `RecaptureExtEnabled`.
 - **Passed pawn push extensions**: Extend by 1 ply for quiet pawn pushes to 6th or 7th rank that are verified as passed pawns (via `PassedPawnMask`). Helps resolve promotion races and endgame tactics. Gated on `PassedPawnExtEnabled`.
-- **Quiescence search**: Captures only at leaf nodes, pruned by SEE >= 0. Stand-pat evaluation as lower bound. Depth-limited to 32.
+- **Quiescence search**: Captures only at leaf nodes, pruned by SEE >= 0. Stand-pat evaluation as lower bound. Depth-limited to 32. When in check: uses evasion generator for all legal moves (not just captures), skips stand-pat, detects checkmate (moveCount == 0).
 - **Killer moves**: 2 slots per ply, updated on beta cutoff with quiet moves.
 - **Counter-move heuristic**: `CounterMoves[piece][toSquare]` indexed by opponent's previous move. Stored on beta cutoff, used as a MovePicker stage between killers and quiets.
 - **History heuristic**: `history[from][to] += depth * depth` on beta cutoff. Quiet moves tried before the cutoff move receive a matching penalty (`-= depth * depth`). Used to score quiet moves in move ordering and to adjust LMR reductions.

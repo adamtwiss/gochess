@@ -381,6 +381,30 @@ func (b *Board) IsAttacked(sq Square, by Color) bool {
 	return false
 }
 
+// isAttackedWithOcc checks if a square is attacked by a color using a custom
+// occupancy bitboard for sliding piece lookups. Used for king-move legality
+// (king removed from occupancy) and evasion generation.
+func (b *Board) isAttackedWithOcc(sq Square, by Color, occ Bitboard) bool {
+	if PawnAttacks[1-by][sq]&b.Pieces[pieceOf(WhitePawn, by)] != 0 {
+		return true
+	}
+	if KnightAttacks[sq]&b.Pieces[pieceOf(WhiteKnight, by)] != 0 {
+		return true
+	}
+	if KingAttacks[sq]&b.Pieces[pieceOf(WhiteKing, by)] != 0 {
+		return true
+	}
+	bq := b.Pieces[pieceOf(WhiteBishop, by)] | b.Pieces[pieceOf(WhiteQueen, by)]
+	if BishopAttacksBB(sq, occ)&bq != 0 {
+		return true
+	}
+	rq := b.Pieces[pieceOf(WhiteRook, by)] | b.Pieces[pieceOf(WhiteQueen, by)]
+	if RookAttacksBB(sq, occ)&rq != 0 {
+		return true
+	}
+	return false
+}
+
 // InCheck returns true if the side to move is in check
 func (b *Board) InCheck() bool {
 	us := b.SideToMove
@@ -456,30 +480,7 @@ func (b *Board) IsLegal(m Move, pinned Bitboard, inCheck bool) bool {
 	// (so sliding pieces aren't blocked by the king itself).
 	if from == kingSq {
 		occ := b.AllPieces &^ SquareBB(from)
-
-		// Pawn attacks
-		if PawnAttacks[us][to]&b.Pieces[pieceOf(WhitePawn, them)] != 0 {
-			return false
-		}
-		// Knight attacks
-		if KnightAttacks[to]&b.Pieces[pieceOf(WhiteKnight, them)] != 0 {
-			return false
-		}
-		// King attacks (opponent king)
-		if KingAttacks[to]&b.Pieces[pieceOf(WhiteKing, them)] != 0 {
-			return false
-		}
-		// Bishop/Queen attacks (using modified occupancy)
-		bq := b.Pieces[pieceOf(WhiteBishop, them)] | b.Pieces[pieceOf(WhiteQueen, them)]
-		if BishopAttacksBB(to, occ)&bq != 0 {
-			return false
-		}
-		// Rook/Queen attacks (using modified occupancy)
-		rq := b.Pieces[pieceOf(WhiteRook, them)] | b.Pieces[pieceOf(WhiteQueen, them)]
-		if RookAttacksBB(to, occ)&rq != 0 {
-			return false
-		}
-		return true
+		return !b.isAttackedWithOcc(to, them, occ)
 	}
 
 	// Non-king moves when in check: must block or capture the checker.
@@ -816,6 +817,252 @@ func (b *Board) GenerateQuietsAppend(moves []Move) []Move {
 		mg := &MoveGen{board: b, moves: moves}
 		mg.generateCastlingMoves(from)
 		moves = mg.moves
+	}
+
+	return moves
+}
+
+// GenerateEvasionsAppend generates all legal evasion moves when in check.
+// The returned moves are fully legal — no IsLegal filtering needed.
+// checkers and pinned should be precomputed via PinnedAndCheckers().
+func (b *Board) GenerateEvasionsAppend(moves []Move, checkers, pinned Bitboard) []Move {
+	us := b.SideToMove
+	them := 1 - us
+	kingSq := b.Pieces[pieceOf(WhiteKing, us)].LSB()
+	ourPieces := b.Occupied[us]
+
+	// King evasions: always generated (both single and double check)
+	occ := b.AllPieces ^ SquareBB(kingSq) // remove king so sliders see through
+	targets := KingAttacks[kingSq] &^ ourPieces
+	for targets != 0 {
+		to := targets.PopLSB()
+		if !b.isAttackedWithOcc(to, them, occ) {
+			moves = append(moves, NewMove(kingSq, to))
+		}
+	}
+
+	// Double check: only king moves are legal
+	if checkers&(checkers-1) != 0 {
+		return moves
+	}
+
+	// Single check: can also block or capture the checker
+	checkerSq := checkers.LSB()
+	// target = capture the checker OR block the ray between king and checker
+	// BetweenBB is empty for non-sliding checkers (knight, pawn)
+	target := SquareBB(checkerSq) | BetweenBB[kingSq][checkerSq]
+	blockTarget := BetweenBB[kingSq][checkerSq] // blocking squares only (no capture)
+
+	// Only non-pinned pieces can resolve check (pinned pieces can never
+	// interpose or capture a checker that's on a different line than the pin)
+	nonPinned := ourPieces &^ pinned &^ SquareBB(kingSq)
+
+	// Knights
+	knights := b.Pieces[pieceOf(WhiteKnight, us)] & nonPinned
+	for knights != 0 {
+		from := knights.PopLSB()
+		attacks := KnightAttacks[from] & target
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Bishops
+	bishops := b.Pieces[pieceOf(WhiteBishop, us)] & nonPinned
+	for bishops != 0 {
+		from := bishops.PopLSB()
+		attacks := BishopAttacksBB(from, b.AllPieces) & target
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Rooks
+	rooks := b.Pieces[pieceOf(WhiteRook, us)] & nonPinned
+	for rooks != 0 {
+		from := rooks.PopLSB()
+		attacks := RookAttacksBB(from, b.AllPieces) & target
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Queens
+	queens := b.Pieces[pieceOf(WhiteQueen, us)] & nonPinned
+	for queens != 0 {
+		from := queens.PopLSB()
+		attacks := QueenAttacksBB(from, b.AllPieces) & target
+		for attacks != 0 {
+			to := attacks.PopLSB()
+			moves = append(moves, NewMove(from, to))
+		}
+	}
+
+	// Pawns
+	pawns := b.Pieces[pieceOf(WhitePawn, us)] & nonPinned
+	checkerBB := SquareBB(checkerSq)
+	empty := ^b.AllPieces
+
+	if us == White {
+		promoRank := Rank8
+
+		// Pawn captures onto checker square
+		captureL := ((pawns & NotFileA) << 7) & checkerBB
+		captureR := ((pawns & NotFileH) << 9) & checkerBB
+
+		for captureL != 0 {
+			to := captureL.PopLSB()
+			from := to - 7
+			if SquareBB(to)&promoRank != 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+		for captureR != 0 {
+			to := captureR.PopLSB()
+			from := to - 9
+			if SquareBB(to)&promoRank != 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+
+		// Pawn pushes onto blocking squares (or capture square for push-promotions)
+		push1 := ((pawns << 8) & empty) & target
+		push2 := ((((pawns << 8) & empty & Rank3) << 8) & empty) & blockTarget
+
+		for push1 != 0 {
+			to := push1.PopLSB()
+			from := to - 8
+			if SquareBB(to)&promoRank != 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+		for push2 != 0 {
+			to := push2.PopLSB()
+			moves = append(moves, NewMove(to-16, to))
+		}
+
+		// En passant: only if the captured pawn IS the checking piece
+		if b.EnPassant != NoSquare {
+			// The captured pawn is one rank below the EP square for white
+			capturedPawnSq := b.EnPassant - 8
+			if Square(capturedPawnSq) == checkerSq {
+				epBB := SquareBB(b.EnPassant)
+				epL := ((pawns & NotFileA) << 7) & epBB
+				epR := ((pawns & NotFileH) << 9) & epBB
+				if epL != 0 {
+					m := NewMoveFlags(b.EnPassant-7, b.EnPassant, FlagEnPassant)
+					// EP always validated via make/unmake (rare discovered check edge cases)
+					b.MakeMove(m)
+					if !b.IsAttacked(kingSq, them) {
+						moves = append(moves, m)
+					}
+					b.UnmakeMove(m)
+				}
+				if epR != 0 {
+					m := NewMoveFlags(b.EnPassant-9, b.EnPassant, FlagEnPassant)
+					b.MakeMove(m)
+					if !b.IsAttacked(kingSq, them) {
+						moves = append(moves, m)
+					}
+					b.UnmakeMove(m)
+				}
+			}
+		}
+	} else {
+		// Black pawns
+		promoRank := Rank1
+
+		captureL := ((pawns & NotFileA) >> 9) & checkerBB
+		captureR := ((pawns & NotFileH) >> 7) & checkerBB
+
+		for captureL != 0 {
+			to := captureL.PopLSB()
+			from := to + 9
+			if SquareBB(to)&promoRank != 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+		for captureR != 0 {
+			to := captureR.PopLSB()
+			from := to + 7
+			if SquareBB(to)&promoRank != 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+
+		push1 := ((pawns >> 8) & empty) & target
+		push2 := ((((pawns >> 8) & empty & Rank6) >> 8) & empty) & blockTarget
+
+		for push1 != 0 {
+			to := push1.PopLSB()
+			from := to + 8
+			if SquareBB(to)&promoRank != 0 {
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteQ))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteR))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteB))
+				moves = append(moves, NewMoveFlags(from, to, FlagPromoteN))
+			} else {
+				moves = append(moves, NewMove(from, to))
+			}
+		}
+		for push2 != 0 {
+			to := push2.PopLSB()
+			moves = append(moves, NewMove(to+16, to))
+		}
+
+		// En passant
+		if b.EnPassant != NoSquare {
+			capturedPawnSq := b.EnPassant + 8
+			if Square(capturedPawnSq) == checkerSq {
+				epBB := SquareBB(b.EnPassant)
+				epL := ((pawns & NotFileA) >> 9) & epBB
+				epR := ((pawns & NotFileH) >> 7) & epBB
+				if epL != 0 {
+					m := NewMoveFlags(b.EnPassant+9, b.EnPassant, FlagEnPassant)
+					b.MakeMove(m)
+					if !b.IsAttacked(kingSq, them) {
+						moves = append(moves, m)
+					}
+					b.UnmakeMove(m)
+				}
+				if epR != 0 {
+					m := NewMoveFlags(b.EnPassant+7, b.EnPassant, FlagEnPassant)
+					b.MakeMove(m)
+					if !b.IsAttacked(kingSq, them) {
+						moves = append(moves, m)
+					}
+					b.UnmakeMove(m)
+				}
+			}
+		}
 	}
 
 	return moves

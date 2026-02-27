@@ -23,6 +23,8 @@ type MovePicker struct {
 	index       int
 	ply         int
 	skipQuiet   bool // For quiescence search
+	checkers    Bitboard
+	pinned      Bitboard
 }
 
 // MovePicker stages
@@ -37,6 +39,11 @@ const (
 	stageQuiets
 	stageBadCaptures
 	stageDone
+
+	// Evasion stages (used when in check)
+	stageEvasionTTMove
+	stageGenerateEvasions
+	stageEvasions
 )
 
 // NewMovePicker creates a new move picker for the main search
@@ -85,6 +92,29 @@ func (mp *MovePicker) InitQuiescence(b *Board, captHist *[13][64][7]int16) {
 	if mp.moves == nil {
 		mp.moves = make([]Move, 0, 32)
 		mp.scores = make([]int, 0, 32)
+	}
+}
+
+// InitEvasion resets a MovePicker for evasion mode (when in check).
+// Evasion moves are fully legal — no IsLegal filtering needed by the caller.
+func (mp *MovePicker) InitEvasion(b *Board, ttMove Move, ply int, checkers, pinned Bitboard,
+	history *[64][64]int32, contHist *[13][64]int16, captHist *[13][64][7]int16) {
+	mp.board = b
+	mp.ttMove = ttMove
+	mp.checkers = checkers
+	mp.pinned = pinned
+	mp.history = history
+	mp.contHist = contHist
+	mp.captHist = captHist
+	mp.ply = ply
+	mp.stage = stageEvasionTTMove
+	mp.index = 0
+	mp.skipQuiet = false
+	if mp.moves == nil {
+		mp.moves = make([]Move, 0, 32)
+		mp.scores = make([]int, 0, 32)
+		mp.badMoves = make([]Move, 0, 16)
+		mp.badScores = make([]int, 0, 16)
 	}
 }
 
@@ -175,6 +205,30 @@ func (mp *MovePicker) Next() Move {
 
 		case stageDone:
 			return NoMove
+
+		// Evasion stages
+		case stageEvasionTTMove:
+			mp.stage = stageGenerateEvasions
+			if mp.ttMove != NoMove && mp.board.IsPseudoLegal(mp.ttMove) {
+				pinned, checkers := mp.board.PinnedAndCheckers(mp.board.SideToMove)
+				if mp.board.IsLegal(mp.ttMove, pinned, checkers != 0) {
+					return mp.ttMove
+				}
+			}
+
+		case stageGenerateEvasions:
+			mp.generateAndScoreEvasions()
+			mp.stage = stageEvasions
+
+		case stageEvasions:
+			for mp.index < len(mp.moves) {
+				move := mp.pickBest()
+				if move == mp.ttMove {
+					continue // Already tried
+				}
+				return move
+			}
+			mp.stage = stageDone
 		}
 	}
 }
@@ -218,6 +272,41 @@ func (mp *MovePicker) generateAndScoreQuiets() {
 			piece := mp.board.Squares[mp.moves[i].From()]
 			score += int(mp.contHist[piece][mp.moves[i].To()])
 		}
+		mp.scores = append(mp.scores, score)
+	}
+	mp.index = 0
+}
+
+// generateAndScoreEvasions generates evasion moves and scores them.
+// Captures scored above quiets for natural ordering.
+func (mp *MovePicker) generateAndScoreEvasions() {
+	mp.moves = mp.board.GenerateEvasionsAppend(mp.moves[:0], mp.checkers, mp.pinned)
+	mp.scores = mp.scores[:0]
+
+	for i := 0; i < len(mp.moves); i++ {
+		m := mp.moves[i]
+		score := 0
+
+		if m.IsPromotion() {
+			if m.Flags() == FlagPromoteQ {
+				score = 9000
+			} else {
+				score = -1000 // underpromotions
+			}
+		} else if mp.board.Squares[m.To()] != Empty || m.Flags() == FlagEnPassant {
+			// Capture: MVV-LVA + capture history
+			score = 10000 + mp.mvvLva(m) + mp.captHistScore(m)
+		} else {
+			// Quiet: history + continuation history
+			if mp.history != nil {
+				score = int(mp.history[m.From()][m.To()])
+			}
+			if mp.contHist != nil {
+				piece := mp.board.Squares[m.From()]
+				score += int(mp.contHist[piece][m.To()])
+			}
+		}
+
 		mp.scores = append(mp.scores, score)
 	}
 	mp.index = 0
