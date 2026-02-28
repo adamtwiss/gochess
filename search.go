@@ -973,6 +973,22 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Save moved piece before MakeMove for consistent history indexing
 		movedPiece := b.Squares[move.From()]
 
+		// History-based pruning: prune quiet moves with deeply negative history at shallow depths
+		if ply > 0 && !inCheck && !improving && depth <= 3 &&
+			!isCap && !move.IsPromotion() &&
+			move != ttMove &&
+			move != killers[0] && move != killers[1] &&
+			move != counterMove &&
+			bestScore > -MateScore+100 {
+			histPruneScore := info.History[move.From()][move.To()]
+			if contHistPtr != nil {
+				histPruneScore += int32(contHistPtr[movedPiece][move.To()])
+			}
+			if histPruneScore < -2000*int32(depth) {
+				continue
+			}
+		}
+
 		b.MakeMove(move)
 
 		// Check extension: extend search by 1 ply when move gives check
