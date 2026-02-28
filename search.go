@@ -795,8 +795,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	if !inCheck {
 		// Reverse Futility Pruning (Static Null Move Pruning)
-		// If static eval is far above beta, prune the whole node
-		if depth <= 3 && ply > 0 {
+		// If static eval is far above beta, prune the whole node.
+		if depth <= 6 && ply > 0 {
 			margin := depth * 120
 			if staticEval-margin >= beta {
 				return staticEval - margin
