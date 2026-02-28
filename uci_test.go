@@ -210,20 +210,20 @@ func TestComputeSearchTime(t *testing.T) {
 		{"movetime", 5000, 0, 0, 0, 0, 0, false, White, 5000, 5000},
 		{"infinite", 0, 0, 0, 0, 0, 0, true, White, 0, 0},
 		{"no clock", 0, 0, 0, 0, 0, 0, false, White, 0, 0},
-		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 999, 2997},             // soft=29980/30=999, hard=3*999=2997 (20ms overhead)
-		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 999, 2997},             // soft=29980/30=999, hard=2997
-		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2499, 7497},           // soft=999+1500=2499, hard=7497
-		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 2998, 5996},               // soft=29980/10=2998, hard=2*2998=5996 (tournament TC)
-		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 66, 198},                     // soft=1980/30=66, hard=198
+		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 998, 2994},             // soft=29950/30=998, hard=3*998=2994 (50ms overhead)
+		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 998, 2994},             // soft=29950/30=998, hard=2994
+		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2498, 7494},           // soft=998+1500=2498, hard=7494
+		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 2995, 5990},               // soft=29950/10=2995, hard=2*2995=5990 (tournament TC)
+		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 65, 195},                     // soft=1950/30=65, hard=195
 		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 30},                     // soft=floor(10), hard=30
 		{"movetime overrides clock", 3000, 60000, 60000, 0, 0, 0, false, White, 3000, 3000},
-		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 32, 96},               // soft=980/30=32, hard=min(96,735)=96 (20ms overhead)
-		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 290, 290},          // soft=min(580/1,290)=290, hard capped by mtgCap, then floored to soft
+		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 31, 93},               // soft=950/30=31, hard=min(93,712)=93 (50ms overhead)
+		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 275, 275},          // soft=min(550/1,275)=275, hard capped by mtgCap, then floored to soft
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotSoft, gotHard := computeSearchTime(tt.movetime, tt.wtime, tt.btime, tt.winc, tt.binc, tt.movestogo, tt.infinite, tt.side)
+			gotSoft, gotHard := computeSearchTime(tt.movetime, tt.wtime, tt.btime, tt.winc, tt.binc, tt.movestogo, tt.infinite, tt.side, 50)
 			if gotSoft != tt.wantSoft {
 				t.Errorf("computeSearchTime() soft = %d, want %d", gotSoft, tt.wantSoft)
 			}

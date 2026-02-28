@@ -24,6 +24,7 @@ type UCIEngine struct {
 	tt           *TranspositionTable
 	hashSizeMB   int
 	threads      int // number of search threads (Lazy SMP)
+	moveOverhead int // ms safety margin for UCI communication + OS scheduling
 	searchInfo   *SearchInfo
 	searchMu     sync.Mutex
 	searchWg     sync.WaitGroup
@@ -48,11 +49,12 @@ func NewUCIEngineWithIO(in io.Reader, out io.Writer) *UCIEngine {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 	e := &UCIEngine{
-		hashSizeMB: 64,
-		threads:    1,
-		input:      scanner,
-		output:     out,
-		ponderOpt:  true,
+		hashSizeMB:   64,
+		threads:      1,
+		moveOverhead: 50,
+		input:        scanner,
+		output:       out,
+		ponderOpt:    true,
 	}
 	e.tt = NewTranspositionTable(e.hashSizeMB)
 	e.board.Reset()
@@ -109,6 +111,7 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("option name Hash type spin default 64 min 1 max 4096")
 	e.send("option name Threads type spin default 1 min 1 max 256")
 	e.send("option name Ponder type check default true")
+	e.send("option name Move Overhead type spin default 50 min 0 max 1000")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
 	e.send("uciok")
@@ -244,7 +247,7 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 		softMS, hardMS = 0, 0 // infinite during ponder
 	} else {
 		softMS, hardMS = computeSearchTime(params.movetime, params.wtime, params.btime,
-			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove)
+			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove, e.moveOverhead)
 	}
 
 	// Copy board for search goroutine (preserve game history for repetition detection)
@@ -398,7 +401,7 @@ func (e *UCIEngine) cmdPonderhit() {
 
 	p := e.ponderParams
 	softMS, hardMS := computeSearchTime(p.movetime, p.wtime, p.btime,
-		p.winc, p.binc, p.movestogo, p.infinite, e.ponderSide)
+		p.winc, p.binc, p.movestogo, p.infinite, e.ponderSide, e.moveOverhead)
 	phNow := time.Now()
 	if hardMS > 0 {
 		atomic.StoreInt64(&e.searchInfo.Deadline, phNow.Add(time.Duration(hardMS)*time.Millisecond).UnixNano())
@@ -458,6 +461,15 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 			n = 256
 		}
 		e.threads = n
+	} else if strings.EqualFold(name, "Move Overhead") {
+		n, err := strconv.Atoi(tokens[valueIdx])
+		if err != nil || n < 0 {
+			return
+		}
+		if n > 1000 {
+			n = 1000
+		}
+		e.moveOverhead = n
 	} else if strings.EqualFold(name, "Ponder") {
 		e.ponderOpt = strings.EqualFold(tokens[valueIdx], "true")
 	} else if strings.EqualFold(name, "OwnBook") {
@@ -490,15 +502,13 @@ func (e *UCIEngine) cmdDebug() {
 // Hard limit is never exceeded: ~3x soft for sudden death, ~2x for tournament TC
 // (movestogo > 0), capped at 75% remaining or 1/3 remaining respectively.
 // For movetime mode, soft == hard (no dynamic scaling).
-func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infinite bool, side Color) (int, int) {
+func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infinite bool, side Color, moveOverhead int) (int, int) {
 	if infinite {
 		return 0, 0
 	}
 	if movetime > 0 {
 		return movetime, movetime // fixed: soft == hard
 	}
-
-	const MoveOverhead = 20 // ms — accounts for UCI communication + OS scheduling
 
 	var timeLeft, inc int
 	if side == White {
@@ -514,7 +524,7 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 	}
 
 	// Subtract overhead from available time
-	timeLeft -= MoveOverhead
+	timeLeft -= moveOverhead
 	if timeLeft < 1 {
 		timeLeft = 1
 	}
