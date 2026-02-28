@@ -498,6 +498,8 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 		return movetime, movetime // fixed: soft == hard
 	}
 
+	const MoveOverhead = 20 // ms — accounts for UCI communication + OS scheduling
+
 	var timeLeft, inc int
 	if side == White {
 		timeLeft = wtime
@@ -509,6 +511,12 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 
 	if timeLeft <= 0 {
 		return 0, 0 // no clock info, rely on depth limit
+	}
+
+	// Subtract overhead from available time
+	timeLeft -= MoveOverhead
+	if timeLeft < 1 {
+		timeLeft = 1
 	}
 
 	movesLeft := movestogo
@@ -535,8 +543,13 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 	if movestogo > 0 {
 		// Tournament TC: tighter limits to avoid time trouble in later moves
 		hardAlloc = softAlloc * 2
-		// Never spend more than 1/3 of remaining time on a single move
-		mtgCap := timeLeft / 3
+		// Scale cap by moves remaining: generous early, tight late
+		// movestogo 40 → timeLeft*40%, movestogo 5 → timeLeft*22%
+		capPct := 20 + movestogo/2
+		if capPct > 40 {
+			capPct = 40
+		}
+		mtgCap := timeLeft * capPct / 100
 		if mtgCap < maxHard {
 			maxHard = mtgCap
 		}

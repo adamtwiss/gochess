@@ -653,7 +653,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	info.pvLen[ply] = 0
 
 	// Check time periodically
-	if info.Nodes&4095 == 0 {
+	if info.Nodes&1023 == 0 {
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
 			atomic.StoreInt32(&info.Stopped, 1)
 			return 0
@@ -1330,6 +1330,18 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 	}
 
 	info.Nodes++
+
+	// Check time periodically
+	if info.Nodes&1023 == 0 {
+		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
+			atomic.StoreInt32(&info.Stopped, 1)
+			return 0
+		}
+	}
+
+	if atomic.LoadInt32(&info.Stopped) != 0 {
+		return 0
+	}
 
 	// Precompute pinned pieces and checkers
 	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
