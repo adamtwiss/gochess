@@ -220,7 +220,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### Texel Tuner
 
-`cmd/tuner/main.go` — Two-phase system for optimizing ~1163 evaluation parameters.
+`cmd/tuner/main.go` — Two-phase system for optimizing ~1162 evaluation parameters.
 
 **Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;result` lines. Games run concurrently with independent Board+TT per game.
 

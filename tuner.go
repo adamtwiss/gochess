@@ -67,7 +67,7 @@ var (
 	idxPassedStart   int // passed pawn bonuses
 	idxPawnStart     int // pawn structure
 	idxKingAttack    int // king attack weights
-	idxSafeCheck     int // safe check bonuses + no-queen scale
+	idxSafeCheck     int // safe check bonuses (4 entries)
 	idxKingSafetyTbl int // king safety table (100 entries, MG only)
 	idxPawnShield    int // pawn shield constants (5 entries, MG only)
 	idxPawnStorm     int // pawn storm bonus (2x8 MG + 2x8 EG = 32 entries)
@@ -311,14 +311,15 @@ func (t *Tuner) initTunerParams() {
 	add("QueenAttackUnits", QueenAttackUnits, func(v int) { QueenAttackUnits = v })
 	add("QueenKingZoneBonus", QueenKingZoneBonus, func(v int) { QueenKingZoneBonus = v })
 
-	// === Safe check bonuses + no-queen scale ===
+	// === Safe check bonuses ===
+	// NoQueenAttackScale is intentionally excluded: it's multiplicative (penalty * scale / 128)
+	// and cannot be represented as an additive trace coefficient.
 	idxSafeCheck = len(t.Params)
 	addSection("Safe Check", idxSafeCheck)
 	add("SafeKnightCheckBonus", SafeKnightCheckBonus, func(v int) { SafeKnightCheckBonus = v })
 	add("SafeBishopCheckBonus", SafeBishopCheckBonus, func(v int) { SafeBishopCheckBonus = v })
 	add("SafeRookCheckBonus", SafeRookCheckBonus, func(v int) { SafeRookCheckBonus = v })
 	add("SafeQueenCheckBonus", SafeQueenCheckBonus, func(v int) { SafeQueenCheckBonus = v })
-	add("NoQueenAttackScale", NoQueenAttackScale, func(v int) { NoQueenAttackScale = v })
 
 	// === King safety table (100 entries, MG only) ===
 	idxKingSafetyTbl = len(t.Params)
@@ -2310,12 +2311,11 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 	}
 	w.WriteString("\n")
 
-	// Safe check bonuses + no-queen scale
+	// Safe check bonuses
 	w.WriteString("=== Safe Check ===\n")
 	safeCheckNames := []string{
 		"SafeKnightCheckBonus", "SafeBishopCheckBonus",
 		"SafeRookCheckBonus", "SafeQueenCheckBonus",
-		"NoQueenAttackScale",
 	}
 	for i, name := range safeCheckNames {
 		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxSafeCheck+i])))
