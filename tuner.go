@@ -70,7 +70,7 @@ var (
 	idxSafeCheck     int // safe check bonuses + no-queen scale
 	idxKingSafetyTbl int // king safety table (100 entries, MG only)
 	idxPawnShield    int // pawn shield constants (5 entries, MG only)
-	idxPawnStorm     int // pawn storm bonus (2x8 = 16 entries, MG only)
+	idxPawnStorm     int // pawn storm bonus (2x8 MG + 2x8 EG = 32 entries)
 	idxEndgameKing   int // endgame king activity (3 entries, EG only)
 	idxMisc          int // space, threats, castling, OCB
 )
@@ -338,7 +338,7 @@ func (t *Tuner) initTunerParams() {
 	add("missingShieldPawnAdvancedMG", missingShieldPawnAdvancedMG, func(v int) { missingShieldPawnAdvancedMG = v })
 	add("semiOpenFileNearKingMG", semiOpenFileNearKingMG, func(v int) { semiOpenFileNearKingMG = v })
 
-	// === Pawn Storm (2 x 8 = 16 entries, MG only) ===
+	// === Pawn Storm (2 x 8 MG + 2 x 8 EG = 32 entries) ===
 	idxPawnStorm = len(t.Params)
 	addSection("Pawn Storm", idxPawnStorm)
 	for opp := 0; opp < 2; opp++ {
@@ -351,6 +351,18 @@ func (t *Tuner) initTunerParams() {
 			}
 			add(fmt.Sprintf("PawnStormBonusMG[%s][%d]", oppLabel, r), PawnStormBonusMG[opp][r],
 				func(v int) { PawnStormBonusMG[o][rr] = v })
+		}
+	}
+	for opp := 0; opp < 2; opp++ {
+		o := opp
+		for r := 0; r < 8; r++ {
+			rr := r
+			oppLabel := "Opp"
+			if opp == 1 {
+				oppLabel = "Unp"
+			}
+			add(fmt.Sprintf("PawnStormBonusEG[%s][%d]", oppLabel, r), PawnStormBonusEG[opp][r],
+				func(v int) { PawnStormBonusEG[o][rr] = v })
 		}
 	}
 
@@ -1583,6 +1595,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 			}
 
 			addMG(idxPawnStorm+opposed*8+relRank, s)
+			addEG(idxPawnStorm+16+opposed*8+relRank, s)
 		}
 	}
 
@@ -2331,6 +2344,18 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 				w.WriteString(", ")
 			}
 			fmt.Fprintf(w, "%d", int(math.Round(t.Values[idxPawnStorm+opp*8+r])))
+		}
+		fmt.Fprintf(w, "}, // %s\n", oppLabels[opp])
+	}
+	w.WriteString("}\n")
+	w.WriteString("var PawnStormBonusEG = [2][8]int{\n")
+	for opp := 0; opp < 2; opp++ {
+		w.WriteString("\t{")
+		for r := 0; r < 8; r++ {
+			if r > 0 {
+				w.WriteString(", ")
+			}
+			fmt.Fprintf(w, "%d", int(math.Round(t.Values[idxPawnStorm+16+opp*8+r])))
 		}
 		fmt.Fprintf(w, "}, // %s\n", oppLabels[opp])
 	}

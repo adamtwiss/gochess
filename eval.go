@@ -145,13 +145,17 @@ var KingCornerPushEG = 10         // per center-distance unit of weaker king (st
 var PawnStormUnits = [8]int{0, 0, 0, 0, 1, 2, 3, 0}
 var PawnStormEnabled = false // disabled in favor of direct PawnStormBonusMG
 
-// Direct pawn storm MG bonus (NOT gated on attackerCount).
-// PawnStormBonusMG[opposed][relativeRank] gives centipawn bonus.
+// Direct pawn storm bonus (NOT gated on attackerCount).
+// PawnStormBonusMG/EG[opposed][relativeRank] gives centipawn bonus.
 // opposed=0: enemy pawn present on this file (blocked storm)
 // opposed=1: no enemy pawn on this file (open storm)
 var PawnStormBonusMG = [2][8]int{
-	{0, 0, 0, 3, 7, 13, 20, 0},  // Opposed
-	{0, 0, 3, 8, 15, 25, 40, 0}, // Unopposed
+	{0, 0, 0, 5, 10, 15, 22, 0},  // Opposed
+	{0, 0, 5, 12, 20, 28, 42, 0}, // Unopposed
+}
+var PawnStormBonusEG = [2][8]int{
+	{0, 0, 0, 2, 4, 6, 8, 0},   // Opposed
+	{0, 0, 2, 4, 8, 12, 16, 0}, // Unopposed
 }
 var PawnStormBonusEnabled = true
 
@@ -1076,7 +1080,7 @@ func (b *Board) evaluateThreats(color Color) (mg, eg int) {
 	return
 }
 
-// evaluatePawnStorm returns a direct MG bonus for friendly pawns advanced
+// evaluatePawnStorm returns a direct MG/EG bonus for friendly pawns advanced
 // toward the enemy king. Not gated on attacker count — provides signal even
 // when pieces haven't yet entered the king zone.
 func (b *Board) evaluatePawnStorm(color Color) (mg, eg int) {
@@ -1123,6 +1127,7 @@ func (b *Board) evaluatePawnStorm(color Color) (mg, eg int) {
 		}
 
 		mg += PawnStormBonusMG[opposed][relRank]
+		eg += PawnStormBonusEG[opposed][relRank]
 	}
 
 	return
