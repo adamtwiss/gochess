@@ -940,11 +940,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		givesCheck := b.InCheck()
 
 		// Futility pruning: at shallow depths, skip quiet moves that can't raise alpha
-		if staticEval > -Infinity && depth <= 2 && !inCheck && !givesCheck &&
+		if staticEval > -Infinity && depth <= 6 && !inCheck && !givesCheck &&
 			!isCap && !move.IsPromotion() &&
 			bestScore > -MateScore+100 {
-			futilityMargin := [3]int{0, 200, 400}
-			if staticEval+futilityMargin[depth] <= alpha {
+			if staticEval+depth*200 <= alpha {
 				b.UnmakeMove(move)
 				continue
 			}
