@@ -877,6 +877,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Check if capture BEFORE making the move
 		isCap := isCapture(move, b)
 
+		// SEE capture pruning: at shallow depths, prune captures that lose material
+		if isCap && ply > 0 && !inCheck && depth <= 6 &&
+			move != ttMove && bestScore > -MateScore+100 &&
+			!b.SEESign(move, -depth*100) {
+			continue
+		}
+
 		// SEE quiet pruning: compute SEE before MakeMove (doesn't modify board)
 		var seeQuietScore int
 		checkSEEQuiet := false
