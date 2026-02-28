@@ -487,7 +487,8 @@ func (e *UCIEngine) cmdDebug() {
 
 // computeSearchTime calculates soft and hard time allocations in milliseconds.
 // Soft limit is the base allocation where dynamic time management may stop early.
-// Hard limit (~3x soft, capped at 75% remaining) is never exceeded.
+// Hard limit is never exceeded: ~3x soft for sudden death, ~2x for tournament TC
+// (movestogo > 0), capped at 75% remaining or 1/3 remaining respectively.
 // For movetime mode, soft == hard (no dynamic scaling).
 func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infinite bool, side Color) (int, int) {
 	if infinite {
@@ -528,9 +529,18 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 		softAlloc = 10
 	}
 
-	// Hard limit: 3x soft, capped at 75% remaining
+	// Hard limit: 3x soft for sudden death, 2x for tournament TC
 	hardAlloc := softAlloc * 3
 	maxHard := timeLeft * 3 / 4
+	if movestogo > 0 {
+		// Tournament TC: tighter limits to avoid time trouble in later moves
+		hardAlloc = softAlloc * 2
+		// Never spend more than 1/3 of remaining time on a single move
+		mtgCap := timeLeft / 3
+		if mtgCap < maxHard {
+			maxHard = mtgCap
+		}
+	}
 	if hardAlloc > maxHard {
 		hardAlloc = maxHard
 	}

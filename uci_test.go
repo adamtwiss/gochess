@@ -213,12 +213,12 @@ func TestComputeSearchTime(t *testing.T) {
 		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 1000, 3000},             // soft=30000/30=1000, hard=3*1000=3000
 		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 1000, 3000},             // soft=30000/30=1000, hard=3000
 		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2500, 7500},           // soft=1000+1500=2500, hard=7500
-		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 3000, 9000},               // soft=30000/10=3000, hard=9000
+		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 3000, 6000},               // soft=30000/10=3000, hard=2*3000=6000 (tournament TC)
 		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 66, 198},                     // soft=2000/30=66, hard=198
 		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 30},                     // soft=floor(10), hard=30
 		{"movetime overrides clock", 3000, 60000, 60000, 0, 0, 0, false, White, 3000, 3000},
 		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 33, 99},               // soft=1000/30=33, hard=min(99,750)=99
-		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 300, 450},          // soft=min(600/1,300)=300, hard=min(900,450)=450
+		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 300, 300},          // soft=min(600/1,300)=300, hard=2*300=600 but mtgCap=200, so hard=soft=300
 	}
 
 	for _, tt := range tests {
