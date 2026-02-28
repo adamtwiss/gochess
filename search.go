@@ -1055,6 +1055,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					reduction--
 				}
 
+				// Reduce more at expected cut nodes (zero window, not first move)
+				if beta-alpha == 1 && moveCount > 1 {
+					reduction++
+				}
+
 				// Reduce less when the position is improving (eval > eval 2 plies ago)
 				if improving {
 					reduction--
