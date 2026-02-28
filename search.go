@@ -771,6 +771,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 			R += evalR
 		}
+		// Clamp so null-move search is at least depth 1 (not pure quiescence)
+		if depth-1-R < 1 {
+			R = depth - 2
+		}
 
 		b.MakeNullMove()
 		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info)
