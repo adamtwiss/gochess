@@ -728,6 +728,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// This replaces separate InCheck() + PinnedPieces() calls.
 	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
 	inCheck := checkers != 0
+	checkSq, discoverers := b.CheckData(b.SideToMove)
 
 	// Compute static eval for pruning and LMR improving detection.
 	// Stored per-ply so we can compare to 2 plies ago.
@@ -992,7 +993,23 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		b.MakeMove(move)
 
 		// Check extension: extend search by 1 ply when move gives check
-		givesCheck := b.InCheck()
+		var givesCheck bool
+		flags := move.Flags()
+		if flags == FlagEnPassant || flags == FlagCastle {
+			// Rare special cases: fall back to full check detection
+			givesCheck = b.InCheck()
+		} else {
+			// Piece type index: 1-6 (Pawn..King)
+			pt := int(movedPiece)
+			if pt > 6 {
+				pt -= 6 // Black piece → white piece type index
+			}
+			if move.IsPromotion() {
+				pt = flags - FlagPromoteN + 2 // FlagPromoteN=4→Knight(2), ..., FlagPromoteQ=7→Queen(5)
+			}
+			givesCheck = checkSq[pt]&SquareBB(move.To()) != 0 ||
+				discoverers&SquareBB(move.From()) != 0
+		}
 
 		// Futility pruning: at shallow depths, skip quiet moves that can't raise alpha
 		if staticEval > -Infinity && depth <= 6 && !inCheck && !givesCheck &&

@@ -450,6 +450,37 @@ func (b *Board) PinnedAndCheckers(us Color) (pinned, checkers Bitboard) {
 	return
 }
 
+// CheckData computes precomputed check information for the side to move.
+// checkSq[pt] = squares from which piece type pt directly checks the enemy king.
+// discoverers = our pieces that could give discovered check by moving.
+func (b *Board) CheckData(us Color) (checkSq [7]Bitboard, discoverers Bitboard) {
+	them := 1 - us
+	theirKingSq := b.Pieces[pieceOf(WhiteKing, them)].LSB()
+
+	// Direct check squares per piece type (indexed 1-6: Pawn..King)
+	checkSq[1] = PawnAttacks[them][theirKingSq]                    // Pawn
+	checkSq[2] = KnightAttacks[theirKingSq]                        // Knight
+	checkSq[3] = BishopAttacksBB(theirKingSq, b.AllPieces)         // Bishop
+	checkSq[4] = RookAttacksBB(theirKingSq, b.AllPieces)           // Rook
+	checkSq[5] = checkSq[3] | checkSq[4]                          // Queen
+	// checkSq[6] (King) stays 0 — king can't give direct check
+
+	// Discoverers: our pieces blocking our own sliders from attacking their king
+	ourRQ := b.Pieces[pieceOf(WhiteRook, us)] | b.Pieces[pieceOf(WhiteQueen, us)]
+	ourBQ := b.Pieces[pieceOf(WhiteBishop, us)] | b.Pieces[pieceOf(WhiteQueen, us)]
+	snipers := (RookAttacksBB(theirKingSq, 0) & ourRQ) | (BishopAttacksBB(theirKingSq, 0) & ourBQ)
+
+	for snipers != 0 {
+		sniperSq := snipers.PopLSB()
+		between := BetweenBB[theirKingSq][sniperSq] & b.AllPieces
+		// Exactly one piece between, and it's ours → discoverer
+		if between != 0 && between&(between-1) == 0 && between&b.Occupied[us] != 0 {
+			discoverers |= between
+		}
+	}
+	return
+}
+
 // IsLegal returns true if the move is legal (doesn't leave king in check).
 // pinned should be precomputed via PinnedPieces(). inCheck indicates whether
 // the side to move is currently in check (avoids recomputing).
