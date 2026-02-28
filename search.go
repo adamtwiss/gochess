@@ -953,11 +953,16 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Placed after MakeMove so we can exempt check-giving moves
 		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
 			!isCap && !move.IsPromotion() && !givesCheck &&
-			moveCount > lmpThreshold[depth] &&
 			bestScore > -MateScore+100 {
-			info.LMPPrunes++
-			b.UnmakeMove(move)
-			continue
+			lmpLimit := lmpThreshold[depth]
+			if improving && depth >= 3 {
+				lmpLimit += lmpLimit / 2 // Search 50% more moves when improving
+			}
+			if moveCount > lmpLimit {
+				info.LMPPrunes++
+				b.UnmakeMove(move)
+				continue
+			}
 		}
 
 		// SEE quiet pruning: prune quiet moves where piece lands on a losing square
