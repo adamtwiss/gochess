@@ -134,6 +134,14 @@ var (
 	PawnThreatRookEG  = 15
 	PawnThreatQueenMG = 30
 	PawnThreatQueenEG = 20
+
+	// Piece-on-piece threats (minor/rook attacking higher-value enemy pieces)
+	MinorThreatRookMG  = 8
+	MinorThreatRookEG  = 5
+	MinorThreatQueenMG = 12
+	MinorThreatQueenEG = 8
+	RookThreatQueenMG  = 10
+	RookThreatQueenEG  = 6
 )
 
 // Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
@@ -652,6 +660,19 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 			attackUnits += QueenAttackUnits + QueenKingZoneBonus*kzAttacks.Count()
 		}
 	}
+
+	// --- Piece-on-piece threats ---
+	// Minor pieces (knights/bishops) threatening enemy rooks and queens
+	minorAttacks := allKnightAttacks | allBishopAttacks
+	enemyRooks := b.Pieces[pieceOf(WhiteRook, enemy)]
+	enemyQueens := b.Pieces[pieceOf(WhiteQueen, enemy)]
+	mg += (minorAttacks & enemyRooks).Count() * MinorThreatRookMG
+	eg += (minorAttacks & enemyRooks).Count() * MinorThreatRookEG
+	mg += (minorAttacks & enemyQueens).Count() * MinorThreatQueenMG
+	eg += (minorAttacks & enemyQueens).Count() * MinorThreatQueenEG
+	// Rooks threatening enemy queens
+	mg += (allRookAttacks & enemyQueens).Count() * RookThreatQueenMG
+	eg += (allRookAttacks & enemyQueens).Count() * RookThreatQueenEG
 
 	// --- Safe check bonus ---
 	// Add attack units for pieces that can deliver checks on squares not

@@ -385,6 +385,12 @@ func (t *Tuner) initTunerParams() {
 	add("PawnThreatRookEG", PawnThreatRookEG, func(v int) { PawnThreatRookEG = v })
 	add("PawnThreatQueenMG", PawnThreatQueenMG, func(v int) { PawnThreatQueenMG = v })
 	add("PawnThreatQueenEG", PawnThreatQueenEG, func(v int) { PawnThreatQueenEG = v })
+	add("MinorThreatRookMG", MinorThreatRookMG, func(v int) { MinorThreatRookMG = v })
+	add("MinorThreatRookEG", MinorThreatRookEG, func(v int) { MinorThreatRookEG = v })
+	add("MinorThreatQueenMG", MinorThreatQueenMG, func(v int) { MinorThreatQueenMG = v })
+	add("MinorThreatQueenEG", MinorThreatQueenEG, func(v int) { MinorThreatQueenEG = v })
+	add("RookThreatQueenMG", RookThreatQueenMG, func(v int) { RookThreatQueenMG = v })
+	add("RookThreatQueenEG", RookThreatQueenEG, func(v int) { RookThreatQueenEG = v })
 	add("OCBScale", OCBScale, func(v int) { OCBScale = v })
 	add("TempoMG", TempoMG, func(v int) { TempoMG = v })
 	add("TempoEG", TempoEG, func(v int) { TempoEG = v })
@@ -1491,6 +1497,20 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 			addMG(idxKingSafetyTbl+attackUnits, s)
 		}
 		// Skip attackerCount == 1 case (eval divides by 3, can't represent cleanly)
+
+		// Piece-on-piece threats (reuse attack bitboards from king safety loop)
+		minorAttacks := allKnightAttacks | allBishopAttacks
+		enemyRooks := b.Pieces[pieceOf(WhiteRook, enemy)]
+		enemyQueens := b.Pieces[pieceOf(WhiteQueen, enemy)]
+		minorOnRook := int16((minorAttacks & enemyRooks).Count())
+		minorOnQueen := int16((minorAttacks & enemyQueens).Count())
+		rookOnQueen := int16((allRookAttacks & enemyQueens).Count())
+		addMG(miscBase+9, s*minorOnRook)   // MinorThreatRookMG
+		addEG(miscBase+10, s*minorOnRook)  // MinorThreatRookEG
+		addMG(miscBase+11, s*minorOnQueen) // MinorThreatQueenMG
+		addEG(miscBase+12, s*minorOnQueen) // MinorThreatQueenEG
+		addMG(miscBase+13, s*rookOnQueen)  // RookThreatQueenMG
+		addEG(miscBase+14, s*rookOnQueen)  // RookThreatQueenEG
 	}
 
 	// === Pawn shield (MG only) ===
@@ -1631,8 +1651,8 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 	if b.SideToMove == Black {
 		tempoSign = -1
 	}
-	addMG(miscBase+10, tempoSign) // TempoMG
-	addEG(miscBase+11, tempoSign) // TempoEG
+	addMG(miscBase+16, tempoSign) // TempoMG
+	addEG(miscBase+17, tempoSign) // TempoEG
 
 	// === Trade bonus ===
 	// In eval.go this is scaled by min(|score|, 500) / 500.
@@ -1659,10 +1679,10 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		pawnCoeff := int16((int(wPawns) - int(bPawns)) * absEval / 500)
 
 		// Add to both MG and EG with same coefficient to make phase-independent
-		addMG(miscBase+12, pieceCoeff) // TradePieceBonus
-		addEG(miscBase+12, pieceCoeff)
-		addMG(miscBase+13, pawnCoeff) // TradePawnBonus
-		addEG(miscBase+13, pawnCoeff)
+		addMG(miscBase+18, pieceCoeff) // TradePieceBonus
+		addEG(miscBase+18, pieceCoeff)
+		addMG(miscBase+19, pawnCoeff) // TradePawnBonus
+		addEG(miscBase+19, pawnCoeff)
 	}
 
 	trace.WScale, trace.BScale = b.endgameScale()
@@ -2381,6 +2401,9 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 		"PawnThreatMinorMG", "PawnThreatMinorEG",
 		"PawnThreatRookMG", "PawnThreatRookEG",
 		"PawnThreatQueenMG", "PawnThreatQueenEG",
+		"MinorThreatRookMG", "MinorThreatRookEG",
+		"MinorThreatQueenMG", "MinorThreatQueenEG",
+		"RookThreatQueenMG", "RookThreatQueenEG",
 		"OCBScale",
 		"TempoMG", "TempoEG",
 		"TradePieceBonus", "TradePawnBonus",
