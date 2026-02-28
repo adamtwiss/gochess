@@ -401,6 +401,10 @@ func (c *CLIEngine) cmdEval() {
 	wThMG, wThEG := c.board.evaluateThreats(White)
 	bThMG, bThEG := c.board.evaluateThreats(Black)
 
+	// Pawn storm
+	wStMG, wStEG := c.board.evaluatePawnStorm(White)
+	bStMG, bStEG := c.board.evaluatePawnStorm(Black)
+
 	// Castling rights (MG only)
 	wCastleMG := 0
 	bCastleMG := 0
@@ -434,16 +438,17 @@ func (c *CLIEngine) cmdEval() {
 	printRow("King Safety", wKsMG, wKsEG, bKsMG, bKsEG)
 	printRow("Space", wSpMG, wSpEG, bSpMG, bSpEG)
 	printRow("Threats", wThMG, wThEG, bThMG, bThEG)
+	printRow("Pawn Storm", wStMG, wStEG, bStMG, bStEG)
 	printRow("Castling", wCastleMG, 0, bCastleMG, 0)
 
 	fmt.Println(strings.Repeat("-", 76))
 
 	totalMG := (wPstMG - bPstMG) + (wPawnMG - bPawnMG) + (wPcMG - bPcMG) +
 		(wPpMG - bPpMG) + (wKsMG - bKsMG) + (wSpMG - bSpMG) +
-		(wThMG - bThMG) + (wCastleMG - bCastleMG)
+		(wThMG - bThMG) + (wStMG - bStMG) + (wCastleMG - bCastleMG)
 	totalEG := (wPstEG - bPstEG) + (wPawnEG - bPawnEG) + (wPcEG - bPcEG) +
 		(wPpEG - bPpEG) + (wKsEG - bKsEG) + (wSpEG - bSpEG) +
-		(wThEG - bThEG)
+		(wThEG - bThEG) + (wStEG - bStEG)
 
 	fmt.Printf("%-20s %8s %8s %8s %8s %8d %8d\n",
 		"Total", "", "", "", "", totalMG, totalEG)

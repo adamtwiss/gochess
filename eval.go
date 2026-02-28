@@ -141,9 +141,19 @@ var KingCenterBonusEG = -15       // per center-distance unit (penalty, both sid
 var KingProximityAdvantageEG = 5  // per unit closer to enemy king (stronger side)
 var KingCornerPushEG = 10         // per center-distance unit of weaker king (stronger side)
 
-// Pawn storm: attack units for friendly pawns advanced near enemy king, by relative rank
+// Pawn storm (legacy): attack units for friendly pawns advanced near enemy king, by relative rank
 var PawnStormUnits = [8]int{0, 0, 0, 0, 1, 2, 3, 0}
-var PawnStormEnabled = true
+var PawnStormEnabled = false // disabled in favor of direct PawnStormBonusMG
+
+// Direct pawn storm MG bonus (NOT gated on attackerCount).
+// PawnStormBonusMG[opposed][relativeRank] gives centipawn bonus.
+// opposed=0: enemy pawn present on this file (blocked storm)
+// opposed=1: no enemy pawn on this file (open storm)
+var PawnStormBonusMG = [2][8]int{
+	{0, 0, 0, 3, 7, 13, 20, 0},  // Opposed
+	{0, 0, 3, 8, 15, 25, 40, 0}, // Unopposed
+}
+var PawnStormBonusEnabled = true
 
 // Feature toggles for king safety improvements
 var SafeCheckEnabled = true
@@ -253,6 +263,10 @@ func (b *Board) Evaluate() int {
 	wTmg, wTeg := b.evaluateThreats(White)
 	bTmg, bTeg := b.evaluateThreats(Black)
 
+	// Pawn storm (direct bonus, not gated on attackerCount)
+	wSTmg, wSTeg := b.evaluatePawnStorm(White)
+	bSTmg, bSTeg := b.evaluatePawnStorm(Black)
+
 	// Endgame king distance heuristic
 	_, ekEG := b.evaluateEndgameKings()
 
@@ -278,6 +292,7 @@ func (b *Board) Evaluate() int {
 		wKSmg - bKSmg +
 		wSPmg - bSPmg +
 		wTmg - bTmg +
+		wSTmg - bSTmg +
 		castlingMG
 	eg := wEG - bEG +
 		wPeg - bPeg +
@@ -286,6 +301,7 @@ func (b *Board) Evaluate() int {
 		wKSeg - bKSeg +
 		wSPeg - bSPeg +
 		wTeg - bTeg +
+		wSTeg - bSTeg +
 		ekEG
 
 	// Tempo bonus for the side to move
@@ -1057,5 +1073,57 @@ func (b *Board) evaluateThreats(color Color) (mg, eg int) {
 	eg += (pawnAttacks & b.Pieces[pieceOf(WhiteRook, enemy)]).Count() * PawnThreatRookEG
 	mg += (pawnAttacks & b.Pieces[pieceOf(WhiteQueen, enemy)]).Count() * PawnThreatQueenMG
 	eg += (pawnAttacks & b.Pieces[pieceOf(WhiteQueen, enemy)]).Count() * PawnThreatQueenEG
+	return
+}
+
+// evaluatePawnStorm returns a direct MG bonus for friendly pawns advanced
+// toward the enemy king. Not gated on attacker count — provides signal even
+// when pieces haven't yet entered the king zone.
+func (b *Board) evaluatePawnStorm(color Color) (mg, eg int) {
+	if !PawnStormBonusEnabled {
+		return
+	}
+
+	enemy := color ^ 1
+	friendlyPawns := b.Pieces[pieceOf(WhitePawn, color)]
+	enemyPawns := b.Pieces[pieceOf(WhitePawn, enemy)]
+	enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
+
+	enemyKingFile := enemyKingSq.File()
+	startFile := enemyKingFile - 1
+	if startFile < 0 {
+		startFile = 0
+	}
+	endFile := enemyKingFile + 1
+	if endFile > 7 {
+		endFile = 7
+	}
+
+	for f := startFile; f <= endFile; f++ {
+		filePawns := friendlyPawns & FileMasks[f]
+		if filePawns == 0 {
+			continue
+		}
+		// Most advanced pawn on this file
+		var advancedSq Square
+		if color == White {
+			advancedSq = filePawns.MSB()
+		} else {
+			advancedSq = filePawns.LSB()
+		}
+		relRank := advancedSq.Rank()
+		if color == Black {
+			relRank = 7 - relRank
+		}
+
+		// Determine if file is opposed (enemy pawn present)
+		opposed := 0
+		if enemyPawns&FileMasks[f] == 0 {
+			opposed = 1 // unopposed
+		}
+
+		mg += PawnStormBonusMG[opposed][relRank]
+	}
+
 	return
 }

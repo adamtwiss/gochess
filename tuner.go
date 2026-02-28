@@ -70,6 +70,7 @@ var (
 	idxSafeCheck     int // safe check bonuses + no-queen scale
 	idxKingSafetyTbl int // king safety table (100 entries, MG only)
 	idxPawnShield    int // pawn shield constants (5 entries, MG only)
+	idxPawnStorm     int // pawn storm bonus (2x8 = 16 entries, MG only)
 	idxEndgameKing   int // endgame king activity (3 entries, EG only)
 	idxMisc          int // space, threats, castling, OCB
 )
@@ -329,6 +330,22 @@ func (t *Tuner) initTunerParams() {
 	add("missingShieldPawnMG", missingShieldPawnMG, func(v int) { missingShieldPawnMG = v })
 	add("missingShieldPawnAdvancedMG", missingShieldPawnAdvancedMG, func(v int) { missingShieldPawnAdvancedMG = v })
 	add("semiOpenFileNearKingMG", semiOpenFileNearKingMG, func(v int) { semiOpenFileNearKingMG = v })
+
+	// === Pawn Storm (2 x 8 = 16 entries, MG only) ===
+	idxPawnStorm = len(t.Params)
+	addSection("Pawn Storm", idxPawnStorm)
+	for opp := 0; opp < 2; opp++ {
+		o := opp
+		for r := 0; r < 8; r++ {
+			rr := r
+			oppLabel := "Opp"
+			if opp == 1 {
+				oppLabel = "Unp"
+			}
+			add(fmt.Sprintf("PawnStormBonusMG[%s][%d]", oppLabel, r), PawnStormBonusMG[opp][r],
+				func(v int) { PawnStormBonusMG[o][rr] = v })
+		}
+	}
 
 	// === Endgame King Activity (3 entries, EG only) ===
 	idxEndgameKing = len(t.Params)
@@ -1500,6 +1517,52 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		}
 	}
 
+	// === Pawn Storm (MG-only, direct bonus) ===
+	for color := Color(0); color <= 1; color++ {
+		s := int16(1)
+		if color == Black {
+			s = -1
+		}
+		enemy := color ^ 1
+		friendlyPawns := b.Pieces[pieceOf(WhitePawn, color)]
+		enemyPawns := b.Pieces[pieceOf(WhitePawn, enemy)]
+		enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
+
+		enemyKingFile := enemyKingSq.File()
+		stFile := enemyKingFile - 1
+		if stFile < 0 {
+			stFile = 0
+		}
+		eFile := enemyKingFile + 1
+		if eFile > 7 {
+			eFile = 7
+		}
+
+		for f := stFile; f <= eFile; f++ {
+			filePawns := friendlyPawns & FileMasks[f]
+			if filePawns == 0 {
+				continue
+			}
+			var advancedSq Square
+			if color == White {
+				advancedSq = filePawns.MSB()
+			} else {
+				advancedSq = filePawns.LSB()
+			}
+			relRank := advancedSq.Rank()
+			if color == Black {
+				relRank = 7 - relRank
+			}
+
+			opposed := 0
+			if enemyPawns&FileMasks[f] == 0 {
+				opposed = 1 // unopposed
+			}
+
+			addMG(idxPawnStorm+opposed*8+relRank, s)
+		}
+	}
+
 	// === Endgame King Activity ===
 	{
 		wKingSq := b.Pieces[WhiteKing].LSB()
@@ -2217,6 +2280,22 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxPawnShield+i])))
 	}
 	w.WriteString("\n")
+
+	// Pawn storm
+	w.WriteString("=== Pawn Storm ===\n")
+	w.WriteString("var PawnStormBonusMG = [2][8]int{\n")
+	oppLabels := []string{"Opposed", "Unopposed"}
+	for opp := 0; opp < 2; opp++ {
+		w.WriteString("\t{")
+		for r := 0; r < 8; r++ {
+			if r > 0 {
+				w.WriteString(", ")
+			}
+			fmt.Fprintf(w, "%d", int(math.Round(t.Values[idxPawnStorm+opp*8+r])))
+		}
+		fmt.Fprintf(w, "}, // %s\n", oppLabels[opp])
+	}
+	w.WriteString("}\n\n")
 
 	// Endgame King
 	w.WriteString("=== Endgame King ===\n")
