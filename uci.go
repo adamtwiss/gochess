@@ -111,7 +111,7 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("option name Hash type spin default 64 min 1 max 4096")
 	e.send("option name Threads type spin default 1 min 1 max 256")
 	e.send("option name Ponder type check default true")
-	e.send("option name Move Overhead type spin default 50 min 0 max 1000")
+	e.send("option name MoveOverhead type spin default 50 min 0 max 1000")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
 	e.send("uciok")
@@ -461,7 +461,7 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 			n = 256
 		}
 		e.threads = n
-	} else if strings.EqualFold(name, "Move Overhead") {
+	} else if strings.EqualFold(name, "MoveOverhead") {
 		n, err := strconv.Atoi(tokens[valueIdx])
 		if err != nil || n < 0 {
 			return
