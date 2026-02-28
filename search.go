@@ -729,36 +729,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
 	inCheck := checkers != 0
 
-	// Internal Iterative Reduction: reduce depth when no TT move exists.
-	// Searching without a good move to try first is less efficient.
-	if IIREnabled && depth >= 5 && ttMove == NoMove && !inCheck {
-		depth--
-	}
-
-	// Null-move pruning
-	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
-	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
-	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 {
-		R := 2 // Reduction factor
-		if depth > 6 {
-			R = 3
-		}
-
-		b.MakeNullMove()
-		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info)
-		b.UnmakeNullMove()
-
-		if atomic.LoadInt32(&info.Stopped) != 0 {
-			return 0
-		}
-
-		if score >= beta {
-			return beta // Null-move cutoff
-		}
-	}
-
 	// Compute static eval for pruning and LMR improving detection.
 	// Stored per-ply so we can compare to 2 plies ago.
+	// Computed early because NMP, RFP, razoring, and futility all need it.
 	staticEval := -Infinity
 	improving := false
 	if !inCheck {
@@ -772,7 +745,55 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if ply >= 2 {
 			improving = staticEval > info.StaticEvals[ply-2]
 		}
+	} else {
+		if ply <= MaxPly {
+			info.StaticEvals[ply] = -Infinity
+		}
+	}
 
+	// Internal Iterative Reduction: reduce depth when no TT move exists.
+	// Searching without a good move to try first is less efficient.
+	if IIREnabled && depth >= 5 && ttMove == NoMove && !inCheck {
+		depth--
+	}
+
+	// Null-move pruning
+	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
+	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
+	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 {
+		// Adaptive reduction: scales with depth and eval margin above beta
+		R := 3 + depth/3
+		if staticEval > beta {
+			evalR := int((staticEval - beta) / 200)
+			if evalR > 3 {
+				evalR = 3
+			}
+			R += evalR
+		}
+
+		b.MakeNullMove()
+		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info)
+		b.UnmakeNullMove()
+
+		if atomic.LoadInt32(&info.Stopped) != 0 {
+			return 0
+		}
+
+		if score >= beta {
+			// Verification search at high depths to guard against zugzwang.
+			// Re-search at reduced depth without null move to confirm the cutoff.
+			if depth >= 12 {
+				vScore := b.negamax(depth-1-R, ply, beta-1, beta, info)
+				if vScore >= beta {
+					return beta
+				}
+			} else {
+				return beta
+			}
+		}
+	}
+
+	if !inCheck {
 		// Reverse Futility Pruning (Static Null Move Pruning)
 		// If static eval is far above beta, prune the whole node
 		if depth <= 3 && ply > 0 {
@@ -791,10 +812,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					return score
 				}
 			}
-		}
-	} else {
-		if ply <= MaxPly {
-			info.StaticEvals[ply] = -Infinity
 		}
 	}
 
