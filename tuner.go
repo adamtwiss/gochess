@@ -259,17 +259,14 @@ func (t *Tuner) initTunerParams() {
 		add(fmt.Sprintf("pawnAdvancementEG[%d]", i), pawnAdvancementEG[i],
 			func(v int) { pawnAdvancementEG[ii] = v })
 	}
-	// Note: doubled/isolated/backward/connected are const in the engine.
-	// We duplicate them as tunable vars here. The tuner output will show
-	// updated values the user can substitute.
-	add("doubledPawnMG", doubledPawnMG, nil)
-	add("doubledPawnEG", doubledPawnEG, nil)
-	add("isolatedPawnMG", isolatedPawnMG, nil)
-	add("isolatedPawnEG", isolatedPawnEG, nil)
-	add("backwardPawnMG", backwardPawnMG, nil)
-	add("backwardPawnEG", backwardPawnEG, nil)
-	add("connectedPawnMG", connectedPawnMG, nil)
-	add("connectedPawnEG", connectedPawnEG, nil)
+	add("doubledPawnMG", doubledPawnMG, func(v int) { doubledPawnMG = v })
+	add("doubledPawnEG", doubledPawnEG, func(v int) { doubledPawnEG = v })
+	add("isolatedPawnMG", isolatedPawnMG, func(v int) { isolatedPawnMG = v })
+	add("isolatedPawnEG", isolatedPawnEG, func(v int) { isolatedPawnEG = v })
+	add("backwardPawnMG", backwardPawnMG, func(v int) { backwardPawnMG = v })
+	add("backwardPawnEG", backwardPawnEG, func(v int) { backwardPawnEG = v })
+	add("connectedPawnMG", connectedPawnMG, func(v int) { connectedPawnMG = v })
+	add("connectedPawnEG", connectedPawnEG, func(v int) { connectedPawnEG = v })
 	add("PawnMajorityMG", PawnMajorityMG, func(v int) { PawnMajorityMG = v })
 	add("PawnMajorityEG", PawnMajorityEG, func(v int) { PawnMajorityEG = v })
 	for i := 0; i < 8; i++ {
@@ -278,6 +275,13 @@ func (t *Tuner) initTunerParams() {
 			func(v int) { queensidePawnAdvMG[ii] = v })
 		add(fmt.Sprintf("queensidePawnAdvEG[%d]", i), queensidePawnAdvEG[i],
 			func(v int) { queensidePawnAdvEG[ii] = v })
+	}
+	for i := 0; i < 8; i++ {
+		ii := i
+		add(fmt.Sprintf("candidatePassedMG[%d]", i), candidatePassedMG[i],
+			func(v int) { candidatePassedMG[ii] = v })
+		add(fmt.Sprintf("candidatePassedEG[%d]", i), candidatePassedEG[i],
+			func(v int) { candidatePassedEG[ii] = v })
 	}
 
 	// === King attack weights ===
@@ -1117,6 +1121,16 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 			if PassedPawnMask[color][sq]&enemyPawns == 0 {
 				addMG(base+relativeRank*2, s)   // passedPawnMG[relativeRank]
 				addEG(base+relativeRank*2+1, s) // passedPawnEG[relativeRank]
+			} else if CandidatePassedEnabled {
+				// Candidate passed pawn
+				if ForwardFileMask[color][sq]&enemyPawns == 0 {
+					adjSentries := (PassedPawnMask[color][sq] & AdjacentFiles[file] & enemyPawns).Count()
+					friendlyAdj := (AdjacentFiles[file] & allFriendlyPawns).Count()
+					if friendlyAdj >= adjSentries {
+						addMG(base+58+relativeRank*2, s)   // candidatePassedMG[relativeRank]
+						addEG(base+58+relativeRank*2+1, s) // candidatePassedEG[relativeRank]
+					}
+				}
 			}
 
 			// Doubled
@@ -2065,14 +2079,14 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 	}
 	w.WriteString("}\n")
 
-	fmt.Fprintf(w, "const doubledPawnMG = %d\n", int(math.Round(t.Values[base+32])))
-	fmt.Fprintf(w, "const doubledPawnEG = %d\n", int(math.Round(t.Values[base+33])))
-	fmt.Fprintf(w, "const isolatedPawnMG = %d\n", int(math.Round(t.Values[base+34])))
-	fmt.Fprintf(w, "const isolatedPawnEG = %d\n", int(math.Round(t.Values[base+35])))
-	fmt.Fprintf(w, "const backwardPawnMG = %d\n", int(math.Round(t.Values[base+36])))
-	fmt.Fprintf(w, "const backwardPawnEG = %d\n", int(math.Round(t.Values[base+37])))
-	fmt.Fprintf(w, "const connectedPawnMG = %d\n", int(math.Round(t.Values[base+38])))
-	fmt.Fprintf(w, "const connectedPawnEG = %d\n", int(math.Round(t.Values[base+39])))
+	fmt.Fprintf(w, "var doubledPawnMG = %d\n", int(math.Round(t.Values[base+32])))
+	fmt.Fprintf(w, "var doubledPawnEG = %d\n", int(math.Round(t.Values[base+33])))
+	fmt.Fprintf(w, "var isolatedPawnMG = %d\n", int(math.Round(t.Values[base+34])))
+	fmt.Fprintf(w, "var isolatedPawnEG = %d\n", int(math.Round(t.Values[base+35])))
+	fmt.Fprintf(w, "var backwardPawnMG = %d\n", int(math.Round(t.Values[base+36])))
+	fmt.Fprintf(w, "var backwardPawnEG = %d\n", int(math.Round(t.Values[base+37])))
+	fmt.Fprintf(w, "var connectedPawnMG = %d\n", int(math.Round(t.Values[base+38])))
+	fmt.Fprintf(w, "var connectedPawnEG = %d\n", int(math.Round(t.Values[base+39])))
 	fmt.Fprintf(w, "var PawnMajorityMG = %d\n", int(math.Round(t.Values[base+40])))
 	fmt.Fprintf(w, "var PawnMajorityEG = %d\n", int(math.Round(t.Values[base+41])))
 
@@ -2090,6 +2104,23 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 			w.WriteString(", ")
 		}
 		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+42+i*2+1])))
+	}
+	w.WriteString("}\n")
+
+	w.WriteString("var candidatePassedMG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+58+i*2])))
+	}
+	w.WriteString("}\n")
+	w.WriteString("var candidatePassedEG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+58+i*2+1])))
 	}
 	w.WriteString("}\n")
 	w.WriteString("\n")

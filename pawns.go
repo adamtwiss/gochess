@@ -182,7 +182,7 @@ func init() {
 var passedPawnMG = [8]int{0, 10, 10, 15, 25, 40, 60, 0} // by rank (0=rank1, 7=rank8)
 var passedPawnEG = [8]int{0, 20, 20, 30, 50, 90, 150, 0}
 
-const (
+var (
 	doubledPawnMG   = -10
 	doubledPawnEG   = -10
 	isolatedPawnMG  = -15
