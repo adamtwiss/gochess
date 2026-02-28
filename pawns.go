@@ -214,6 +214,12 @@ var PawnMajorityEnabled = true
 var queensidePawnAdvMG = [8]int{0, 0, 0, 2, 7, 12, 20, 0}
 var queensidePawnAdvEG = [8]int{0, 0, 0, 3, 5, 10, 18, 0}
 
+// Pawn lever: bonus for a pawn that can advance one square to attack an enemy pawn.
+// Creates tension, opens lines, and is the mechanism behind most strategic pawn advances.
+var pawnLeverMG = [8]int{0, 0, 0, 5, 8, 5, 0, 0}
+var pawnLeverEG = [8]int{0, 0, 0, 3, 5, 3, 0, 0}
+var PawnLeverEnabled = true
+
 // evaluatePawnStructure evaluates pawn structure for one color.
 // Returns mg and eg scores and a bitboard of passed pawns.
 func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) {
@@ -300,6 +306,22 @@ func evaluatePawnStructure(b *Board, color Color) (mg, eg int, passed Bitboard) 
 		if file <= 2 {
 			mg += queensidePawnAdvMG[relativeRank]
 			eg += queensidePawnAdvEG[relativeRank]
+		}
+
+		// Pawn lever: pawn can advance to attack an enemy pawn
+		if PawnLeverEnabled {
+			var aheadSq Square
+			if color == White {
+				aheadSq = sq + 8
+			} else {
+				aheadSq = sq - 8
+			}
+			if aheadSq >= 0 && aheadSq < 64 {
+				if PawnAttacks[color][aheadSq]&enemyPawns != 0 {
+					mg += pawnLeverMG[relativeRank]
+					eg += pawnLeverEG[relativeRank]
+				}
+			}
 		}
 	}
 

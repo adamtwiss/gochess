@@ -291,6 +291,13 @@ func (t *Tuner) initTunerParams() {
 		add(fmt.Sprintf("candidatePassedEG[%d]", i), candidatePassedEG[i],
 			func(v int) { candidatePassedEG[ii] = v })
 	}
+	for i := 0; i < 8; i++ {
+		ii := i
+		add(fmt.Sprintf("pawnLeverMG[%d]", i), pawnLeverMG[i],
+			func(v int) { pawnLeverMG[ii] = v })
+		add(fmt.Sprintf("pawnLeverEG[%d]", i), pawnLeverEG[i],
+			func(v int) { pawnLeverEG[ii] = v })
+	}
 
 	// === King attack weights ===
 	idxKingAttack = len(t.Params)
@@ -1212,6 +1219,22 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 			if file <= 2 {
 				addMG(base+42+relativeRank*2, s)   // queensidePawnAdvMG[relativeRank]
 				addEG(base+42+relativeRank*2+1, s) // queensidePawnAdvEG[relativeRank]
+			}
+
+			// Pawn lever
+			if PawnLeverEnabled {
+				var aheadSq Square
+				if color == White {
+					aheadSq = sq + 8
+				} else {
+					aheadSq = sq - 8
+				}
+				if aheadSq >= 0 && aheadSq < 64 {
+					if PawnAttacks[color][aheadSq]&enemyPawns != 0 {
+						addMG(base+74+relativeRank*2, s)   // pawnLeverMG[relativeRank]
+						addEG(base+74+relativeRank*2+1, s) // pawnLeverEG[relativeRank]
+					}
+				}
 			}
 		}
 
@@ -2221,6 +2244,22 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 			w.WriteString(", ")
 		}
 		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+58+i*2+1])))
+	}
+	w.WriteString("}\n")
+	w.WriteString("var pawnLeverMG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+74+i*2])))
+	}
+	w.WriteString("}\n")
+	w.WriteString("var pawnLeverEG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+74+i*2+1])))
 	}
 	w.WriteString("}\n")
 	w.WriteString("\n")
