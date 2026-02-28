@@ -365,11 +365,12 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 				break // soft stop
 			}
 
-			// Also check if next iteration would exceed hard deadline
+			// Also check if next iteration would exceed hard deadline.
+			// Use 2x last iteration time as estimate (exponential branching).
 			if hardDL > 0 {
 				remaining := hardDL - now
 				iterElapsed := now - iterStart.UnixNano()
-				if remaining > 0 && remaining < iterElapsed {
+				if remaining > 0 && remaining < 2*iterElapsed {
 					break
 				}
 			}
@@ -377,7 +378,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			// No soft deadline: existing behavior (EPD/benchmark/movetime/depth<4)
 			remaining := hardDL - now
 			iterElapsed := now - iterStart.UnixNano()
-			if remaining > 0 && remaining < iterElapsed {
+			if remaining > 0 && remaining < 2*iterElapsed {
 				break
 			}
 		}

@@ -549,7 +549,15 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 
 	// Hard limit: 3x soft for sudden death, 2x for tournament TC
 	hardAlloc := softAlloc * 3
-	maxHard := timeLeft * 3 / 4
+	// Cap hard limit: use the lesser of timeLeft/4+inc (conservative with
+	// increment) and timeLeft*3/4 (absolute safety). The /4+inc formula
+	// ensures we never blow the bank when time is low but increment provides
+	// a steady stream.
+	maxHard := timeLeft/4 + inc
+	absMax := timeLeft * 3 / 4
+	if maxHard > absMax {
+		maxHard = absMax
+	}
 	if movestogo > 0 {
 		// Tournament TC: tighter limits to avoid time trouble in later moves
 		hardAlloc = softAlloc * 2

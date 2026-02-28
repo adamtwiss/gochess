@@ -215,7 +215,7 @@ func TestComputeSearchTime(t *testing.T) {
 		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2498, 7494},           // soft=998+1500=2498, hard=7494
 		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 2995, 5990},               // soft=29950/10=2995, hard=2*2995=5990 (tournament TC)
 		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 65, 195},                     // soft=1950/30=65, hard=195
-		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 30},                     // soft=floor(10), hard=30
+		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 12},                     // soft=floor(10), hard=12 (capped at timeLeft/4)
 		{"movetime overrides clock", 3000, 60000, 60000, 0, 0, 0, false, White, 3000, 3000},
 		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 31, 93},               // soft=950/30=31, hard=min(93,712)=93 (50ms overhead)
 		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 275, 275},          // soft=min(550/1,275)=275, hard capped by mtgCap, then floored to soft
