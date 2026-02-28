@@ -91,6 +91,10 @@ var (
 	RookBehindPassedMG = 15
 	RookBehindPassedEG = 25
 
+	// Passed pawn: enemy piece blocking the stop square (partially cancels base bonus)
+	PassedPawnBlockedMG = [8]int{0, 0, 0, -5, -10, -15, -20, 0}
+	PassedPawnBlockedEG = [8]int{0, -5, -5, -10, -20, -35, -50, 0}
+
 	// King attack unit weights (base per attacker + bonus per king-zone square)
 	KnightAttackUnits   = 7
 	KnightKingZoneBonus = 1
@@ -840,15 +844,29 @@ func (b *Board) evaluatePassedPawns(color Color, pawnEntry *PawnEntry) (mg, eg i
 			aheadSq = sq - 8
 		}
 
+		// 2a. Blocked passer penalty (enemy piece on stop square)
+		if aheadSq >= 0 && aheadSq < 64 && b.AllPieces.IsSet(aheadSq) {
+			blocker := b.Squares[aheadSq]
+			if blocker.Color() != color {
+				mg += PassedPawnBlockedMG[relRank]
+				eg += PassedPawnBlockedEG[relRank]
+			}
+		}
+
+		// 2b. Not blocked + safe advance (rank-scaled)
 		notBlocked := aheadSq >= 0 && aheadSq < 64 && !b.AllPieces.IsSet(aheadSq)
 		if notBlocked {
-			mg += PassedPawnNotBlockedMG[relRank]
-			eg += PassedPawnNotBlockedEG[relRank]
+			enemyControls := b.IsAttacked(aheadSq, 1-color)
+			safeAdvance := !enemyControls || b.IsAttacked(aheadSq, color)
+			if safeAdvance {
+				mg += PassedPawnNotBlockedMG[relRank]
+				eg += PassedPawnNotBlockedEG[relRank]
 
-			// 3. Free path: entire path to promotion is clear
-			if ForwardFileMask[color][sq]&b.AllPieces == 0 {
-				mg += PassedPawnFreePathMG[relRank]
-				eg += PassedPawnFreePathEG[relRank]
+				// 3. Free path: entire path to promotion is clear
+				if ForwardFileMask[color][sq]&b.AllPieces == 0 {
+					mg += PassedPawnFreePathMG[relRank]
+					eg += PassedPawnFreePathEG[relRank]
+				}
 			}
 		}
 

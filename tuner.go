@@ -241,6 +241,13 @@ func (t *Tuner) initTunerParams() {
 	add("PassedPawnConnectedEG", PassedPawnConnectedEG, func(v int) { PassedPawnConnectedEG = v })
 	add("RookBehindPassedMG", RookBehindPassedMG, func(v int) { RookBehindPassedMG = v })
 	add("RookBehindPassedEG", RookBehindPassedEG, func(v int) { RookBehindPassedEG = v })
+	for i := 0; i < 8; i++ {
+		ii := i
+		add(fmt.Sprintf("PassedPawnBlockedMG[%d]", i), PassedPawnBlockedMG[i],
+			func(v int) { PassedPawnBlockedMG[ii] = v })
+		add(fmt.Sprintf("PassedPawnBlockedEG[%d]", i), PassedPawnBlockedEG[i],
+			func(v int) { PassedPawnBlockedEG[ii] = v })
+	}
 
 	// === Pawn structure ===
 	idxPawnStart = len(t.Params)
@@ -1020,7 +1027,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 				relRank = 7 - rank
 			}
 
-			// Not blocked (rank-indexed)
+			// Not blocked / blocked penalty (rank-indexed)
 			var aheadSq Square
 			if color == White {
 				aheadSq = sq + 8
@@ -1028,15 +1035,28 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 				aheadSq = sq - 8
 			}
 
+			// Blocked passer penalty (enemy piece on stop square)
+			if aheadSq >= 0 && aheadSq < 64 && b.AllPieces.IsSet(aheadSq) {
+				blocker := b.Squares[aheadSq]
+				if blocker.Color() != color {
+					addMG(base+48+relRank*2, s)   // PassedPawnBlockedMG[relRank]
+					addEG(base+48+relRank*2+1, s) // PassedPawnBlockedEG[relRank]
+				}
+			}
+
 			notBlocked := aheadSq >= 0 && aheadSq < 64 && !b.AllPieces.IsSet(aheadSq)
 			if notBlocked {
-				addMG(base+relRank*2, s)   // PassedPawnNotBlockedMG[relRank]
-				addEG(base+relRank*2+1, s) // PassedPawnNotBlockedEG[relRank]
+				enemyControls := b.IsAttacked(aheadSq, 1-color)
+				safeAdvance := !enemyControls || b.IsAttacked(aheadSq, color)
+				if safeAdvance {
+					addMG(base+relRank*2, s)   // PassedPawnNotBlockedMG[relRank]
+					addEG(base+relRank*2+1, s) // PassedPawnNotBlockedEG[relRank]
 
-				// Free path
-				if ForwardFileMask[color][sq]&b.AllPieces == 0 {
-					addMG(base+16+relRank*2, s)   // PassedPawnFreePathMG[relRank]
-					addEG(base+16+relRank*2+1, s)  // PassedPawnFreePathEG[relRank]
+					// Free path
+					if ForwardFileMask[color][sq]&b.AllPieces == 0 {
+						addMG(base+16+relRank*2, s)   // PassedPawnFreePathMG[relRank]
+						addEG(base+16+relRank*2+1, s) // PassedPawnFreePathEG[relRank]
+					}
 				}
 			}
 
@@ -2040,6 +2060,23 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 	fmt.Fprintf(w, "var PassedPawnConnectedEG = %d\n", int(math.Round(t.Values[base+45])))
 	fmt.Fprintf(w, "var RookBehindPassedMG = %d\n", int(math.Round(t.Values[base+46])))
 	fmt.Fprintf(w, "var RookBehindPassedEG = %d\n", int(math.Round(t.Values[base+47])))
+
+	w.WriteString("var PassedPawnBlockedMG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+48+i*2])))
+	}
+	w.WriteString("}\n")
+	w.WriteString("var PassedPawnBlockedEG = [8]int{")
+	for i := 0; i < 8; i++ {
+		if i > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[base+48+i*2+1])))
+	}
+	w.WriteString("}\n")
 	w.WriteString("\n")
 
 	// Pawn structure
