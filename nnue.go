@@ -52,6 +52,11 @@ type NNUENet struct {
 	// Output layer: [hidden2_neuron]
 	OutputWeights [NNUEHidden2Size]int16
 	OutputBias    int32
+
+	// Transposed hidden weights for SIMD forward pass: [output][input]
+	// Layout: HWT[j*(HiddenSize*2)+i] = HiddenWeights[i][j]
+	// Populated by PrepareWeights(), nil when SIMD not available.
+	HWT []int16
 }
 
 // NNUEAccumulator holds per-position accumulator state.
@@ -193,13 +198,21 @@ func (net *NNUENet) AddFeature(acc *NNUEAccumulator, piece Piece, sq Square, wKi
 	bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.White[i] += net.InputWeights[wIdx][i]
+		if nnueUseAVX2 {
+			nnueAccAdd256(&acc.White[0], &net.InputWeights[wIdx][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.White[i] += net.InputWeights[wIdx][i]
+			}
 		}
 	}
 	if bIdx >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.Black[i] += net.InputWeights[bIdx][i]
+		if nnueUseAVX2 {
+			nnueAccAdd256(&acc.Black[0], &net.InputWeights[bIdx][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.Black[i] += net.InputWeights[bIdx][i]
+			}
 		}
 	}
 }
@@ -227,15 +240,23 @@ func (net *NNUENet) SubAddFeature(acc *NNUEAccumulator, piece Piece, fromSq, toS
 	wIdxOld := HalfKPIndex(White, wKingSq, piece, fromSq)
 	wIdxNew := HalfKPIndex(White, wKingSq, piece, toSq)
 	if wIdxOld >= 0 && wIdxNew >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.White[i] += net.InputWeights[wIdxNew][i] - net.InputWeights[wIdxOld][i]
+		if nnueUseAVX2 {
+			nnueAccSubAdd256(&acc.White[0], &net.InputWeights[wIdxOld][0], &net.InputWeights[wIdxNew][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.White[i] += net.InputWeights[wIdxNew][i] - net.InputWeights[wIdxOld][i]
+			}
 		}
 	}
 	bIdxOld := HalfKPIndex(Black, bKingSq, piece, fromSq)
 	bIdxNew := HalfKPIndex(Black, bKingSq, piece, toSq)
 	if bIdxOld >= 0 && bIdxNew >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.Black[i] += net.InputWeights[bIdxNew][i] - net.InputWeights[bIdxOld][i]
+		if nnueUseAVX2 {
+			nnueAccSubAdd256(&acc.Black[0], &net.InputWeights[bIdxOld][0], &net.InputWeights[bIdxNew][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.Black[i] += net.InputWeights[bIdxNew][i] - net.InputWeights[bIdxOld][i]
+			}
 		}
 	}
 }
@@ -248,8 +269,12 @@ func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, from
 	wIdxMoveNew := HalfKPIndex(White, wKingSq, movePiece, toSq)
 	wIdxCap := HalfKPIndex(White, wKingSq, capPiece, capSq)
 	if wIdxMoveOld >= 0 && wIdxMoveNew >= 0 && wIdxCap >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.White[i] += net.InputWeights[wIdxMoveNew][i] - net.InputWeights[wIdxMoveOld][i] - net.InputWeights[wIdxCap][i]
+		if nnueUseAVX2 {
+			nnueAccSubSubAdd256(&acc.White[0], &net.InputWeights[wIdxMoveOld][0], &net.InputWeights[wIdxMoveNew][0], &net.InputWeights[wIdxCap][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.White[i] += net.InputWeights[wIdxMoveNew][i] - net.InputWeights[wIdxMoveOld][i] - net.InputWeights[wIdxCap][i]
+			}
 		}
 	}
 	// Black perspective
@@ -257,8 +282,12 @@ func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, from
 	bIdxMoveNew := HalfKPIndex(Black, bKingSq, movePiece, toSq)
 	bIdxCap := HalfKPIndex(Black, bKingSq, capPiece, capSq)
 	if bIdxMoveOld >= 0 && bIdxMoveNew >= 0 && bIdxCap >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.Black[i] += net.InputWeights[bIdxMoveNew][i] - net.InputWeights[bIdxMoveOld][i] - net.InputWeights[bIdxCap][i]
+		if nnueUseAVX2 {
+			nnueAccSubSubAdd256(&acc.Black[0], &net.InputWeights[bIdxMoveOld][0], &net.InputWeights[bIdxMoveNew][0], &net.InputWeights[bIdxCap][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.Black[i] += net.InputWeights[bIdxMoveNew][i] - net.InputWeights[bIdxMoveOld][i] - net.InputWeights[bIdxCap][i]
+			}
 		}
 	}
 }
@@ -313,6 +342,11 @@ func clippedReLU(x int16) int16 {
 // Evaluate runs the NNUE forward pass and returns a score in centipawns
 // relative to the side to move.
 func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
+	// SIMD fast path
+	if nnueUseAVX2 && net.HWT != nil {
+		return net.evaluateSIMD(acc, sideToMove)
+	}
+
 	// Concatenate accumulators: [stm_perspective | opponent_perspective]
 	// This way the network always sees "my pieces" first
 	var stm, opp *[NNUEHiddenSize]int16
@@ -392,6 +426,58 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 	return int(output) / nnueOutputScale
 }
 
+// PrepareWeights transposes hidden weights for SIMD forward pass.
+// Must be called after loading or creating a network.
+func (net *NNUENet) PrepareWeights() {
+	if !nnueUseAVX2 {
+		return
+	}
+	inputDim := NNUEHiddenSize * 2 // 512
+	outputDim := NNUEHidden2Size   // 32
+	net.HWT = make([]int16, outputDim*inputDim)
+	for i := 0; i < inputDim; i++ {
+		for j := 0; j < outputDim; j++ {
+			net.HWT[j*inputDim+i] = net.HiddenWeights[i][j]
+		}
+	}
+}
+
+// evaluateSIMD runs the NNUE forward pass using AVX2 SIMD instructions.
+func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
+	var stm, opp *[NNUEHiddenSize]int16
+	if sideToMove == White {
+		stm = &acc.White
+		opp = &acc.Black
+	} else {
+		stm = &acc.Black
+		opp = &acc.White
+	}
+
+	// Apply ClippedReLU and concatenate into input buffer
+	var input [NNUEHiddenSize * 2]int16
+	nnueCReLU256(&stm[0], &input[0])
+	nnueCReLU256(&opp[0], &input[NNUEHiddenSize])
+
+	// Hidden layer matrix multiply (the bottleneck)
+	var hidden2 [NNUEHidden2Size]int32
+	nnueMatMul32x512(&input[0], &net.HWT[0], &net.HiddenBiases[0], &hidden2[0])
+
+	// Output layer (scalar — only 32 elements, not worth SIMD)
+	output := int32(net.OutputBias)
+	for j := 0; j < NNUEHidden2Size; j++ {
+		scaled := hidden2[j] >> 6
+		if scaled <= 0 {
+			continue
+		}
+		if scaled > 127 {
+			scaled = 127
+		}
+		output += scaled * int32(net.OutputWeights[j])
+	}
+
+	return int(output) / nnueOutputScale
+}
+
 // SaveNNUE writes the network weights to a binary file.
 func SaveNNUE(path string, net *NNUENet) error {
 	f, err := os.Create(path)
@@ -445,7 +531,12 @@ func LoadNNUE(path string) (*NNUENet, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return readNNUE(f)
+	net, err := readNNUE(f)
+	if err != nil {
+		return nil, err
+	}
+	net.PrepareWeights()
+	return net, nil
 }
 
 func readNNUE(r io.Reader) (*NNUENet, error) {

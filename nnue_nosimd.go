@@ -1,0 +1,14 @@
+//go:build !amd64
+
+package chess
+
+var nnueUseAVX2 = false
+
+// Stub functions — never called when nnueUseAVX2 is false,
+// but needed for compilation on non-amd64 platforms.
+
+func nnueCReLU256(src *int16, dst *int16)                                      { panic("SIMD not available") }
+func nnueMatMul32x512(input *int16, weightsT *int16, biases *int32, output *int32) { panic("SIMD not available") }
+func nnueAccSubAdd256(acc *int16, oldW *int16, newW *int16)                    { panic("SIMD not available") }
+func nnueAccSubSubAdd256(acc *int16, oldW *int16, newW *int16, capW *int16)    { panic("SIMD not available") }
+func nnueAccAdd256(acc *int16, weights *int16)                                 { panic("SIMD not available") }

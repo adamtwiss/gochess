@@ -915,6 +915,7 @@ func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 	}
 	net.OutputBias = int32(math.Round(float64(train.OutputBias) * float64(nnueOutputScale)))
 
+	net.PrepareWeights()
 	return net
 }
 
