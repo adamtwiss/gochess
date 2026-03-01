@@ -921,11 +921,18 @@ func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 
 // TuneK finds the optimal sigmoid scaling constant K using golden section search.
 func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
+	// Subsample up to 50K positions for speed (TuneK doesn't need full dataset)
+	numTrain := int(bf.NumTrain)
+	maxSample := 50000
+	step := 1
+	if numTrain > maxSample {
+		step = numTrain / maxSample
+	}
+
 	computeError := func(K float64) float64 {
 		totalLoss := 0.0
 		count := 0
-		numTrain := int(bf.NumTrain)
-		for i := 0; i < numTrain; i++ {
+		for i := 0; i < numTrain; i += step {
 			s, err := bf.ReadRecord(i)
 			if err != nil {
 				continue
@@ -958,13 +965,21 @@ func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
 		return totalLoss / float64(count)
 	}
 
+	sampleSize := (numTrain + step - 1) / step
+	fmt.Printf("  Sampling %d/%d positions (step=%d)\n", sampleSize, numTrain, step)
+
 	// Golden section search
 	phi := (math.Sqrt(5) + 1) / 2
 	a, b := 100.0, 800.0
+	iter := 0
 	for b-a > 1.0 {
 		c := b - (b-a)/phi
 		d := a + (b-a)/phi
-		if computeError(c) < computeError(d) {
+		ec := computeError(c)
+		ed := computeError(d)
+		iter++
+		fmt.Printf("  iter %2d: K in [%.1f, %.1f]  err=%.8f\n", iter, a, b, math.Min(ec, ed))
+		if ec < ed {
 			b = d
 		} else {
 			a = c
