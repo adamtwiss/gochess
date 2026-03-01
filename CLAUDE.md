@@ -24,7 +24,7 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data (FEN;score;result)
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
 ./tuner tune -data training.dat -epochs 500 -lr 1.0 -score-blend 0.5        # Tune with blended score+result loss
-./tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue         # Train NNUE network
+./tuner nnue-train -data training.dat -epochs 100 -lr 0.01 -output net.nnue          # Train NNUE network
 ./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -output net-v1.nnue # Train on subset
 ./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume training
 

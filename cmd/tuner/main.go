@@ -217,7 +217,7 @@ func runNNUETrain(args []string) {
 	dataFile := fs.String("data", "training.dat", "training data file (FEN;result or FEN;score;result)")
 	outputFile := fs.String("output", "net.nnue", "output NNUE network file")
 	epochs := fs.Int("epochs", 100, "number of training epochs")
-	lr := fs.Float64("lr", 0.001, "learning rate")
+	lr := fs.Float64("lr", 0.01, "learning rate")
 	batchSize := fs.Int("batch", 16384, "batch size")
 	lambda := fs.Float64("lambda", 0.5, "result vs score weight (0=score only, 1=result only)")
 	kValue := fs.Float64("K", 400, "sigmoid scaling constant (default 400)")

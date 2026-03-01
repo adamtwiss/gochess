@@ -200,7 +200,7 @@ Selfplay always records the engine's search score alongside each position and ga
 **Step 2: Train the network**
 
 ```bash
-./tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue
+./tuner nnue-train -data training.dat -epochs 100 -lr 0.01 -output net.nnue
 ```
 
 This trains a quantized NNUE network from scratch. On first run, the training data is preprocessed into a binary cache (`training.nnbin`) for efficient streaming. The loss function blends game-result prediction with score prediction: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`.
@@ -209,7 +209,7 @@ This trains a quantized NNUE network from scratch. On first run, the training da
 |------|---------|-------------|
 | `-data` | `training.dat` | Training data file (must include scores) |
 | `-epochs` | 100 | Training epochs |
-| `-lr` | 0.001 | Learning rate |
+| `-lr` | 0.01 | Learning rate |
 | `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
 | `-K` | 400 | Sigmoid scaling constant |
 | `-output` | `net.nnue` | Output network file |
@@ -224,10 +224,10 @@ You can train on a subset first, then fine-tune on the full dataset:
 
 ```bash
 # Phase 1: Quick initial training on 50K positions
-./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -lr 0.001 -output net-v1.nnue
+./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -lr 0.01 -output net-v1.nnue
 
 # Phase 2: Fine-tune on full dataset starting from Phase 1 weights
-./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -lr 0.0005 -output net-v2.nnue
+./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -lr 0.005 -output net-v2.nnue
 ```
 
 #### Using NNUE in UCI mode
