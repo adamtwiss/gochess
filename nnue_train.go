@@ -84,11 +84,13 @@ type NNBinFile struct {
 func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 	net := &NNUETrainNet{}
 
-	// He initialization for input layer: sqrt(2/fan_in) where fan_in = ~30 active features
+	// He initialization for input layer: sqrt(2/fan_in) where fan_in = ~30 active features.
+	// With CReLU [0, 1.0], this produces accumulator values with std ~1.4 — healthy
+	// gradient flow with about half the neurons active and some clipping at 1.0.
 	inputScale := float32(math.Sqrt(2.0 / 30.0))
 	for i := range net.InputWeights {
 		for j := range net.InputWeights[i] {
-			net.InputWeights[i][j] = float32(rng.NormFloat64()) * inputScale * 0.01
+			net.InputWeights[i][j] = float32(rng.NormFloat64()) * inputScale
 		}
 	}
 	// Biases start at zero
