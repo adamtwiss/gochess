@@ -649,7 +649,8 @@ func perft(b *Board, depth int) uint64 {
 	if depth == 0 {
 		return 1
 	}
-	moves := b.GenerateLegalMoves()
+	var buf [256]Move
+	moves := b.GenerateLegalMovesAppend(buf[:0])
 	if depth == 1 {
 		return uint64(len(moves))
 	}

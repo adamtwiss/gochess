@@ -50,6 +50,13 @@ func (b *Board) GenerateAllMoves() []Move {
 	return mg.moves
 }
 
+// GenerateAllMovesAppend appends all pseudo-legal moves to the provided slice
+func (b *Board) GenerateAllMovesAppend(moves []Move) []Move {
+	moves = b.GenerateCapturesAppend(moves)
+	moves = b.GenerateQuietsAppend(moves)
+	return moves
+}
+
 // generateAllMoves generates all pseudo-legal moves
 func (mg *MoveGen) generateAllMoves() {
 	b := mg.board
@@ -342,6 +349,55 @@ func (mg *MoveGen) generateCastlingMoves(kingSq Square) {
 	}
 }
 
+func (b *Board) generateCastlingMovesAppend(moves []Move, kingSq Square) []Move {
+	us := b.SideToMove
+
+	if us == White {
+		if b.Castling&WhiteKingside != 0 {
+			if b.Squares[NewSquare(5, 0)] == Empty && b.Squares[NewSquare(6, 0)] == Empty {
+				if !b.IsAttacked(NewSquare(4, 0), Black) &&
+					!b.IsAttacked(NewSquare(5, 0), Black) &&
+					!b.IsAttacked(NewSquare(6, 0), Black) {
+					moves = append(moves, NewMoveFlags(kingSq, NewSquare(6, 0), FlagCastle))
+				}
+			}
+		}
+		if b.Castling&WhiteQueenside != 0 {
+			if b.Squares[NewSquare(1, 0)] == Empty &&
+				b.Squares[NewSquare(2, 0)] == Empty &&
+				b.Squares[NewSquare(3, 0)] == Empty {
+				if !b.IsAttacked(NewSquare(4, 0), Black) &&
+					!b.IsAttacked(NewSquare(3, 0), Black) &&
+					!b.IsAttacked(NewSquare(2, 0), Black) {
+					moves = append(moves, NewMoveFlags(kingSq, NewSquare(2, 0), FlagCastle))
+				}
+			}
+		}
+	} else {
+		if b.Castling&BlackKingside != 0 {
+			if b.Squares[NewSquare(5, 7)] == Empty && b.Squares[NewSquare(6, 7)] == Empty {
+				if !b.IsAttacked(NewSquare(4, 7), White) &&
+					!b.IsAttacked(NewSquare(5, 7), White) &&
+					!b.IsAttacked(NewSquare(6, 7), White) {
+					moves = append(moves, NewMoveFlags(kingSq, NewSquare(6, 7), FlagCastle))
+				}
+			}
+		}
+		if b.Castling&BlackQueenside != 0 {
+			if b.Squares[NewSquare(1, 7)] == Empty &&
+				b.Squares[NewSquare(2, 7)] == Empty &&
+				b.Squares[NewSquare(3, 7)] == Empty {
+				if !b.IsAttacked(NewSquare(4, 7), White) &&
+					!b.IsAttacked(NewSquare(3, 7), White) &&
+					!b.IsAttacked(NewSquare(2, 7), White) {
+					moves = append(moves, NewMoveFlags(kingSq, NewSquare(2, 7), FlagCastle))
+				}
+			}
+		}
+	}
+	return moves
+}
+
 func (mg *MoveGen) addMoves(from Square, targets Bitboard) {
 	for targets != 0 {
 		to := targets.PopLSB()
@@ -556,6 +612,24 @@ func (b *Board) GenerateLegalMoves() []Move {
 	}
 
 	return legal
+}
+
+// GenerateLegalMovesAppend appends all legal moves to the provided slice
+func (b *Board) GenerateLegalMovesAppend(moves []Move) []Move {
+	start := len(moves)
+	pseudoLegal := b.GenerateAllMovesAppend(moves)
+	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
+	inCheck := checkers != 0
+
+	// Filter in-place: overwrite pseudo-legal with legal moves
+	n := start
+	for _, m := range pseudoLegal[start:] {
+		if b.IsLegal(m, pinned, inCheck) {
+			pseudoLegal[n] = m
+			n++
+		}
+	}
+	return pseudoLegal[:n]
 }
 
 // GenerateCaptures returns all pseudo-legal capture moves (including promotions)
@@ -845,9 +919,7 @@ func (b *Board) GenerateQuietsAppend(moves []Move) []Move {
 		}
 
 		// Castling
-		mg := &MoveGen{board: b, moves: moves}
-		mg.generateCastlingMoves(from)
-		moves = mg.moves
+		moves = b.generateCastlingMovesAppend(moves, from)
 	}
 
 	return moves

@@ -32,10 +32,22 @@ func (p Piece) Color() Color {
 	return White
 }
 
+// pieceOfTable maps (white piece type, color) to the actual piece.
+// Indexed as pieceOfTable[whitePieceType][color].
+var pieceOfTable = [7][2]Piece{
+	{Empty, Empty},           // 0: Empty
+	{WhitePawn, BlackPawn},   // 1: Pawn
+	{WhiteKnight, BlackKnight}, // 2: Knight
+	{WhiteBishop, BlackBishop}, // 3: Bishop
+	{WhiteRook, BlackRook},   // 4: Rook
+	{WhiteQueen, BlackQueen}, // 5: Queen
+	{WhiteKing, BlackKing},   // 6: King
+}
+
 // pieceOf returns the piece of the given type for the given color.
 // e.g. pieceOf(WhiteKnight, Black) returns BlackKnight.
 func pieceOf(p Piece, c Color) Piece {
-	return p + Piece(c)*6
+	return pieceOfTable[p][c]
 }
 
 // Color represents a player color

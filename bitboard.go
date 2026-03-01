@@ -41,9 +41,20 @@ const (
 	NotFileGH Bitboard = ^(FileG | FileH)
 )
 
+// squareBBTable is a precomputed lookup table for single-square bitboards.
+// Initialized at package-level var time (before any init() functions) to ensure
+// it's ready for attacks.go init which calls SquareBB.
+var squareBBTable = func() [64]Bitboard {
+	var t [64]Bitboard
+	for sq := 0; sq < 64; sq++ {
+		t[sq] = Bitboard(1) << uint(sq)
+	}
+	return t
+}()
+
 // SquareBB returns a bitboard with only the given square set
 func SquareBB(sq Square) Bitboard {
-	return Bitboard(1) << sq
+	return squareBBTable[sq]
 }
 
 // Set sets the bit at the given square
@@ -74,9 +85,10 @@ func (b Bitboard) LSB() Square {
 	return Square(bits.TrailingZeros64(uint64(b)))
 }
 
-// PopLSB removes and returns the least significant bit
+// PopLSB removes and returns the least significant bit.
+// Caller must ensure b != 0.
 func (b *Bitboard) PopLSB() Square {
-	sq := b.LSB()
+	sq := Square(bits.TrailingZeros64(uint64(*b)))
 	*b &= *b - 1 // Clear the LSB
 	return sq
 }
