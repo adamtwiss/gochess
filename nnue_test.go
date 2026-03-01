@@ -529,8 +529,8 @@ func TestNNUEPieceIndex(t *testing.T) {
 }
 
 func TestNNUESIMDvsGeneric(t *testing.T) {
-	if !nnueUseAVX2 {
-		t.Skip("AVX2 not available")
+	if !nnueUseSIMD {
+		t.Skip("SIMD not available")
 	}
 
 	// Create a net with varied weights
@@ -561,15 +561,15 @@ func TestNNUESIMDvsGeneric(t *testing.T) {
 	net.RecomputeAccumulator(acc, &b)
 
 	// Force generic path
-	origFlag := nnueUseAVX2
-	nnueUseAVX2 = false
+	origFlag := nnueUseSIMD
+	nnueUseSIMD = false
 	genericScore := net.Evaluate(acc, White)
 
 	// Force SIMD path
-	nnueUseAVX2 = true
+	nnueUseSIMD = true
 	simdScore := net.Evaluate(acc, White)
 
-	nnueUseAVX2 = origFlag
+	nnueUseSIMD = origFlag
 
 	if genericScore != simdScore {
 		t.Errorf("SIMD vs Generic mismatch: simd=%d generic=%d", simdScore, genericScore)
@@ -577,11 +577,11 @@ func TestNNUESIMDvsGeneric(t *testing.T) {
 	t.Logf("SIMD=%d Generic=%d (match)", simdScore, genericScore)
 
 	// Also test Black perspective
-	nnueUseAVX2 = false
+	nnueUseSIMD = false
 	genericB := net.Evaluate(acc, Black)
-	nnueUseAVX2 = true
+	nnueUseSIMD = true
 	simdB := net.Evaluate(acc, Black)
-	nnueUseAVX2 = origFlag
+	nnueUseSIMD = origFlag
 
 	if genericB != simdB {
 		t.Errorf("Black: SIMD vs Generic mismatch: simd=%d generic=%d", simdB, genericB)
@@ -614,18 +614,18 @@ func BenchmarkNNUEForwardGeneric(b *testing.B) {
 	acc := &NNUEAccumulator{}
 	net.RecomputeAccumulator(acc, &board)
 
-	origFlag := nnueUseAVX2
-	nnueUseAVX2 = false
+	origFlag := nnueUseSIMD
+	nnueUseSIMD = false
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		net.Evaluate(acc, White)
 	}
-	nnueUseAVX2 = origFlag
+	nnueUseSIMD = origFlag
 }
 
 func BenchmarkNNUEForwardSIMD(b *testing.B) {
-	if !nnueUseAVX2 {
-		b.Skip("AVX2 not available")
+	if !nnueUseSIMD {
+		b.Skip("SIMD not available")
 	}
 
 	net := &NNUENet{}

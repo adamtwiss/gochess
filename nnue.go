@@ -198,7 +198,7 @@ func (net *NNUENet) AddFeature(acc *NNUEAccumulator, piece Piece, sq Square, wKi
 	bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		if nnueUseAVX2 {
+		if nnueUseSIMD {
 			nnueAccAdd256(&acc.White[0], &net.InputWeights[wIdx][0])
 		} else {
 			for i := 0; i < NNUEHiddenSize; i++ {
@@ -207,7 +207,7 @@ func (net *NNUENet) AddFeature(acc *NNUEAccumulator, piece Piece, sq Square, wKi
 		}
 	}
 	if bIdx >= 0 {
-		if nnueUseAVX2 {
+		if nnueUseSIMD {
 			nnueAccAdd256(&acc.Black[0], &net.InputWeights[bIdx][0])
 		} else {
 			for i := 0; i < NNUEHiddenSize; i++ {
@@ -240,7 +240,7 @@ func (net *NNUENet) SubAddFeature(acc *NNUEAccumulator, piece Piece, fromSq, toS
 	wIdxOld := HalfKPIndex(White, wKingSq, piece, fromSq)
 	wIdxNew := HalfKPIndex(White, wKingSq, piece, toSq)
 	if wIdxOld >= 0 && wIdxNew >= 0 {
-		if nnueUseAVX2 {
+		if nnueUseSIMD {
 			nnueAccSubAdd256(&acc.White[0], &net.InputWeights[wIdxOld][0], &net.InputWeights[wIdxNew][0])
 		} else {
 			for i := 0; i < NNUEHiddenSize; i++ {
@@ -251,7 +251,7 @@ func (net *NNUENet) SubAddFeature(acc *NNUEAccumulator, piece Piece, fromSq, toS
 	bIdxOld := HalfKPIndex(Black, bKingSq, piece, fromSq)
 	bIdxNew := HalfKPIndex(Black, bKingSq, piece, toSq)
 	if bIdxOld >= 0 && bIdxNew >= 0 {
-		if nnueUseAVX2 {
+		if nnueUseSIMD {
 			nnueAccSubAdd256(&acc.Black[0], &net.InputWeights[bIdxOld][0], &net.InputWeights[bIdxNew][0])
 		} else {
 			for i := 0; i < NNUEHiddenSize; i++ {
@@ -269,7 +269,7 @@ func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, from
 	wIdxMoveNew := HalfKPIndex(White, wKingSq, movePiece, toSq)
 	wIdxCap := HalfKPIndex(White, wKingSq, capPiece, capSq)
 	if wIdxMoveOld >= 0 && wIdxMoveNew >= 0 && wIdxCap >= 0 {
-		if nnueUseAVX2 {
+		if nnueUseSIMD {
 			nnueAccSubSubAdd256(&acc.White[0], &net.InputWeights[wIdxMoveOld][0], &net.InputWeights[wIdxMoveNew][0], &net.InputWeights[wIdxCap][0])
 		} else {
 			for i := 0; i < NNUEHiddenSize; i++ {
@@ -282,7 +282,7 @@ func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, from
 	bIdxMoveNew := HalfKPIndex(Black, bKingSq, movePiece, toSq)
 	bIdxCap := HalfKPIndex(Black, bKingSq, capPiece, capSq)
 	if bIdxMoveOld >= 0 && bIdxMoveNew >= 0 && bIdxCap >= 0 {
-		if nnueUseAVX2 {
+		if nnueUseSIMD {
 			nnueAccSubSubAdd256(&acc.Black[0], &net.InputWeights[bIdxMoveOld][0], &net.InputWeights[bIdxMoveNew][0], &net.InputWeights[bIdxCap][0])
 		} else {
 			for i := 0; i < NNUEHiddenSize; i++ {
@@ -302,7 +302,7 @@ func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
-	// Add all non-king pieces
+	// Add all non-king pieces (dispatches to SIMD when available)
 	for piece := WhitePawn; piece <= BlackQueen; piece++ {
 		if piece == WhiteKing || piece == BlackKing {
 			continue
@@ -310,18 +310,7 @@ func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 		bb := b.Pieces[piece]
 		for bb != 0 {
 			sq := bb.PopLSB()
-			wIdx := HalfKPIndex(White, wKingSq, piece, sq)
-			bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
-			if wIdx >= 0 {
-				for i := 0; i < NNUEHiddenSize; i++ {
-					acc.White[i] += net.InputWeights[wIdx][i]
-				}
-			}
-			if bIdx >= 0 {
-				for i := 0; i < NNUEHiddenSize; i++ {
-					acc.Black[i] += net.InputWeights[bIdx][i]
-				}
-			}
+			net.AddFeature(acc, piece, sq, wKingSq, bKingSq)
 		}
 	}
 
@@ -343,7 +332,7 @@ func clippedReLU(x int16) int16 {
 // relative to the side to move.
 func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 	// SIMD fast path
-	if nnueUseAVX2 && net.HWT != nil {
+	if nnueUseSIMD && net.HWT != nil {
 		return net.evaluateSIMD(acc, sideToMove)
 	}
 
@@ -429,7 +418,7 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 // PrepareWeights transposes hidden weights for SIMD forward pass.
 // Must be called after loading or creating a network.
 func (net *NNUENet) PrepareWeights() {
-	if !nnueUseAVX2 {
+	if !nnueUseSIMD {
 		return
 	}
 	inputDim := NNUEHiddenSize * 2 // 512
@@ -442,7 +431,7 @@ func (net *NNUENet) PrepareWeights() {
 	}
 }
 
-// evaluateSIMD runs the NNUE forward pass using AVX2 SIMD instructions.
+// evaluateSIMD runs the NNUE forward pass using SIMD instructions (AVX2 or NEON).
 func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 	var stm, opp *[NNUEHiddenSize]int16
 	if sideToMove == White {

@@ -1,10 +1,9 @@
-//go:build amd64
+//go:build arm64
 
 package chess
 
-import "golang.org/x/sys/cpu"
-
-var nnueUseSIMD = cpu.X86.HasAVX2
+// NEON is always available on ARM64, no runtime detection needed.
+var nnueUseSIMD = true
 
 // nnueCReLU256 applies ClippedReLU (clamp to [0, 127]) to 256 int16 values.
 //
@@ -16,7 +15,7 @@ func nnueCReLU256(src *int16, dst *int16)
 //	output[j] = biases[j] + sum_i(input[i] * weightsT[j][i])
 //
 // for j=0..31, i=0..511. weightsT is transposed: [32][512] row-major.
-// Uses VPMADDWD for efficient int16 multiply-accumulate.
+// Uses SMULL/SMLAL2 for int16 multiply-accumulate.
 //
 //go:noescape
 func nnueMatMul32x512(input *int16, weightsT *int16, biases *int32, output *int32)

@@ -62,6 +62,11 @@ cli.go               Interactive CLI engine (set, fen, board, eval, moves, searc
 selfplay.go          Self-play game generation for tuning data
 tuner.go             Texel tuner: parameter catalog, trace-based eval, .tbin binary cache, disk-streamed Adam optimizer
 nnue.go              NNUE inference: HalfKP network, accumulators, forward pass, incremental updates, load/save
+nnue_amd64.go        NNUE SIMD stubs for x86-64 (AVX2 runtime detection)
+nnue_amd64.s         NNUE AVX2 assembly: CReLU, MatMul, accumulator ops
+nnue_arm64.go        NNUE SIMD stubs for ARM64 (NEON always available)
+nnue_arm64.s         NNUE NEON assembly: CReLU, MatMul, accumulator ops
+nnue_nosimd.go       NNUE fallback stubs for non-SIMD platforms
 nnue_train.go        NNUE training: float32 net, backprop, Adam optimizer, binary cache, quantization
 ```
 
@@ -190,7 +195,8 @@ Optional neural network evaluation behind `UseNNUE` toggle. Both classical and N
 - **Architecture**: HalfKP input (40960) -> 2x256 accumulators -> concat (512) -> 32 -> 1
 - **Feature indexing**: `HalfKPIndex(perspective, kingSq, piece, pieceSq)`. 64 king squares x 10 piece types (excluding kings) x 64 piece squares = 40960. Black perspective mirrors squares (^56) and swaps piece colors.
 - **Incremental updates**: `putPiece`, `removePiece`, `movePiece` call `AddFeature`/`RemoveFeature` on the accumulator. King pieces are skipped (king moves trigger full `RecomputeAccumulator`).
-- **Accumulator stack**: `NNUEAccumulatorStack` with Push/Pop mirrors the undo stack. `MakeMove` pushes before modifications, `UnmakeMove` pops at end. Null moves also push/pop for stack consistency.
+- **SIMD forward pass**: Platform-specific assembly for AVX2 (x86-64) and NEON (ARM64). `nnueUseSIMD` flag controls dispatch. Five SIMD functions: `nnueCReLU256` (activation), `nnueMatMul32x512` (hidden layer), `nnueAccAdd256`/`nnueAccSubAdd256`/`nnueAccSubSubAdd256` (accumulator updates). `PrepareWeights()` transposes hidden weights for SIMD matmul. AVX2 uses runtime detection (`cpu.X86.HasAVX2`); NEON is always available on ARM64.
+- **Accumulator stack**: `NNUEAccumulatorStack` with Push/Pop mirrors the undo stack. `MakeMove` pushes before modifications, `UnmakeMove` pops at end. Null moves skip push/pop (no pieces change, child moves push/pop their own copies).
 - **Thread safety**: `NNUENet` is shared read-only across Lazy SMP threads. Each thread gets its own `NNUEAccumulatorStack` via `DeepCopy()`.
 - **Quantization**: Training uses float32 (`NNUETrainNet`), inference uses int16 (`NNUENet`). Scale factors: input=127, hidden=64, output=127*64=8128.
 - **Training**: `NNUETrainer` with Adam optimizer. Loss: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`. Binary cache (`.nnbin`) for disk-streamed training data.
@@ -294,7 +300,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - Tuner's `PassedPawnKingScale` uses initial engine values as constant coefficients to avoid circular dependency with distance parameters (product of two tunable params).
 - `.tbin` binary cache must be rebuilt (delete it or touch the `.dat` file) whenever `computeTrace()` or the parameter catalog changes. The header stores `numParams` as a sanity check, but structural changes within the same param count won't be caught.
 - `StreamTraining`/`StreamValidation` callbacks must not retain references to the `[]TunerTrace` batch — the backing arrays are reused across batches.
-- NNUE accumulator stack must stay in sync with the undo stack. Every `MakeMove` pushes, every `UnmakeMove` pops. Null moves also push/pop. If adding new make/unmake paths, maintain this invariant.
+- NNUE accumulator stack must stay in sync with the undo stack. Every `MakeMove` pushes, every `UnmakeMove` pops. Null moves skip push/pop (no pieces change). If adding new make/unmake paths, maintain this invariant.
 - NNUE `putPiece`/`removePiece`/`movePiece` hooks use `b.Pieces[WhiteKing].LSB()` and `b.Pieces[BlackKing].LSB()` to get king squares for feature indexing. These must be called when king bitboards are valid (kings on the board).
 - NNUE incremental updates skip king pieces. King moves trigger `RecomputeAccumulator` at the end of `MakeMove`. Castling moves the king first then the rook — the rook move goes through `movePiece` but the accumulator is not computed yet (will be recomputed at end).
 - `.nnbin` binary cache must be rebuilt when the training data format changes or feature indexing changes.

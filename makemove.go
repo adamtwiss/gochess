@@ -241,10 +241,9 @@ func (b *Board) MakeMove(m Move) {
 
 // MakeNullMove makes a null move (pass turn without moving)
 func (b *Board) MakeNullMove() {
-	// Push NNUE accumulator (no features change, but needed for stack consistency)
-	if b.NNUEAcc != nil {
-		b.NNUEAcc.Push()
-	}
+	// No NNUE push needed for null moves: no pieces change, so the accumulator
+	// is still valid. Child moves Push/Pop their own copies, leaving this slot
+	// untouched. UnmakeNullMove skips Pop to match.
 
 	// Store undo info
 	undo := UndoInfo{
@@ -278,10 +277,7 @@ func (b *Board) UnmakeNullMove() {
 	b.EnPassant = undo.EnPassant
 	b.HashKey = undo.HashKey
 
-	// Pop NNUE accumulator
-	if b.NNUEAcc != nil {
-		b.NNUEAcc.Pop()
-	}
+	// No NNUE pop needed: MakeNullMove skips Push (no pieces changed).
 }
 
 // UnmakeMove undoes the last move
