@@ -24,7 +24,9 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data (FEN;score;result)
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
 ./tuner tune -data training.dat -epochs 500 -lr 1.0 -score-blend 0.5        # Tune with blended score+result loss
-./tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue # Train NNUE network
+./tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue         # Train NNUE network
+./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -output net-v1.nnue # Train on subset
+./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume training
 
 ./chess -nnue net.nnue -uci                                                  # UCI with NNUE
 ```
@@ -67,7 +69,7 @@ nnue_amd64.s         NNUE AVX2 assembly: CReLU, MatMul, accumulator ops
 nnue_arm64.go        NNUE SIMD stubs for ARM64 (NEON always available)
 nnue_arm64.s         NNUE NEON assembly: CReLU, MatMul, accumulator ops
 nnue_nosimd.go       NNUE fallback stubs for non-SIMD platforms
-nnue_train.go        NNUE training: float32 net, backprop, Adam optimizer, binary cache, quantization
+nnue_train.go        NNUE training: float32 net, backprop, Adam optimizer, binary cache, quantization, resume from .nnue
 ```
 
 ## Architecture
@@ -198,8 +200,8 @@ Optional neural network evaluation behind `UseNNUE` toggle. Both classical and N
 - **SIMD forward pass**: Platform-specific assembly for AVX2 (x86-64) and NEON (ARM64). `nnueUseSIMD` flag controls dispatch. Five SIMD functions: `nnueCReLU256` (activation), `nnueMatMul32x512` (hidden layer), `nnueAccAdd256`/`nnueAccSubAdd256`/`nnueAccSubSubAdd256` (accumulator updates). `PrepareWeights()` transposes hidden weights for SIMD matmul. AVX2 uses runtime detection (`cpu.X86.HasAVX2`); NEON is always available on ARM64.
 - **Accumulator stack**: `NNUEAccumulatorStack` with Push/Pop mirrors the undo stack. `MakeMove` pushes before modifications, `UnmakeMove` pops at end. Null moves skip push/pop (no pieces change, child moves push/pop their own copies).
 - **Thread safety**: `NNUENet` is shared read-only across Lazy SMP threads. Each thread gets its own `NNUEAccumulatorStack` via `DeepCopy()`.
-- **Quantization**: Training uses float32 (`NNUETrainNet`), inference uses int16 (`NNUENet`). Scale factors: input=127, hidden=64, output=127*64=8128.
-- **Training**: `NNUETrainer` with Adam optimizer. Loss: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`. Binary cache (`.nnbin`) for disk-streamed training data.
+- **Quantization**: Training uses float32 (`NNUETrainNet`), inference uses int16 (`NNUENet`). Scale factors: input=127, hidden=64, output=127*64=8128. `DequantizeNetwork` reverses this for resuming training from a saved `.nnue` file.
+- **Training**: `NNUETrainer` with Adam optimizer. Loss: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`. Binary cache (`.nnbin`) for disk-streamed training data. Supports `-resume` to load weights from an existing `.nnue` file and `-positions` to cap training data size per epoch.
 - **UCI options**: `UseNNUE` (check), `NNUEFile` (string path). CLI: `nnue load/on/off/eval`. CLI flag: `-nnue <file>`.
 
 ### Evaluation

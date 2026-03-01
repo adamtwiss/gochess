@@ -213,8 +213,22 @@ This trains a quantized NNUE network from scratch. On first run, the training da
 | `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
 | `-K` | 400 | Sigmoid scaling constant |
 | `-output` | `net.nnue` | Output network file |
+| `-positions` | 0 | Limit training positions per epoch (0=use all) |
+| `-resume` | | Resume training from an existing `.nnue` network file |
 
 Training uses float32 weights internally, then quantizes to int16 for inference. The `.nnbin` cache is rebuilt automatically when the source `.dat` file changes.
+
+**Two-phase training workflow:**
+
+You can train on a subset first, then fine-tune on the full dataset:
+
+```bash
+# Phase 1: Quick initial training on 50K positions
+./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -lr 0.001 -output net-v1.nnue
+
+# Phase 2: Fine-tune on full dataset starting from Phase 1 weights
+./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -lr 0.0005 -output net-v2.nnue
+```
 
 #### Using NNUE in UCI mode
 

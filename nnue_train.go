@@ -26,11 +26,12 @@ type NNUETrainNet struct {
 
 // NNUETrainConfig holds training hyperparameters.
 type NNUETrainConfig struct {
-	Epochs    int
-	LR        float64
-	BatchSize int
-	Lambda    float64 // weight for result vs score: loss = lambda*MSE(result) + (1-lambda)*MSE(score)
-	K         float64 // sigmoid scaling constant
+	Epochs       int
+	LR           float64
+	BatchSize    int
+	Lambda       float64 // weight for result vs score: loss = lambda*MSE(result) + (1-lambda)*MSE(score)
+	K            float64 // sigmoid scaling constant
+	MaxPositions int     // limit training positions per epoch (0=use all)
 }
 
 // DefaultNNUETrainConfig returns sensible defaults.
@@ -173,18 +174,23 @@ func (net *NNUETrainNet) Forward(sample *NNUETrainSample) (output float32, hidde
 	return output, hidden1, hidden2
 }
 
+// nnueFloatClipMax is the CReLU upper bound in float training space.
+// The quantized inference clips at nnueClipMax (127) in int16 space,
+// which represents 1.0 in float space. Training must clip at 1.0 to match.
+const nnueFloatClipMax = float32(1.0)
+
 func clippedReLUf(x float32) float32 {
 	if x < 0 {
 		return 0
 	}
-	if x > float32(nnueClipMax) {
-		return float32(nnueClipMax)
+	if x > nnueFloatClipMax {
+		return nnueFloatClipMax
 	}
 	return x
 }
 
 func clippedReLUGrad(x float32) float32 {
-	if x > 0 && x < float32(nnueClipMax) {
+	if x > 0 && x < nnueFloatClipMax {
 		return 1
 	}
 	return 0
@@ -656,6 +662,9 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 	onEpoch func(epoch int, trainLoss, valLoss float64)) {
 
 	numTrain := int(bf.NumTrain)
+	if cfg.MaxPositions > 0 && cfg.MaxPositions < numTrain {
+		numTrain = cfg.MaxPositions
+	}
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 8 {
 		numWorkers = 8
@@ -909,14 +918,60 @@ func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 		net.HiddenBiases[j] = int32(math.Round(float64(train.HiddenBiases[j]) * float64(nnueInputScale) * float64(nnueHiddenScale)))
 	}
 
-	// Output layer: weights are int16, bias is int32
+	// Output layer: bias is int32 at scale nnueOutputScale (8128).
+	// Weights are int16 at scale nnueHiddenScale (64), NOT nnueOutputScale,
+	// because the second CReLU activation (after >>6) is at scale nnueInputScale (127).
+	// Product: activation(127) * weight(64) = scale 8128 = nnueOutputScale, matching bias.
 	for j := range train.OutputWeights {
-		net.OutputWeights[j] = int16(math.Round(float64(train.OutputWeights[j]) * float64(nnueOutputScale)))
+		net.OutputWeights[j] = int16(math.Round(float64(train.OutputWeights[j]) * float64(nnueHiddenScale)))
 	}
 	net.OutputBias = int32(math.Round(float64(train.OutputBias) * float64(nnueOutputScale)))
 
 	net.PrepareWeights()
 	return net
+}
+
+// DequantizeNetwork converts an int16 inference network back to float32 for training.
+// This reverses QuantizeNetwork, enabling resumed training from a saved .nnue file.
+func DequantizeNetwork(net *NNUENet) *NNUETrainNet {
+	train := &NNUETrainNet{}
+
+	// Input layer: divide by nnueInputScale (127)
+	for i := range net.InputWeights {
+		for j := range net.InputWeights[i] {
+			train.InputWeights[i][j] = float32(net.InputWeights[i][j]) / nnueInputScale
+		}
+	}
+	for j := range net.InputBiases {
+		train.InputBiases[j] = float32(net.InputBiases[j]) / nnueInputScale
+	}
+
+	// Hidden weights: divide by nnueHiddenScale (64)
+	for i := range net.HiddenWeights {
+		for j := range net.HiddenWeights[i] {
+			train.HiddenWeights[i][j] = float32(net.HiddenWeights[i][j]) / nnueHiddenScale
+		}
+	}
+
+	// Hidden biases: divide by nnueInputScale * nnueHiddenScale (127*64 = 8128)
+	for j := range net.HiddenBiases {
+		train.HiddenBiases[j] = float32(net.HiddenBiases[j]) / nnueOutputScale
+	}
+
+	// Output weights: divide by nnueHiddenScale (64), matching QuantizeNetwork
+	for j := range net.OutputWeights {
+		train.OutputWeights[j] = float32(net.OutputWeights[j]) / nnueHiddenScale
+	}
+	// Output bias: divide by nnueOutputScale (8128)
+	train.OutputBias = float32(net.OutputBias) / nnueOutputScale
+
+	return train
+}
+
+// LoadWeights loads weights from a quantized inference network into the trainer.
+// This enables resuming training from a previously saved .nnue file.
+func (trainer *NNUETrainer) LoadWeights(net *NNUENet) {
+	trainer.Net = DequantizeNetwork(net)
 }
 
 // TuneK finds the optimal sigmoid scaling constant K using golden section search.

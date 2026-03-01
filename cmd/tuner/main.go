@@ -222,6 +222,8 @@ func runNNUETrain(args []string) {
 	lambda := fs.Float64("lambda", 0.5, "result vs score weight (0=score only, 1=result only)")
 	kValue := fs.Float64("K", 400, "sigmoid scaling constant (default 400)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
+	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
+	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner nnue-train [options]\n\nOptions:\n")
@@ -274,12 +276,24 @@ func runNNUETrain(args []string) {
 	// Create trainer
 	trainer := chess.NewNNUETrainer(*seed)
 
+	// Resume from existing network if specified
+	if *resumeFile != "" {
+		net, err := chess.LoadNNUE(*resumeFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading resume network: %v\n", err)
+			os.Exit(1)
+		}
+		trainer.LoadWeights(net)
+		fmt.Printf("Resumed weights from %s\n", *resumeFile)
+	}
+
 	cfg := chess.NNUETrainConfig{
-		Epochs:    *epochs,
-		LR:        *lr,
-		BatchSize: *batchSize,
-		Lambda:    *lambda,
-		K:         *kValue,
+		Epochs:       *epochs,
+		LR:           *lr,
+		BatchSize:    *batchSize,
+		Lambda:       *lambda,
+		K:            *kValue,
+		MaxPositions: *positions,
 	}
 
 	fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n\n", cfg.K)
