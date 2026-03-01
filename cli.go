@@ -41,6 +41,7 @@ func (c *CLIEngine) Run() {
 	c.line = liner.NewLiner()
 	defer c.line.Close()
 	c.line.SetCtrlCAborts(true)
+	c.line.SetWordCompleter(cliWordCompleter)
 
 	// Load history
 	if f, err := os.Open(c.histFile); err == nil {
@@ -119,6 +120,34 @@ func (c *CLIEngine) saveHistory() {
 		c.line.WriteHistory(f)
 		f.Close()
 	}
+}
+
+// cliWordCompleter provides tab completion for CLI commands.
+func cliWordCompleter(line string, pos int) (head string, completions []string, tail string) {
+	tail = line[pos:]
+	before := line[:pos]
+
+	// Only complete the first word (command name)
+	if strings.Contains(strings.TrimLeft(before, " "), " ") {
+		head = before
+		return
+	}
+
+	// head = leading whitespace, prefix = the partial command typed so far
+	leading := len(before) - len(strings.TrimLeft(before, " "))
+	head = before[:leading]
+	prefix := strings.ToLower(before[leading:])
+
+	commands := []string{
+		"board", "d", "epd", "eval", "exit", "fen", "help",
+		"moves", "nnue", "perft", "quit", "reset", "search", "set", "uci",
+	}
+	for _, cmd := range commands {
+		if strings.HasPrefix(cmd, prefix) {
+			completions = append(completions, cmd)
+		}
+	}
+	return
 }
 
 func (c *CLIEngine) cmdHelp() {
