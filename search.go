@@ -31,6 +31,14 @@ var LMPEnabled = true
 // SingularExtEnabled controls whether Singular Extensions are used
 var SingularExtEnabled = true
 
+// DoubleSingularExtEnabled controls whether double singular extensions are used
+// (extend by 2 when TT move is overwhelmingly better than alternatives)
+var DoubleSingularExtEnabled = true
+
+// NegativeSingularExtEnabled controls whether negative singular extensions are used
+// (reduce by 1 when alternatives are just as good as TT move)
+var NegativeSingularExtEnabled = true
+
 // SEEQuietPruneEnabled controls whether SEE-based quiet move pruning is used
 var SEEQuietPruneEnabled = true
 
@@ -135,8 +143,10 @@ type SearchInfo struct {
 	ExcludedMove [64]Move
 
 	// Singular extension statistics
-	SingularTests      uint64
-	SingularExtensions uint64
+	SingularTests              uint64
+	SingularExtensions         uint64
+	DoubleSingularExtensions   uint64
+	NegativeSingularExtensions uint64
 
 	// Recapture and passed pawn extension statistics
 	RecaptureExtensions  uint64
@@ -976,6 +986,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				if singularScore < singularBeta {
 					singularExtension = 1
 					info.SingularExtensions++
+					// Double extension: if TT move is overwhelmingly better
+					if DoubleSingularExtEnabled && singularScore < singularBeta-depth*3 {
+						singularExtension = 2
+						info.DoubleSingularExtensions++
+					}
+				} else if NegativeSingularExtEnabled && singularScore >= ttScore+depth*3 {
+					// Negative extension: alternatives are just as good, reduce
+					singularExtension = -1
+					info.NegativeSingularExtensions++
 				}
 			}
 		}
@@ -1057,7 +1076,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if givesCheck {
 			extension = 1
 		}
-		if singularExtension > 0 && extension == 0 {
+		if singularExtension != 0 && extension == 0 {
 			extension = singularExtension
 		}
 

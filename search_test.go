@@ -616,6 +616,67 @@ func TestSingularExtensionComparison(t *testing.T) {
 	t.Logf("Total time without SE:  %v", totalTimeWithout)
 }
 
+// TestDoubleSingularExtensionComparison compares search with double and negative
+// singular extensions enabled vs disabled.
+func TestDoubleSingularExtensionComparison(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping double singular extension comparison in short mode")
+	}
+
+	positions := []struct {
+		name string
+		fen  string
+	}{
+		{"Starting", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+		{"WAC.001", "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1"},
+		{"WAC.004", "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1"},
+		{"Middlegame", "r1b1qrk1/pp1n1ppp/2pbpn2/8/2BP4/2N1PN2/PP3PPP/R1BQ1RK1 w - - 0 1"},
+	}
+
+	depth := 12
+
+	type config struct {
+		name     string
+		doubleSE bool
+		negSE    bool
+	}
+	configs := []config{
+		{"Baseline (both off)", false, false},
+		{"Double SE only", true, false},
+		{"Negative SE only", false, true},
+		{"Both enabled", true, true},
+	}
+
+	t.Log("=== Double & Negative Singular Extension Comparison ===")
+	t.Logf("Testing at depth %d\n", depth)
+
+	for _, pos := range positions {
+		t.Logf("\n%s:", pos.name)
+
+		for _, cfg := range configs {
+			var board Board
+			board.SetFEN(pos.fen)
+
+			DoubleSingularExtEnabled = cfg.doubleSE
+			NegativeSingularExtEnabled = cfg.negSE
+			SingularExtEnabled = true
+
+			tt := NewTranspositionTable(16)
+			start := time.Now()
+			move, info := board.SearchWithTT(depth, 0, tt)
+			elapsed := time.Since(start)
+
+			t.Logf("  %-25s %s  nodes=%-9d time=%-12v SE=%-4d dblSE=%-4d negSE=%-4d",
+				cfg.name, move, info.Nodes, elapsed,
+				info.SingularExtensions, info.DoubleSingularExtensions, info.NegativeSingularExtensions)
+		}
+	}
+
+	// Restore defaults
+	DoubleSingularExtEnabled = true
+	NegativeSingularExtEnabled = true
+}
+
 // TestNoMoveAfterPonder reproduces a bug where the engine returned NoMove (0000)
 // when pondering on a position with deep TT entries from a prior search.
 // The TT TTLower entry raised alpha at the root, preventing PV updates.
