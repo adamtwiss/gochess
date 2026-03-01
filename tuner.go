@@ -34,6 +34,7 @@ type TunerTrace struct {
 	EG            []SparseEntry
 	Phase         int     // game phase (0 = full MG, 24 = full EG)
 	Result        float64 // game outcome: 1.0 (white wins), 0.5 (draw), 0.0 (black wins)
+	Score         int16   // White-relative search score in centipawns (0 when unavailable)
 	WScale        int     // endgame scale factor for White winning (0-128)
 	BScale        int     // endgame scale factor for Black winning (0-128)
 	HalfmoveClock int     // for 50-move rule scaling
@@ -424,7 +425,7 @@ func (t *Tuner) NumParams() int {
 //
 // Header (24 bytes):
 //   magic:         [4]byte   "TBIN"
-//   version:       uint16    1
+//   version:       uint16    2
 //   numParams:     uint16
 //   numTrain:      uint32
 //   numValidation: uint32
@@ -436,6 +437,7 @@ func (t *Tuner) NumParams() int {
 //   wScale:        uint8
 //   bScale:        uint8
 //   halfmoveClock: uint8
+//   score:         int16     (White-relative centipawns, 0 when unavailable)
 //   mgCount:       uint16
 //   egCount:       uint16
 //   mg[mgCount]:   4 bytes each (uint16 index, int16 coeff)
@@ -443,7 +445,7 @@ func (t *Tuner) NumParams() int {
 
 const (
 	tbinMagic      = "TBIN"
-	tbinVersion    = 1
+	tbinVersion    = 2
 	tbinHeaderSize = 24
 )
 
@@ -493,16 +495,17 @@ func uint8ToResult(r uint8) float64 {
 // writeTraceRecord writes a single TunerTrace as a binary record to w.
 // Returns the number of bytes written.
 func writeTraceRecord(w io.Writer, trace *TunerTrace) (int, error) {
-	// Fixed fields: 5 bytes
-	header := [9]byte{
+	// Fixed fields: 11 bytes (v2: added score at [5:7])
+	header := [11]byte{
 		uint8(trace.Phase),
 		resultToUint8(trace.Result),
 		uint8(trace.WScale),
 		uint8(trace.BScale),
 		uint8(trace.HalfmoveClock),
 	}
-	binary.LittleEndian.PutUint16(header[5:7], uint16(len(trace.MG)))
-	binary.LittleEndian.PutUint16(header[7:9], uint16(len(trace.EG)))
+	binary.LittleEndian.PutUint16(header[5:7], uint16(trace.Score))
+	binary.LittleEndian.PutUint16(header[7:9], uint16(len(trace.MG)))
+	binary.LittleEndian.PutUint16(header[9:11], uint16(len(trace.EG)))
 	n, err := w.Write(header[:])
 	if err != nil {
 		return n, err
@@ -544,9 +547,10 @@ func decodeTraceRecord(data []byte, offset int, mgBuf, egBuf []SparseEntry) (Tun
 	wScale := int(data[offset+2])
 	bScale := int(data[offset+3])
 	halfmove := int(data[offset+4])
-	mgCount := int(binary.LittleEndian.Uint16(data[offset+5:]))
-	egCount := int(binary.LittleEndian.Uint16(data[offset+7:]))
-	offset += 9
+	score := int16(binary.LittleEndian.Uint16(data[offset+5:]))
+	mgCount := int(binary.LittleEndian.Uint16(data[offset+7:]))
+	egCount := int(binary.LittleEndian.Uint16(data[offset+9:]))
+	offset += 11
 
 	// Grow backing slices if needed, reuse capacity
 	if cap(mgBuf) < mgCount {
@@ -578,6 +582,7 @@ func decodeTraceRecord(data []byte, offset int, mgBuf, egBuf []SparseEntry) (Tun
 	trace := TunerTrace{
 		Phase:         phase,
 		Result:        result,
+		Score:         score,
 		WScale:        wScale,
 		BScale:        bScale,
 		HalfmoveClock: halfmove,
@@ -598,6 +603,7 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 
 	type fenResult struct {
 		fen    string
+		score  int16
 		result float64
 	}
 	var lines []fenResult
@@ -610,12 +616,13 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 		if line == "" {
 			continue
 		}
+		// Parse result from last field (after last semicolon)
 		idx := strings.LastIndex(line, ";")
 		if idx < 0 {
 			continue
 		}
-		fen := strings.TrimSpace(line[:idx])
 		resultStr := strings.TrimSpace(line[idx+1:])
+		prefix := line[:idx]
 
 		var result float64
 		switch resultStr {
@@ -631,7 +638,22 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 				continue
 			}
 		}
-		lines = append(lines, fenResult{fen: fen, result: result})
+
+		// Check for score field: FEN;score;result (3 fields) vs FEN;result (2 fields)
+		var fen string
+		var score int16
+		if idx2 := strings.LastIndex(prefix, ";"); idx2 >= 0 {
+			// 3 fields: FEN;score;result
+			fen = strings.TrimSpace(prefix[:idx2])
+			var s int
+			if _, err := fmt.Sscanf(strings.TrimSpace(prefix[idx2+1:]), "%d", &s); err == nil {
+				score = int16(s)
+			}
+		} else {
+			// 2 fields: FEN;result
+			fen = strings.TrimSpace(prefix)
+		}
+		lines = append(lines, fenResult{fen: fen, score: score, result: result})
 	}
 	if err := scanner.Err(); err != nil {
 		return err
@@ -677,6 +699,7 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 		}
 		trace := t.computeTrace(&b)
 		trace.Result = lr.result
+		trace.Score = lr.score
 		n, err := writeTraceRecord(bw, &trace)
 		if err != nil {
 			return err
@@ -1730,7 +1753,7 @@ func sigmoid(score, K float64) float64 {
 }
 
 // TuneK finds the optimal scaling constant K by minimizing MSE on training data.
-func (t *Tuner) TuneK(tf *TraceFile) float64 {
+func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 	// Golden section search for optimal K in [50, 800]
 	lo, hi := 50.0, 800.0
 	gr := (math.Sqrt(5) + 1) / 2
@@ -1738,7 +1761,7 @@ func (t *Tuner) TuneK(tf *TraceFile) float64 {
 	for hi-lo > 0.1 {
 		c := hi - (hi-lo)/gr
 		d := lo + (hi-lo)/gr
-		if t.ComputeTrainError(tf, c) < t.ComputeTrainError(tf, d) {
+		if t.ComputeTrainError(tf, c, scoreBlend) < t.ComputeTrainError(tf, d, scoreBlend) {
 			hi = d
 		} else {
 			lo = c
@@ -1750,7 +1773,8 @@ func (t *Tuner) TuneK(tf *TraceFile) float64 {
 const streamBatchSize = 65536
 
 // computeErrorStreaming computes MSE by streaming records from a TraceFile region.
-func (t *Tuner) computeErrorStreaming(tf *TraceFile, byteOffset int64, count int, K float64) float64 {
+// scoreBlend controls the target: 0=result-only, 1=score-only.
+func (t *Tuner) computeErrorStreaming(tf *TraceFile, byteOffset int64, count int, K, scoreBlend float64) float64 {
 	if count == 0 {
 		return 0
 	}
@@ -1777,7 +1801,12 @@ func (t *Tuner) computeErrorStreaming(tf *TraceFile, byteOffset int64, count int
 				for i := start; i < end; i++ {
 					score := scoreFromTrace(&batch[i], t.Values)
 					predicted := sigmoid(score, K)
-					diff := batch[i].Result - predicted
+					target := batch[i].Result
+					if scoreBlend > 0 && batch[i].Score != 0 {
+						scoreTarget := sigmoid(float64(batch[i].Score), K)
+						target = (1-scoreBlend)*target + scoreBlend*scoreTarget
+					}
+					diff := target - predicted
 					localErr += diff * diff
 				}
 				errors[id] = localErr
@@ -1794,23 +1823,24 @@ func (t *Tuner) computeErrorStreaming(tf *TraceFile, byteOffset int64, count int
 }
 
 // ComputeTrainError computes MSE on the training set.
-func (t *Tuner) ComputeTrainError(tf *TraceFile, K float64) float64 {
-	return t.computeErrorStreaming(tf, 0, tf.NumTrain, K)
+func (t *Tuner) ComputeTrainError(tf *TraceFile, K, scoreBlend float64) float64 {
+	return t.computeErrorStreaming(tf, 0, tf.NumTrain, K, scoreBlend)
 }
 
 // ComputeValidationError computes MSE on the held-out validation set.
-func (t *Tuner) ComputeValidationError(tf *TraceFile, K float64) float64 {
-	return t.computeErrorStreaming(tf, int64(tf.trainBytes), tf.NumValidation, K)
+func (t *Tuner) ComputeValidationError(tf *TraceFile, K, scoreBlend float64) float64 {
+	return t.computeErrorStreaming(tf, int64(tf.trainBytes), tf.NumValidation, K, scoreBlend)
 }
 
 // TuneConfig controls the tuning process.
 type TuneConfig struct {
-	Epochs  int     // number of optimization epochs
-	LR      float64 // learning rate (default 1.0)
-	Beta1   float64 // Adam beta1 (default 0.9)
-	Beta2   float64 // Adam beta2 (default 0.999)
-	Epsilon float64 // Adam epsilon (default 1e-8)
-	Lambda  float64 // L2 regularization toward initial values (default 0, disabled)
+	Epochs     int     // number of optimization epochs
+	LR         float64 // learning rate (default 1.0)
+	Beta1      float64 // Adam beta1 (default 0.9)
+	Beta2      float64 // Adam beta2 (default 0.999)
+	Epsilon    float64 // Adam epsilon (default 1e-8)
+	Lambda     float64 // L2 regularization toward initial values (default 0, disabled)
+	ScoreBlend float64 // blend search scores into loss (0=result-only, 1=score-only)
 }
 
 // DefaultTuneConfig returns sensible defaults.
@@ -1887,7 +1917,12 @@ func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoc
 						score := rawScore * sf
 
 						sig := sigmoid(score, K)
-						errTerm := (trace.Result - sig) * sig * (1 - sig)
+						target := trace.Result
+						if cfg.ScoreBlend > 0 && trace.Score != 0 {
+							scoreTarget := sigmoid(float64(trace.Score), K)
+							target = (1-cfg.ScoreBlend)*target + cfg.ScoreBlend*scoreTarget
+						}
+						errTerm := (target - sig) * sig * (1 - sig)
 
 						mgScale := errTerm * (float64(TotalPhase) - phase) / float64(TotalPhase) * sf
 						egScale := errTerm * phase / float64(TotalPhase) * sf
@@ -2000,8 +2035,8 @@ func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoc
 		}
 
 		if onEpoch != nil {
-			trainErr := t.ComputeTrainError(tf, K)
-			valErr := t.ComputeValidationError(tf, K)
+			trainErr := t.ComputeTrainError(tf, K, cfg.ScoreBlend)
+			valErr := t.ComputeValidationError(tf, K, cfg.ScoreBlend)
 			onEpoch(epoch, trainErr, valErr)
 		}
 	}

@@ -20,8 +20,7 @@ type SelfPlayConfig struct {
 	Concurrency  int           // parallel games
 	OpeningsFile string        // EPD file with starting positions
 	OutputFile   string        // output file for training data
-	HashMB       int           // TT size in MB per game
-	IncludeScore bool          // include search score in output (FEN;score;result)
+	HashMB int // TT size in MB per game
 }
 
 // SelfPlayGame holds the result of one self-play game.
@@ -373,11 +372,11 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 			// Write positions to file
 			mu.Lock()
 			for i, fen := range game.Positions {
-				if cfg.IncludeScore && i < len(game.Scores) {
-					fmt.Fprintf(writer, "%s;%d;%.1f\n", fen, game.Scores[i], game.Result)
-				} else {
-					fmt.Fprintf(writer, "%s;%.1f\n", fen, game.Result)
+				score := 0
+				if i < len(game.Scores) {
+					score = game.Scores[i]
 				}
+				fmt.Fprintf(writer, "%s;%d;%.1f\n", fen, score, game.Result)
 			}
 			writer.Flush()
 			atomic.AddInt64(&totalPositions, int64(len(game.Positions)))

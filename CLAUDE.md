@@ -21,9 +21,9 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
 ./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin  # Build opening book
 
-./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data
-./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat -include-score  # With scores for NNUE
+./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data (FEN;score;result)
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
+./tuner tune -data training.dat -epochs 500 -lr 1.0 -score-blend 0.5        # Tune with blended score+result loss
 ./tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue # Train NNUE network
 
 ./chess -nnue net.nnue -uci                                                  # UCI with NNUE
@@ -247,11 +247,11 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 `cmd/tuner/main.go` — Two-phase system for optimizing ~1162 evaluation parameters.
 
-**Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;result` lines. Games run concurrently with independent Board+TT per game.
+**Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;score;result` lines (score is White-relative centipawns). Games run concurrently with independent Board+TT per game.
 
 **Binary cache and disk-streamed training** (`tuner.go`): Training data is preprocessed from the `.dat` FEN file into a `.tbin` binary cache, then streamed from disk during tuning. This keeps memory usage at O(batch_size) (~few MB) regardless of dataset size.
 
-- `.tbin` file format: 24-byte header (magic `"TBIN"`, version `uint16`, numParams `uint16`, numTrain `uint32`, numValidation `uint32`, trainBytes `uint64`) followed by variable-length records. Each record stores phase, result, scale factors, halfmove clock, and sparse MG/EG coefficient arrays. ~730 bytes/position average.
+- `.tbin` file format (v2): 24-byte header (magic `"TBIN"`, version `uint16`, numParams `uint16`, numTrain `uint32`, numValidation `uint32`, trainBytes `uint64`) followed by variable-length records. Each record stores phase, result, scale factors, halfmove clock, search score (int16), and sparse MG/EG coefficient arrays. ~730 bytes/position average.
 - `PreprocessToFile()` reads all FEN lines, shuffles deterministically (seed 42), splits 90/10 train/validation, computes traces via `computeTrace()`, writes binary records.
 - `OpenTraceFile()` reads and validates the `.tbin` header, returning a `TraceFile` handle.
 - `StreamTraining()` / `StreamValidation()` stream records in batches (default 65536) with reusable buffers. The callback receives a `[]TunerTrace` batch that must not be retained.
@@ -263,9 +263,9 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - `computeTrace()` mirrors `Evaluate()` but records sparse MG/EG coefficients per parameter instead of computing a score. Each position produces a `TunerTrace` with `[]SparseEntry` for MG and EG contributions.
 - `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
 - `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
-- `TuneK(tf)` finds optimal K via golden section search on MSE over streamed training data
-- `Tune(tf, K, cfg, onEpoch)` runs Adam optimizer: per epoch, streams training batches from disk, computes parallel gradients within each batch, aggregates across all batches, then applies Adam update
-- `ComputeTrainError(tf, K)` / `ComputeValidationError(tf, K)` compute MSE by streaming from the respective region of the `.tbin` file
+- `TuneK(tf, scoreBlend)` finds optimal K via golden section search on MSE over streamed training data
+- `Tune(tf, K, cfg, onEpoch)` runs Adam optimizer: per epoch, streams training batches from disk, computes parallel gradients within each batch, aggregates across all batches, then applies Adam update. `cfg.ScoreBlend` (0-1) blends search scores into the loss target: `target = (1-blend)*result + blend*sigmoid(score/K)`.
+- `ComputeTrainError(tf, K, scoreBlend)` / `ComputeValidationError(tf, K, scoreBlend)` compute MSE by streaming from the respective region of the `.tbin` file
 
 **What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, etc.), passed pawn enhancements (blocked penalty, not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement, pawn majority, queenside pawn advancement, candidate passed pawns, pawn lever), king attack unit weights, safe check bonuses (knight, bishop, rook, queen), king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), pawn storm bonus (MG+EG, 32 params), endgame king activity (centralization, proximity, corner push), space/pawn threat/piece threat/castling bonuses, tempo, trade bonuses, OCB scale.
 

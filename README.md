@@ -9,6 +9,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Lazy SMP multi-threaded search (configurable thread count)
 - Lockless transposition table, null-move pruning, late move reductions, late move pruning
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
+- Optional NNUE evaluation (HalfKP architecture, SIMD-accelerated on x86-64 and ARM64)
 - Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
 - Opening book support (built from PGN databases)
 - Full UCI protocol support for use with chess GUIs
@@ -44,6 +45,8 @@ The engine also enters UCI mode automatically when stdin is not a terminal (e.g.
 | `Hash` | 64 | Transposition table size in MB |
 | `Threads` | 1 | Number of search threads (Lazy SMP) |
 | `Ponder` | false | Enable pondering |
+| `UseNNUE` | false | Enable NNUE evaluation |
+| `NNUEFile` | | Path to NNUE network file (`.nnue`) |
 | `OwnBook` | false | Use the engine's opening book |
 | `BookFile` | | Path to opening book file |
 
@@ -125,7 +128,7 @@ The tuner optimizes ~1147 evaluation parameters (material values, piece-square t
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat
 ```
 
-This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the game result (1.0/0.5/0.0 from White's perspective). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
+This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the search score and game result in `FEN;score;result` format (score is White-relative centipawns, result is 1.0/0.5/0.0 from White's perspective). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -154,6 +157,7 @@ During tuning, training data is streamed from the `.tbin` file in batches of 655
 | `-data` | `training.dat` | Training data file from step 1 |
 | `-epochs` | 500 | Number of optimization epochs |
 | `-lr` | 1.0 | Learning rate |
+| `-score-blend` | 0 | Blend search scores into loss (0=result-only, 1=score-only) |
 
 #### Step 3: Apply tuned values
 
@@ -178,6 +182,76 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 - Error should decrease monotonically. If it stalls early, generate more data.
 - The tuner does not optimize endgame scale factors (multiplicative) or phase constants.
 - The `.tbin` cache is tied to the parameter catalog. If you add or remove tunable parameters, delete the `.tbin` file to force a rebuild.
+
+### NNUE Evaluation
+
+The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKP architecture: 40960 inputs (king-square × piece-type × piece-square), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→1 output. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
+
+#### Training an NNUE network
+
+**Step 1: Generate training data**
+
+```bash
+./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat
+```
+
+Selfplay always records the engine's search score alongside each position and game result in `FEN;score;result` format. Both the game result and the search score are used as training targets.
+
+**Step 2: Train the network**
+
+```bash
+./tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue
+```
+
+This trains a quantized NNUE network from scratch. On first run, the training data is preprocessed into a binary cache (`training.nnbin`) for efficient streaming. The loss function blends game-result prediction with score prediction: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-data` | `training.dat` | Training data file (must include scores) |
+| `-epochs` | 100 | Training epochs |
+| `-lr` | 0.001 | Learning rate |
+| `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
+| `-output` | `net.nnue` | Output network file |
+
+Training uses float32 weights internally, then quantizes to int16 for inference. The `.nnbin` cache is rebuilt automatically when the source `.dat` file changes.
+
+#### Using NNUE in UCI mode
+
+```bash
+# Start with NNUE enabled
+./chess -nnue net.nnue -uci
+```
+
+The `-nnue` flag loads the network and enables NNUE evaluation automatically. You can also toggle NNUE at runtime via UCI options:
+
+```
+setoption name UseNNUE value true
+setoption name NNUEFile value /path/to/net.nnue
+```
+
+#### Using NNUE in the interactive CLI
+
+```bash
+./chess -nnue net.nnue
+```
+
+In the interactive CLI, additional NNUE commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `nnue load <file>` | Load a network file |
+| `nnue on` | Enable NNUE evaluation |
+| `nnue off` | Switch back to classical evaluation |
+| `nnue eval` | Show NNUE evaluation of the current position |
+
+#### Performance
+
+The NNUE forward pass is accelerated with platform-specific SIMD assembly:
+
+- **x86-64 (AVX2)**: ~10× faster than the generic Go implementation
+- **ARM64 (NEON)**: SIMD always available, no runtime detection needed
+
+Accumulator updates are incremental — only changed features are updated when pieces move. King moves trigger a full recompute since they change the perspective for all features.
 
 ## Running Tests
 
