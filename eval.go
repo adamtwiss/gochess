@@ -68,32 +68,32 @@ var (
 	DoubledRooksEG = 18 // kept: tuned value (-13) is suspect
 
 	// Passed pawn: not-blocked bonus scaled by relative rank
-	PassedPawnNotBlockedMG = [8]int{0, 4, -12, 3, 47, 85, 34, 0}
-	PassedPawnNotBlockedEG = [8]int{0, 25, 14, 4, -10, -6, 59, 0}
+	PassedPawnNotBlockedMG = [8]int{0, -10, 27, 28, 26, 124, 107, 0}
+	PassedPawnNotBlockedEG = [8]int{0, 45, 29, 18, -19, 8, 56, 0}
 
 	// Passed pawn: entire path to promotion clear
-	PassedPawnFreePathMG = [8]int{0, 3, 0, -7, -13, 9, 34, 0}
-	PassedPawnFreePathEG = [8]int{0, 5, 7, 26, 57, 96, 79, 0}
+	PassedPawnFreePathMG = [8]int{0, 60, 30, -23, -22, -69, 107, 0}
+	PassedPawnFreePathEG = [8]int{0, -28, -18, 25, 92, 149, 76, 0}
 
 	// King proximity (EG only, per Chebyshev distance unit)
-	PassedPawnFriendlyKingDistEG = -7 // closer = better
-	PassedPawnEnemyKingDistEG    = 15 // farther = better
+	PassedPawnFriendlyKingDistEG = -11 // closer = better
+	PassedPawnEnemyKingDistEG    = 18  // farther = better
 	PassedPawnKingScale          = [8]int{0, 0, 0, 1, 2, 3, 4, 0}
 
 	// Protected passer (defended by own pawn)
-	PassedPawnProtectedMG = 9
-	PassedPawnProtectedEG = 4
+	PassedPawnProtectedMG = 29
+	PassedPawnProtectedEG = -3
 
 	// Connected passers (friendly passer on adjacent file)
-	PassedPawnConnectedMG = -3
-	PassedPawnConnectedEG = 20
+	PassedPawnConnectedMG = 37
+	PassedPawnConnectedEG = 14
 
-	RookBehindPassedMG = 8
-	RookBehindPassedEG = 38
+	RookBehindPassedMG = 2
+	RookBehindPassedEG = 47
 
 	// Passed pawn: enemy piece blocking the stop square (partially cancels base bonus)
-	PassedPawnBlockedMG = [8]int{0, -27, -9, -40, 12, -40, -161, 0}
-	PassedPawnBlockedEG = [8]int{0, 24, -11, 0, -15, -35, -26, 0}
+	PassedPawnBlockedMG = [8]int{0, 62, 46, 26, -25, -55, -125, 0}
+	PassedPawnBlockedEG = [8]int{0, -27, -56, -30, -19, -29, -13, 0}
 
 	// King attack unit weights (base per attacker + bonus per king-zone square)
 	KnightAttackUnits   = 7
@@ -145,9 +145,9 @@ var (
 )
 
 // Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
-var KingCenterBonusEG = -6        // per center-distance unit (penalty, both sides)
-var KingProximityAdvantageEG = 0  // per unit closer to enemy king (stronger side)
-var KingCornerPushEG = 63         // per center-distance unit of weaker king (stronger side)
+var KingCenterBonusEG = -13       // per center-distance unit (penalty, both sides)
+var KingProximityAdvantageEG = 15 // per unit closer to enemy king (stronger side)
+var KingCornerPushEG = 86         // per center-distance unit of weaker king (stronger side)
 
 // Pawn storm (legacy): attack units for friendly pawns advanced near enemy king, by relative rank
 var PawnStormUnits = [8]int{0, 0, 0, 0, 1, 2, 3, 0}
@@ -158,12 +158,12 @@ var PawnStormEnabled = false // disabled in favor of direct PawnStormBonusMG
 // opposed=0: enemy pawn present on this file (blocked storm)
 // opposed=1: no enemy pawn on this file (open storm)
 var PawnStormBonusMG = [2][8]int{
-	{0, 0, 0, 5, 10, 15, 22, 0},  // Opposed
-	{0, 0, 5, 12, 20, 28, 42, 0}, // Unopposed
+	{0, -17, -26, -10, 19, 16, -78, 0}, // Opposed
+	{0, 1, -27, -9, 28, 55, -141, 0},   // Unopposed
 }
 var PawnStormBonusEG = [2][8]int{
-	{0, 0, 0, 2, 4, 6, 8, 0},   // Opposed
-	{0, 0, 2, 4, 8, 12, 16, 0}, // Unopposed
+	{0, 15, 34, 28, 6, 6, -16, 0},     // Opposed
+	{0, 12, 15, -9, -33, -88, -51, 0}, // Unopposed
 }
 var PawnStormBonusEnabled = true
 
@@ -172,8 +172,8 @@ var SafeCheckEnabled = true
 var NoQueenScaleEnabled = true
 
 // Tempo bonus for the side to move.
-var TempoMG = 12
-var TempoEG = 3
+var TempoMG = 24
+var TempoEG = 6
 
 // Trade bonus: when ahead, bonus per opponent non-pawn piece traded (encourages
 // simplification) and per own pawn remaining (discourages pawn trades).

@@ -179,45 +179,45 @@ func init() {
 }
 
 // Pawn structure bonuses/penalties (centipawns)
-var passedPawnMG = [8]int{0, 12, 6, -3, -21, 67, 126, 0} // by rank (0=rank1, 7=rank8)
-var passedPawnEG = [8]int{0, -3, 13, 31, 44, 60, 144, 0}
+var passedPawnMG = [8]int{0, -27, -52, -42, 26, 73, 201, 0} // by rank (0=rank1, 7=rank8)
+var passedPawnEG = [8]int{0, 18, 27, 58, 79, 67, 201, 0}
 
 var (
-	doubledPawnMG   = -8
-	doubledPawnEG   = -23
-	isolatedPawnMG  = -20
-	isolatedPawnEG  = -12
-	backwardPawnMG  = -5
-	backwardPawnEG  = -29
-	connectedPawnMG = 4
-	connectedPawnEG = 13
+	doubledPawnMG   = -9
+	doubledPawnEG   = -24
+	isolatedPawnMG  = -22
+	isolatedPawnEG  = -12 // kept: tuned value (+1) removes penalty, suspect
+	backwardPawnMG  = -4
+	backwardPawnEG  = -16
+	connectedPawnMG = 7
+	connectedPawnEG = 31
 )
 
 // Pawn advancement bonus by relative rank (index 0=rank1, 7=rank8).
 // Rewards pawns that have advanced beyond their starting squares.
-var pawnAdvancementMG = [8]int{0, -16, -12, 5, 23, 29, 106, 0}
-var pawnAdvancementEG = [8]int{0, 22, 30, 27, 41, 52, 29, 0}
+var pawnAdvancementMG = [8]int{0, -1, 0, 12, 29, 47, 181, 0}
+var pawnAdvancementEG = [8]int{0, 55, 47, 50, 77, 110, 86, 0}
 
 // Candidate passed pawn: no enemy pawn ahead on own file, friendly support >= enemy sentries
-var candidatePassedMG = [8]int{0, -3, 1, 1, -1, -67, 0, 0}
-var candidatePassedEG = [8]int{0, 7, 17, 31, 61, 172, 0, 0}
+var candidatePassedMG = [8]int{0, 7, 7, 21, -31, -12, 0, 0}
+var candidatePassedEG = [8]int{0, -8, 6, 46, 98, 236, 0, 0}
 var CandidatePassedEnabled = true
 
 // Pawn majority: bonus per pawn advantage on a wing (queenside/kingside)
-var PawnMajorityMG = 13
-var PawnMajorityEG = -3
+var PawnMajorityMG = 9
+var PawnMajorityEG = 20
 var PawnMajorityEnabled = true
 
 // Queenside pawn advancement bonus by relative rank (files a, b, c only).
 // Stacks on top of base pawnAdvancement bonus. Rewards advancing queenside
 // pawns which are strategically dangerous (further from king, create outside passers).
-var queensidePawnAdvMG = [8]int{0, -15, -1, 0, 5, -3, 16, 0}
-var queensidePawnAdvEG = [8]int{0, 7, -1, 9, 14, 19, 0, 0}
+var queensidePawnAdvMG = [8]int{0, -8, 18, 17, 15, 24, -43, 0}
+var queensidePawnAdvEG = [8]int{0, 7, 16, 19, 28, 28, 54, 0}
 
 // Pawn lever: bonus for a pawn that can advance one square to attack an enemy pawn.
 // Creates tension, opens lines, and is the mechanism behind most strategic pawn advances.
-var pawnLeverMG = [8]int{0, 0, 0, 5, 8, 5, 0, 0}
-var pawnLeverEG = [8]int{0, 0, 0, 3, 5, 3, 0, 0}
+var pawnLeverMG = [8]int{0, 8, 4, 14, 13, 5, 0, 0}
+var pawnLeverEG = [8]int{0, -17, 0, 11, -17, 3, 0, 0}
 var PawnLeverEnabled = true
 
 // evaluatePawnStructure evaluates pawn structure for one color.
@@ -375,11 +375,11 @@ func (b *Board) probePawnEval() PawnEntry {
 
 // King safety constants (vars for tuner access)
 var (
-	shieldPawnRank2MG          = 18
-	shieldPawnRank3MG          = 12
-	missingShieldPawnMG        = -13
-	missingShieldPawnAdvancedMG = 0 // reduced penalty when pawn is advanced (rank 4)
-	semiOpenFileNearKingMG     = -39
+	shieldPawnRank2MG          = 24
+	shieldPawnRank3MG          = 11
+	missingShieldPawnMG        = -5
+	missingShieldPawnAdvancedMG = -1 // reduced penalty when pawn is advanced (rank 4)
+	semiOpenFileNearKingMG     = -55
 )
 
 // evaluateKingSafety evaluates king safety for one color.

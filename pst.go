@@ -151,8 +151,8 @@ var egKingTable = [64]int{
 
 // PeSTO base material values (added to positional PST entries)
 // Indexed by white piece type (1=Pawn .. 6=King)
-var mgMaterial = [7]int{0, 88, 346, 366, 523, 1133, 0}
-var egMaterial = [7]int{0, 108, 266, 414, 557, 1067, 0}
+var mgMaterial = [7]int{0, 91, 374, 392, 555, 1184, 0}
+var egMaterial = [7]int{0, 125, 315, 442, 637, 1163, 0}
 
 // Per-piece-type PST positional scale factors (percentage, 100 = unscaled PeSTO values).
 // Only the positional component is scaled; material values are unchanged.
