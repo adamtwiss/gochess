@@ -220,6 +220,7 @@ func runNNUETrain(args []string) {
 	lr := fs.Float64("lr", 0.001, "learning rate")
 	batchSize := fs.Int("batch", 16384, "batch size")
 	lambda := fs.Float64("lambda", 0.5, "result vs score weight (0=score only, 1=result only)")
+	kValue := fs.Float64("K", 400, "sigmoid scaling constant (default 400)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 
 	fs.Usage = func() {
@@ -278,13 +279,10 @@ func runNNUETrain(args []string) {
 		LR:        *lr,
 		BatchSize: *batchSize,
 		Lambda:    *lambda,
-		K:         400.0,
+		K:         *kValue,
 	}
 
-	// Tune K
-	fmt.Printf("\nTuning K (sigmoid scaling)...\n")
-	cfg.K = trainer.TuneK(bf, cfg.Lambda)
-	fmt.Printf("Optimal K = %.2f\n\n", cfg.K)
+	fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n\n", cfg.K)
 
 	fmt.Printf("Training NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f\n",
 		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda)
