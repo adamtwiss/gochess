@@ -20,6 +20,17 @@ func (b *Board) MakeMove(m Move) {
 	piece := b.Squares[from]
 	captured := b.Squares[to]
 
+	// Push NNUE accumulator before any piece modifications.
+	// King moves use PushEmpty (no copy — RecomputeAccumulator overwrites everything).
+	isKingMove := piece == WhiteKing || piece == BlackKing
+	if b.NNUEAcc != nil {
+		if isKingMove {
+			b.NNUEAcc.PushEmpty()
+		} else {
+			b.NNUEAcc.Push()
+		}
+	}
+
 	// Store undo info
 	undo := UndoInfo{
 		Move:          m,
@@ -181,10 +192,60 @@ func (b *Board) MakeMove(m Move) {
 	}
 	b.SideToMove = 1 - b.SideToMove
 	b.HashKey ^= Zobrist.SideToMove
+
+	// NNUE accumulator update — done directly here instead of through
+	// putPiece/removePiece/movePiece hooks to avoid per-operation overhead.
+	if b.NNUENet != nil && b.NNUEAcc != nil {
+		if isKingMove {
+			// King moves: full recompute (king square changed, all features shift)
+			b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
+		} else {
+			// Non-king moves: incremental update
+			acc := b.NNUEAcc.Current()
+			wKingSq := b.Pieces[WhiteKing].LSB()
+			bKingSq := b.Pieces[BlackKing].LSB()
+			net := b.NNUENet
+
+			if flags == FlagEnPassant {
+				// En passant: remove captured pawn + move our pawn
+				capSq := to - 8
+				capPiece := BlackPawn
+				if b.SideToMove == White { // note: side already flipped
+					capSq = to + 8
+					capPiece = WhitePawn
+				}
+				net.SubSubAddFeature(acc, piece, from, to, capPiece, capSq, wKingSq, bKingSq)
+			} else if flags&FlagPromotion != 0 {
+				// Promotion: remove pawn from 'from', add promoted piece at 'to'
+				// (captured piece at 'to' already handled)
+				promoPiece := m.PromotionPiece()
+				if b.SideToMove == White { // side already flipped
+					promoPiece += 6
+				}
+				if undo.Captured != Empty {
+					// Capture-promotion: remove captured + remove pawn + add promoted
+					net.RemoveFeature(acc, undo.Captured, to, wKingSq, bKingSq)
+				}
+				net.RemoveFeature(acc, piece, from, wKingSq, bKingSq)
+				net.AddFeature(acc, promoPiece, to, wKingSq, bKingSq)
+			} else if undo.Captured != Empty {
+				// Capture: remove captured piece + move our piece
+				net.SubSubAddFeature(acc, piece, from, to, undo.Captured, to, wKingSq, bKingSq)
+			} else {
+				// Quiet move: just move our piece
+				net.SubAddFeature(acc, piece, from, to, wKingSq, bKingSq)
+			}
+		}
+	}
 }
 
 // MakeNullMove makes a null move (pass turn without moving)
 func (b *Board) MakeNullMove() {
+	// Push NNUE accumulator (no features change, but needed for stack consistency)
+	if b.NNUEAcc != nil {
+		b.NNUEAcc.Push()
+	}
+
 	// Store undo info
 	undo := UndoInfo{
 		Move:      NoMove,
@@ -216,6 +277,11 @@ func (b *Board) UnmakeNullMove() {
 	b.SideToMove = 1 - b.SideToMove
 	b.EnPassant = undo.EnPassant
 	b.HashKey = undo.HashKey
+
+	// Pop NNUE accumulator
+	if b.NNUEAcc != nil {
+		b.NNUEAcc.Pop()
+	}
 }
 
 // UnmakeMove undoes the last move
@@ -231,6 +297,13 @@ func (b *Board) UnmakeMove(m Move) {
 	// Verify we're undoing the right move
 	if undo.Move != m {
 		panic("UnmakeMove: undo stack mismatch - expected " + undo.Move.String() + ", got " + m.String())
+	}
+
+	// Pop NNUE accumulator to restore pre-move state.
+	// No NNUE hooks in putPiece/removePiece/movePiece, so piece restorations
+	// below have zero NNUE overhead.
+	if b.NNUEAcc != nil {
+		b.NNUEAcc.Pop()
 	}
 
 	from := m.From()

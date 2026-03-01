@@ -35,6 +35,9 @@ func main() {
 	// Book loading flag
 	bookFile := flag.String("book", "", "opening book file for UCI mode")
 
+	// NNUE flag
+	nnueFile := flag.String("nnue", "", "NNUE network file")
+
 	// Benchmark flags
 	benchmark := flag.Bool("benchmark", false, "run multi-suite benchmark")
 	benchSave := flag.String("save", "", "save benchmark results to JSON file")
@@ -86,6 +89,19 @@ func main() {
 		return
 	}
 
+	// Load NNUE network if specified
+	var nnueNet *chess.NNUENet
+	if *nnueFile != "" {
+		var err error
+		nnueNet, err = chess.LoadNNUE(*nnueFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
+			os.Exit(1)
+		}
+		chess.UseNNUE = true
+		fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
+	}
+
 	// If forced UCI or stdin is not a terminal, use UCI mode
 	if *forceUCI || !term.IsTerminal(int(os.Stdin.Fd())) {
 		engine := chess.NewUCIEngine()
@@ -97,12 +113,18 @@ func main() {
 			}
 			engine.SetBook(book)
 		}
+		if nnueNet != nil {
+			engine.SetNNUE(nnueNet)
+		}
 		engine.Run()
 		return
 	}
 
 	// Interactive CLI mode
 	cli := chess.NewCLIEngine()
+	if nnueNet != nil {
+		cli.SetNNUE(nnueNet)
+	}
 	cli.Run()
 }
 

@@ -16,11 +16,12 @@ const (
 
 // TTEntry is a single transposition table entry (used by callers)
 type TTEntry struct {
-	Key   uint64 // Zobrist hash key (for collision detection)
-	Depth int8   // Search depth
-	Score int16  // Evaluation score
-	Flag  TTFlag // Type of score
-	Move  Move   // Best move found
+	Key        uint64 // Zobrist hash key (for collision detection)
+	Depth      int8   // Search depth
+	Score      int16  // Evaluation score
+	Flag       TTFlag // Type of score
+	Move       Move   // Best move found
+	StaticEval int16  // Static eval (stored as int8 * 4, range ±508)
 }
 
 // ttSlot stores a TT entry as two uint64 fields for lockless concurrent access.
@@ -37,21 +38,31 @@ type ttSlot struct {
 //	bits 24-39: Score (int16, stored as uint16)
 //	bits 40-47: Depth (int8, stored as uint8)
 //	bits 48-55: Generation (uint8)
-func packTTData(depth int8, score int16, flag TTFlag, move Move, gen uint8) uint64 {
+//	bits 56-63: StaticEval (int8, actual eval = int16(int8) * 4)
+func packTTData(depth int8, score int16, flag TTFlag, move Move, gen uint8, staticEval int16) uint64 {
+	// Compress static eval to int8 by dividing by 4 (range ±508cp)
+	se := staticEval / 4
+	if se > 127 {
+		se = 127
+	} else if se < -128 {
+		se = -128
+	}
 	return uint64(move) |
 		uint64(flag)<<16 |
 		uint64(uint16(score))<<24 |
 		uint64(uint8(depth))<<40 |
-		uint64(gen)<<48
+		uint64(gen)<<48 |
+		uint64(uint8(int8(se)))<<56
 }
 
 // unpackTTData unpacks a data uint64 into entry fields.
-func unpackTTData(data uint64) (depth int8, score int16, flag TTFlag, move Move, gen uint8) {
+func unpackTTData(data uint64) (depth int8, score int16, flag TTFlag, move Move, gen uint8, staticEval int16) {
 	move = Move(data & 0xFFFF)
 	flag = TTFlag((data >> 16) & 0xFF)
 	score = int16(uint16((data >> 24) & 0xFFFF))
 	depth = int8(uint8((data >> 40) & 0xFF))
 	gen = uint8((data >> 48) & 0xFF)
+	staticEval = int16(int8(uint8((data >> 56) & 0xFF))) * 4
 	return
 }
 
@@ -129,18 +140,19 @@ func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
 			continue
 		}
 
-		depth, score, flag, move, _ := unpackTTData(data)
+		depth, score, flag, move, _, staticEval := unpackTTData(data)
 		if flag == TTNone {
 			continue
 		}
 
 		atomic.AddUint64(&tt.hits, 1)
 		return TTEntry{
-			Key:   key,
-			Depth: depth,
-			Score: score,
-			Flag:  flag,
-			Move:  move,
+			Key:        key,
+			Depth:      depth,
+			Score:      score,
+			Flag:       flag,
+			Move:       move,
+			StaticEval: staticEval,
 		}, true
 	}
 
@@ -152,12 +164,12 @@ func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
 // Replacement uses Stockfish-style scoring: depth - 4*age. Stale entries
 // from older generations are cheap to evict; current-generation deep entries
 // are preserved.
-func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFlag, move Move) {
+func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFlag, move Move, staticEval int) {
 	bucket := &tt.buckets[tt.index(key)]
 	d := int8(depth)
 	gen := tt.generation
 
-	newData := packTTData(d, int16(score), flag, move, gen)
+	newData := packTTData(d, int16(score), flag, move, gen, int16(staticEval))
 
 	// Scan all 4 slots: look for key match, empty slot, and worst-scoring slot
 	replaceIdx := 0
@@ -167,7 +179,7 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 		slotKeyXor := atomic.LoadUint64(&bucket.slots[i].keyXor)
 		slotKey := slotKeyXor ^ slotData
 
-		slotDepth, _, slotFlag, _, slotGen := unpackTTData(slotData)
+		slotDepth, _, slotFlag, _, slotGen, _ := unpackTTData(slotData)
 
 		// Empty slot: use immediately
 		if slotFlag == TTNone {
@@ -216,7 +228,7 @@ func (tt *TranspositionTable) Hashfull() int {
 	for i := 0; i < sampleBuckets; i++ {
 		for j := 0; j < 4; j++ {
 			data := atomic.LoadUint64(&tt.buckets[i].slots[j].data)
-			_, _, flag, _, _ := unpackTTData(data)
+			_, _, flag, _, _, _ := unpackTTData(data)
 			if flag != TTNone {
 				used++
 			}

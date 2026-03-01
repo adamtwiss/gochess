@@ -127,6 +127,10 @@ type Board struct {
 
 	// Undo stack for MakeMove/UnmakeMove (per-board to avoid sharing issues)
 	UndoStack []UndoInfo
+
+	// NNUE evaluation (nil when disabled — zero overhead)
+	NNUENet *NNUENet
+	NNUEAcc *NNUEAccumulatorStack
 }
 
 // Clear removes all pieces from the board and resets state
@@ -156,6 +160,10 @@ func (b *Board) Clear() {
 		b.UndoStack = make([]UndoInfo, 0, 256)
 	} else {
 		b.UndoStack = b.UndoStack[:0]
+	}
+	// Reset NNUE accumulator stack
+	if b.NNUEAcc != nil {
+		b.NNUEAcc.Reset()
 	}
 }
 
@@ -242,6 +250,10 @@ func (b *Board) Reset() {
 	b.FullmoveNum = 1
 	b.HashKey = b.Hash()
 	b.PawnHashKey = b.PawnHash()
+	// Recompute NNUE accumulator
+	if b.NNUENet != nil && b.NNUEAcc != nil {
+		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
+	}
 }
 
 // SetFEN parses a FEN string and sets the board position
@@ -324,6 +336,10 @@ func (b *Board) SetFEN(fen string) error {
 
 	b.HashKey = b.Hash()
 	b.PawnHashKey = b.PawnHash()
+	// Recompute NNUE accumulator
+	if b.NNUENet != nil && b.NNUEAcc != nil {
+		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
+	}
 	return nil
 }
 

@@ -439,6 +439,10 @@ func (b *Board) SearchParallel(maxDepth int, info *SearchInfo, numThreads int) (
 		// Per-thread eval and pawn tables
 		helperBoards[i].PawnTable = NewPawnTable(1)
 		helperBoards[i].EvalTable = NewEvalTable(1)
+		// Per-thread NNUE accumulator (net is shared read-only)
+		if b.NNUEAcc != nil {
+			helperBoards[i].NNUEAcc = b.NNUEAcc.DeepCopy()
+		}
 
 		helpers[i] = &SearchInfo{
 			StartTime:   info.StartTime,
@@ -1312,7 +1316,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			storeScore -= ply
 		}
 
-		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove)
+		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove, staticEval)
 	}
 
 	return bestScore

@@ -183,6 +183,10 @@ var TradePawnBonus = 5   // bonus per own pawn when ahead
 // OCBScale is the endgame scale factor (out of 128) for opposite-colored bishop endings.
 var OCBScale = 64
 
+// UseNNUE toggles NNUE evaluation. When true and NNUENet is loaded,
+// EvaluateRelative dispatches to the NNUE forward pass.
+var UseNNUE = false
+
 // KingSafetyTable maps accumulated attack units to centipawn penalties.
 // Superlinear growth: near-zero for low indices, rapid growth from 15-50, capped at 999.
 var KingSafetyTable = [100]int{
@@ -379,10 +383,68 @@ func (b *Board) Evaluate() int {
 // EvaluateRelative returns the evaluation from the perspective of the side to move.
 // Positive values are good for the side to move.
 func (b *Board) EvaluateRelative() int {
+	if UseNNUE && b.NNUENet != nil && b.NNUEAcc != nil {
+		return b.NNUEEvaluateRelative()
+	}
 	score := b.Evaluate()
 	if b.SideToMove == Black {
 		return -score
 	}
+	return score
+}
+
+// NNUEEvaluateRelative returns the NNUE evaluation from the perspective
+// of the side to move. Applies endgame scaling and 50-move rule scaling.
+func (b *Board) NNUEEvaluateRelative() int {
+	// Eval cache probe (larger cache for NNUE since forward pass is expensive)
+	if b.EvalTable == nil {
+		b.EvalTable = NewEvalTable(8)
+	}
+	b.EvalTable.probes++
+	idx := b.HashKey & b.EvalTable.mask
+	if e := b.EvalTable.entries[idx]; e.Key == b.HashKey {
+		b.EvalTable.hits++
+		return int(e.Score)
+	}
+
+	acc := b.NNUEAcc.Current()
+	if !acc.Computed {
+		b.NNUENet.RecomputeAccumulator(acc, b)
+	}
+
+	score := b.NNUENet.Evaluate(acc, b.SideToMove)
+
+	// Endgame scale factors
+	wScale, bScale := b.endgameScale()
+	// Score is side-to-move relative, so convert to White-relative for scaling
+	whiteScore := score
+	if b.SideToMove == Black {
+		whiteScore = -score
+	}
+	if whiteScore > 0 {
+		whiteScore = whiteScore * wScale / 128
+	} else {
+		whiteScore = whiteScore * bScale / 128
+	}
+	// Convert back to side-to-move relative
+	if b.SideToMove == Black {
+		score = -whiteScore
+	} else {
+		score = whiteScore
+	}
+
+	// 50-move rule scaling
+	if b.HalfmoveClock > 0 {
+		hmc := int(b.HalfmoveClock)
+		if hmc > 100 {
+			hmc = 100
+		}
+		score = score * (100 - hmc) / 100
+	}
+
+	// Eval cache store
+	b.EvalTable.entries[idx] = EvalEntry{Key: b.HashKey, Score: int16(score)}
+
 	return score
 }
 

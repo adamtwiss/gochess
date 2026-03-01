@@ -22,6 +22,8 @@ func main() {
 		runSelfPlay(os.Args[2:])
 	case "tune":
 		runTune(os.Args[2:])
+	case "nnue-train":
+		runNNUETrain(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -34,6 +36,7 @@ func printUsage() {
 Commands:
   selfplay    Generate training data from self-play games
   tune        Optimize evaluation parameters from training data
+  nnue-train  Train an NNUE network from training data
 
 Run 'tuner <command> -h' for command-specific options.
 `)
@@ -49,6 +52,7 @@ func runSelfPlay(args []string) {
 	openings := fs.String("openings", "testdata/noob_3moves.epd", "EPD file with opening positions")
 	output := fs.String("output", "training.dat", "output file for training data")
 	hashMB := fs.Int("hash", 16, "TT size in MB per game")
+	includeScore := fs.Bool("include-score", false, "include search score in output (FEN;score;result)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner selfplay [options]\n\nOptions:\n")
@@ -67,6 +71,7 @@ func runSelfPlay(args []string) {
 		OpeningsFile: *openings,
 		OutputFile:   *output,
 		HashMB:       *hashMB,
+		IncludeScore: *includeScore,
 	}
 
 	fmt.Printf("Self-play configuration:\n")
@@ -205,4 +210,103 @@ func runTune(args []string) {
 		initialError, finalError, (initialError-finalError)/initialError*100)
 	fmt.Printf("Validation: initial=%.8f  final=%.8f  improvement=%.4f%%\n",
 		initialValError, finalValError, (initialValError-finalValError)/initialValError*100)
+}
+
+func runNNUETrain(args []string) {
+	fs := flag.NewFlagSet("nnue-train", flag.ExitOnError)
+	dataFile := fs.String("data", "training.dat", "training data file (FEN;result or FEN;score;result)")
+	outputFile := fs.String("output", "net.nnue", "output NNUE network file")
+	epochs := fs.Int("epochs", 100, "number of training epochs")
+	lr := fs.Float64("lr", 0.001, "learning rate")
+	batchSize := fs.Int("batch", 16384, "batch size")
+	lambda := fs.Float64("lambda", 0.5, "result vs score weight (0=score only, 1=result only)")
+	seed := fs.Int64("seed", 42, "random seed for weight initialization")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: tuner nnue-train [options]\n\nOptions:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  tuner nnue-train -data training.dat -epochs 100 -lr 0.001 -output net.nnue\n")
+	}
+	fs.Parse(args)
+
+	// Derive .nnbin filename
+	nnbinFile := strings.TrimSuffix(*dataFile, ".dat") + ".nnbin"
+
+	// Check if binary cache needs (re)building
+	needBuild := false
+	binStat, binErr := os.Stat(nnbinFile)
+	if binErr != nil {
+		needBuild = true
+	} else {
+		datStat, datErr := os.Stat(*dataFile)
+		if datErr == nil && datStat.ModTime().After(binStat.ModTime()) {
+			needBuild = true
+			fmt.Printf("Source %s is newer than %s, rebuilding cache...\n", *dataFile, nnbinFile)
+		}
+	}
+
+	if needBuild {
+		fmt.Printf("Preprocessing %s → %s...\n", *dataFile, nnbinFile)
+		start := time.Now()
+		numTrain, numVal, err := chess.PreprocessNNUEToFile(*dataFile, nnbinFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error preprocessing: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Preprocessing done: %d train + %d validation in %v\n",
+			numTrain, numVal, time.Since(start).Round(time.Millisecond))
+	} else {
+		fmt.Printf("Using cached binary file: %s (%.1f MB)\n", nnbinFile,
+			float64(binStat.Size())/(1024*1024))
+	}
+
+	// Open binary file
+	bf, err := chess.OpenNNBinFile(nnbinFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening binary file: %v\n", err)
+		os.Exit(1)
+	}
+	defer bf.Close()
+	fmt.Printf("Training data: %d train + %d validation positions\n", bf.NumTrain, bf.NumValidation)
+
+	// Create trainer
+	trainer := chess.NewNNUETrainer(*seed)
+
+	cfg := chess.NNUETrainConfig{
+		Epochs:    *epochs,
+		LR:        *lr,
+		BatchSize: *batchSize,
+		Lambda:    *lambda,
+		K:         400.0,
+	}
+
+	// Tune K
+	fmt.Printf("\nTuning K (sigmoid scaling)...\n")
+	cfg.K = trainer.TuneK(bf, cfg.Lambda)
+	fmt.Printf("Optimal K = %.2f\n\n", cfg.K)
+
+	fmt.Printf("Training NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f\n",
+		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda)
+	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Loss", "Val Loss")
+	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "----------", "--------")
+
+	start := time.Now()
+	trainer.Train(bf, cfg, func(epoch int, trainLoss, valLoss float64) {
+		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
+			fmt.Printf("%-8d  %.8f    %.8f\n", epoch, trainLoss, valLoss)
+		}
+	})
+
+	elapsed := time.Since(start)
+	fmt.Printf("\nTraining completed in %v\n", elapsed.Round(time.Second))
+
+	// Quantize and save
+	infNet := chess.QuantizeNetwork(trainer.Net)
+	if err := chess.SaveNNUE(*outputFile, infNet); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving network: %v\n", err)
+		os.Exit(1)
+	}
+	fi, _ := os.Stat(*outputFile)
+	fmt.Printf("Network saved to %s (%.1f MB)\n", *outputFile, float64(fi.Size())/(1024*1024))
 }

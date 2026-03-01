@@ -37,6 +37,7 @@ type UCIEngine struct {
 	ponderSide     Color
 	ponderOpt      bool
 	ponderBookMove string // set by cmdPonderhit when book has a move
+	nnueNet        *NNUENet // loaded NNUE network (nil when not loaded)
 }
 
 // NewUCIEngine creates a UCI engine reading from stdin and writing to stdout.
@@ -105,6 +106,20 @@ func (e *UCIEngine) SetBook(book *OpeningBook) {
 	e.book = book
 }
 
+// SetNNUE loads an NNUE network and wires it into the engine's board.
+func (e *UCIEngine) SetNNUE(net *NNUENet) {
+	e.nnueNet = net
+	e.board.NNUENet = net
+	if net != nil {
+		if e.board.NNUEAcc == nil {
+			e.board.NNUEAcc = NewNNUEAccumulatorStack(512)
+		}
+		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
+	} else {
+		e.board.NNUEAcc = nil
+	}
+}
+
 func (e *UCIEngine) cmdUCI() {
 	e.send("id name GoChess")
 	e.send("id author Adam")
@@ -114,6 +129,8 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("option name MoveOverhead type spin default 50 min 0 max 1000")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
+	e.send("option name UseNNUE type check default false")
+	e.send("option name NNUEFile type string default <empty>")
 	e.send("uciok")
 }
 
@@ -125,6 +142,10 @@ func (e *UCIEngine) cmdNewGame() {
 	e.cmdStop()
 	e.tt.Clear()
 	e.board.Reset()
+	// Recompute NNUE accumulator after board reset
+	if e.nnueNet != nil && e.board.NNUENet != nil && e.board.NNUEAcc != nil {
+		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
+	}
 }
 
 func (e *UCIEngine) cmdPosition(tokens []string) {
@@ -257,6 +278,10 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 	searchBoard.UndoStack = make([]UndoInfo, gameHistory, gameHistory+256)
 	copy(searchBoard.UndoStack, e.board.UndoStack)
 	searchBoard.PawnTable = NewPawnTable(1)
+	// Deep copy NNUE accumulator for search thread (net is shared read-only)
+	if e.board.NNUEAcc != nil {
+		searchBoard.NNUEAcc = e.board.NNUEAcc.DeepCopy()
+	}
 
 	e.searchMu.Lock()
 	now := time.Now()
@@ -489,6 +514,29 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.book = book
 		e.send("info string book loaded: %d positions", book.Size())
+	} else if strings.EqualFold(name, "UseNNUE") {
+		UseNNUE = strings.EqualFold(tokens[valueIdx], "true")
+		e.send("info string UseNNUE = %v", UseNNUE)
+	} else if strings.EqualFold(name, "NNUEFile") {
+		value := strings.Join(tokens[valueIdx:], " ")
+		if value == "" || value == "<empty>" {
+			e.nnueNet = nil
+			e.board.NNUENet = nil
+			e.board.NNUEAcc = nil
+			return
+		}
+		net, err := LoadNNUE(value)
+		if err != nil {
+			e.send("info string failed to load NNUE: %v", err)
+			return
+		}
+		e.nnueNet = net
+		e.board.NNUENet = net
+		if e.board.NNUEAcc == nil {
+			e.board.NNUEAcc = NewNNUEAccumulatorStack(512)
+		}
+		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
+		e.send("info string NNUE loaded from %s", value)
 	}
 }
 

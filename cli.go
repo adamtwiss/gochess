@@ -21,6 +21,7 @@ type CLIEngine struct {
 	hashSizeMB int
 	line       *liner.State
 	histFile   string
+	nnueNet    *NNUENet
 }
 
 // NewCLIEngine creates a new interactive CLI engine.
@@ -45,6 +46,15 @@ func (c *CLIEngine) Run() {
 	if f, err := os.Open(c.histFile); err == nil {
 		c.line.ReadHistory(f)
 		f.Close()
+	}
+
+	// Wire NNUE if loaded
+	if c.nnueNet != nil {
+		c.board.NNUENet = c.nnueNet
+		if c.board.NNUEAcc == nil {
+			c.board.NNUEAcc = NewNNUEAccumulatorStack(512)
+		}
+		c.board.NNUENet.RecomputeAccumulator(c.board.NNUEAcc.Current(), &c.board)
 	}
 
 	fmt.Println("Chess engine interactive mode. Type 'help' for commands.")
@@ -90,6 +100,8 @@ func (c *CLIEngine) Run() {
 			c.cmdEPD(input[len(tokens[0]):])
 		case "perft":
 			c.cmdPerft(tokens[1:])
+		case "nnue":
+			c.cmdNNUE(tokens[1:])
 		case "uci":
 			c.saveHistory()
 			c.switchToUCI()
@@ -120,6 +132,9 @@ func (c *CLIEngine) cmdHelp() {
 	fmt.Println("  search <depth>    Search to fixed depth (Ctrl+C to stop)")
 	fmt.Println("  epd <EPD>         Solve an EPD position (Ctrl+C to stop)")
 	fmt.Println("  perft <depth>     Run perft to given depth")
+	fmt.Println("  nnue load <file>  Load NNUE network")
+	fmt.Println("  nnue on/off       Enable/disable NNUE eval")
+	fmt.Println("  nnue eval         Show NNUE evaluation")
 	fmt.Println("  uci               Switch to UCI protocol mode")
 	fmt.Println("  help              Show this help")
 	fmt.Println("  quit, exit        Exit")
@@ -480,6 +495,83 @@ func (c *CLIEngine) cmdPerft(args []string) {
 	}
 }
 
+// SetNNUE loads an NNUE network for the CLI engine.
+func (c *CLIEngine) SetNNUE(net *NNUENet) {
+	c.nnueNet = net
+}
+
+func (c *CLIEngine) cmdNNUE(args []string) {
+	if len(args) == 0 {
+		status := "off"
+		if UseNNUE {
+			status = "on"
+		}
+		loaded := "no"
+		if c.nnueNet != nil {
+			loaded = "yes"
+		}
+		fmt.Printf("NNUE: %s  network loaded: %s\n", status, loaded)
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "load":
+		if len(args) < 2 {
+			fmt.Println("Usage: nnue load <file>")
+			return
+		}
+		path := strings.Join(args[1:], " ")
+		net, err := LoadNNUE(path)
+		if err != nil {
+			fmt.Printf("Error loading NNUE: %v\n", err)
+			return
+		}
+		c.nnueNet = net
+		c.board.NNUENet = net
+		if c.board.NNUEAcc == nil {
+			c.board.NNUEAcc = NewNNUEAccumulatorStack(512)
+		}
+		c.board.NNUENet.RecomputeAccumulator(c.board.NNUEAcc.Current(), &c.board)
+		UseNNUE = true
+		fmt.Printf("NNUE loaded from %s (enabled)\n", path)
+
+	case "on":
+		if c.nnueNet == nil {
+			fmt.Println("No NNUE network loaded. Use 'nnue load <file>' first.")
+			return
+		}
+		UseNNUE = true
+		fmt.Println("NNUE evaluation enabled.")
+
+	case "off":
+		UseNNUE = false
+		fmt.Println("NNUE evaluation disabled (using classical eval).")
+
+	case "eval":
+		if c.nnueNet == nil || c.board.NNUEAcc == nil {
+			fmt.Println("No NNUE network loaded.")
+			return
+		}
+		acc := c.board.NNUEAcc.Current()
+		if !acc.Computed {
+			c.board.NNUENet.RecomputeAccumulator(acc, &c.board)
+		}
+		scoreW := c.nnueNet.Evaluate(acc, White)
+		scoreB := c.nnueNet.Evaluate(acc, Black)
+		stmStr := "White"
+		stmScore := scoreW
+		if c.board.SideToMove == Black {
+			stmStr = "Black"
+			stmScore = scoreB
+		}
+		fmt.Printf("NNUE raw: White-relative=%d, Black-relative=%d\n", scoreW, scoreB)
+		fmt.Printf("Side to move (%s): %d cp\n", stmStr, stmScore)
+
+	default:
+		fmt.Println("Usage: nnue [load <file> | on | off | eval]")
+	}
+}
+
 func (c *CLIEngine) switchToUCI() {
 	// Close liner to restore terminal state
 	c.line.Close()
@@ -490,6 +582,10 @@ func (c *CLIEngine) switchToUCI() {
 	// Share the TT
 	engine.tt = c.tt
 	engine.board = c.board
+	// Share NNUE network
+	if c.nnueNet != nil {
+		engine.SetNNUE(c.nnueNet)
+	}
 
 	// Send UCI identification (the uci command expects this)
 	engine.cmdUCI()

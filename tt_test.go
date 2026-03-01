@@ -7,7 +7,7 @@ func TestTTBasic(t *testing.T) {
 
 	// Store and retrieve
 	key := uint64(0x123456789ABCDEF0)
-	tt.Store(key, 5, 100, TTExact, NewMove(12, 28))
+	tt.Store(key, 5, 100, TTExact, NewMove(12, 28), 0)
 
 	entry, found := tt.Probe(key)
 	if !found {
@@ -34,8 +34,8 @@ func TestTTCollision(t *testing.T) {
 	key1 := uint64(0x123456789ABCDEF0)
 	key2 := uint64(0x023456789ABCDEF0) // Different key, may hash to same index
 
-	tt.Store(key1, 5, 100, TTExact, NewMove(12, 28))
-	tt.Store(key2, 6, 200, TTLower, NewMove(52, 36))
+	tt.Store(key1, 5, 100, TTExact, NewMove(12, 28), 0)
+	tt.Store(key2, 6, 200, TTLower, NewMove(52, 36), 0)
 
 	entry1, found1 := tt.Probe(key1)
 	entry2, found2 := tt.Probe(key2)
@@ -62,10 +62,10 @@ func TestTTDepthReplacement(t *testing.T) {
 	key := uint64(0x123456789ABCDEF0)
 
 	// Store with depth 3
-	tt.Store(key, 3, 50, TTExact, NewMove(12, 28))
+	tt.Store(key, 3, 50, TTExact, NewMove(12, 28), 0)
 
 	// Try to store with lower depth - should not replace in slot 0
-	tt.Store(key, 2, 60, TTExact, NewMove(12, 20))
+	tt.Store(key, 2, 60, TTExact, NewMove(12, 20), 0)
 
 	entry, found := tt.Probe(key)
 	if !found {
@@ -78,7 +78,7 @@ func TestTTDepthReplacement(t *testing.T) {
 	}
 
 	// Store with higher depth - should replace
-	tt.Store(key, 5, 70, TTExact, NewMove(52, 36))
+	tt.Store(key, 5, 70, TTExact, NewMove(52, 36), 0)
 
 	entry, _ = tt.Probe(key)
 	if entry.Depth != 5 {
@@ -107,10 +107,10 @@ func TestTTBucketBehavior(t *testing.T) {
 	}
 
 	// Fill all 4 slots with varying depths
-	tt.Store(keys[0], 10, 150, TTExact, NewMove(12, 28))
-	tt.Store(keys[1], 3, 50, TTLower, NewMove(52, 36))
-	tt.Store(keys[2], 6, 80, TTUpper, NewMove(1, 18))
-	tt.Store(keys[3], 8, 120, TTExact, NewMove(6, 21))
+	tt.Store(keys[0], 10, 150, TTExact, NewMove(12, 28), 0)
+	tt.Store(keys[1], 3, 50, TTLower, NewMove(52, 36), 0)
+	tt.Store(keys[2], 6, 80, TTUpper, NewMove(1, 18), 0)
+	tt.Store(keys[3], 8, 120, TTExact, NewMove(6, 21), 0)
 
 	// All 4 should be found
 	for i := 0; i < 4; i++ {
@@ -121,7 +121,7 @@ func TestTTBucketBehavior(t *testing.T) {
 	}
 
 	// Store a 5th entry — should evict the shallowest (key1, depth 3)
-	tt.Store(keys[4], 5, 90, TTLower, NewMove(10, 26))
+	tt.Store(keys[4], 5, 90, TTLower, NewMove(10, 26), 0)
 
 	entry4, found4 := tt.Probe(keys[4])
 	if !found4 {
@@ -153,7 +153,7 @@ func TestTTGeneration(t *testing.T) {
 	key := uint64(0xDEADBEEF)
 
 	// Store at generation 0 with depth 5
-	tt.Store(key, 5, 100, TTExact, NewMove(12, 28))
+	tt.Store(key, 5, 100, TTExact, NewMove(12, 28), 0)
 
 	entry, found := tt.Probe(key)
 	if !found {
@@ -167,7 +167,7 @@ func TestTTGeneration(t *testing.T) {
 	tt.NewSearch()
 
 	// Store same key with shallower depth but newer generation — should replace
-	tt.Store(key, 3, 200, TTLower, NewMove(52, 36))
+	tt.Store(key, 3, 200, TTLower, NewMove(52, 36), 0)
 
 	entry, found = tt.Probe(key)
 	if !found {
@@ -178,7 +178,7 @@ func TestTTGeneration(t *testing.T) {
 	}
 
 	// Without advancing generation, shallower should NOT replace
-	tt.Store(key, 1, 300, TTUpper, NewMove(1, 18))
+	tt.Store(key, 1, 300, TTUpper, NewMove(1, 18), 0)
 
 	entry, found = tt.Probe(key)
 	if !found {
@@ -201,7 +201,7 @@ func TestTTGeneration(t *testing.T) {
 
 	// Fill 4 slots at generation 0 with high depth
 	for i := 0; i < 4; i++ {
-		tt2.Store(k[i], 10, 100, TTExact, NewMove(12, 28))
+		tt2.Store(k[i], 10, 100, TTExact, NewMove(12, 28), 0)
 	}
 
 	// Advance generation twice
@@ -210,7 +210,7 @@ func TestTTGeneration(t *testing.T) {
 
 	// Store 5th key — should evict one of the stale depth-10 entries
 	// because age penalty makes them score 10 - 4*2 = 2
-	tt2.Store(k[4], 4, 50, TTLower, NewMove(52, 36))
+	tt2.Store(k[4], 4, 50, TTLower, NewMove(52, 36), 0)
 
 	_, found5 := tt2.Probe(k[4])
 	if !found5 {
@@ -223,7 +223,7 @@ func TestTTClear(t *testing.T) {
 
 	// Store some entries
 	for i := uint64(0); i < 100; i++ {
-		tt.Store(i*7777, 5, 100, TTExact, NewMove(12, 28))
+		tt.Store(i*7777, 5, 100, TTExact, NewMove(12, 28), 0)
 	}
 
 	// Verify entries exist
@@ -297,7 +297,7 @@ func TestTTHashfull(t *testing.T) {
 
 	// Add some entries
 	for i := uint64(0); i < 500; i++ {
-		tt.Store(i*12345, 5, 100, TTExact, NoMove)
+		tt.Store(i*12345, 5, 100, TTExact, NoMove, 0)
 	}
 
 	hashfull := tt.Hashfull()

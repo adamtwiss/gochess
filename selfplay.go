@@ -21,11 +21,13 @@ type SelfPlayConfig struct {
 	OpeningsFile string        // EPD file with starting positions
 	OutputFile   string        // output file for training data
 	HashMB       int           // TT size in MB per game
+	IncludeScore bool          // include search score in output (FEN;score;result)
 }
 
 // SelfPlayGame holds the result of one self-play game.
 type SelfPlayGame struct {
 	Positions []string  // FEN strings of recorded positions
+	Scores    []int     // White-relative search scores (parallel to Positions)
 	Result    float64   // game result from White's perspective: 1.0, 0.5, 0.0
 	ResultStr string    // "1-0", "0-1", or "1/2-1/2"
 	Plies     int       // total plies played
@@ -132,6 +134,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	hashCounts[b.HashKey]++
 
 	var positions []string
+	var scores []int
 	adjEvalCount := 0
 	lastAbsEval := 0
 	totalPlies := 0
@@ -148,6 +151,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		if reason != GameNotOver {
 			return SelfPlayGame{
 				Positions: positions,
+				Scores:    scores,
 				Result:    result,
 				ResultStr: resultString(result),
 				Plies:     totalPlies,
@@ -192,6 +196,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		plyFromStart := initialPly + totalPlies
 		if shouldRecordPosition(&b, bestMove, eval, plyFromStart) {
 			positions = append(positions, b.ToFEN())
+			scores = append(scores, eval)
 		}
 
 		// Make the move
@@ -205,6 +210,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	// Game exceeded ply limit — draw
 	return SelfPlayGame{
 		Positions: positions,
+		Scores:    scores,
 		Result:    0.5,
 		ResultStr: "1/2-1/2",
 		Plies:     totalPlies,
@@ -308,7 +314,7 @@ func openOutputFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
 }
 
-// isTrainingDataLine checks if a line matches the FEN;result format.
+// isTrainingDataLine checks if a line matches the FEN;result or FEN;score;result format.
 func isTrainingDataLine(line string) bool {
 	idx := strings.LastIndexByte(line, ';')
 	if idx < 0 {
@@ -366,8 +372,12 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 
 			// Write positions to file
 			mu.Lock()
-			for _, fen := range game.Positions {
-				fmt.Fprintf(writer, "%s;%.1f\n", fen, game.Result)
+			for i, fen := range game.Positions {
+				if cfg.IncludeScore && i < len(game.Scores) {
+					fmt.Fprintf(writer, "%s;%d;%.1f\n", fen, game.Scores[i], game.Result)
+				} else {
+					fmt.Fprintf(writer, "%s;%.1f\n", fen, game.Result)
+				}
 			}
 			writer.Flush()
 			atomic.AddInt64(&totalPositions, int64(len(game.Positions)))
