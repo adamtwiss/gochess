@@ -217,6 +217,27 @@ func TestMakeUnmakePreservesState(t *testing.T) {
 	}
 }
 
+// BenchmarkPerft benchmarks perft on the starting position at depth 5.
+// This isolates movegen/make/unmake performance with zero eval overhead.
+func BenchmarkPerft(b *testing.B) {
+	var board Board
+	board.Reset()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Perft(&board, 5)
+	}
+}
+
+// BenchmarkPerftKiwipete benchmarks perft on the complex Kiwipete position at depth 4.
+func BenchmarkPerftKiwipete(b *testing.B) {
+	var board Board
+	board.SetFEN("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Perft(&board, 4)
+	}
+}
+
 // Helper to convert board to FEN (simplified, just piece placement)
 func boardToFEN(b *Board) string {
 	var result string
