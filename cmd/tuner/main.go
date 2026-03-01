@@ -93,7 +93,7 @@ func runSelfPlay(args []string) {
 		totalPositions += len(game.Positions)
 		elapsed := time.Since(start)
 		gps := float64(gameNum) / elapsed.Seconds()
-		fmt.Printf("\rGame %d/%d (%s, %d plies, %d positions) [%.1f games/s, %d total positions]",
+		fmt.Printf("\rGame %d/%d (%s, %d plies, %d positions) [%.1f games/s, %d total positions]        ",
 			gameNum, cfg.NumGames, game.ResultStr, game.Plies, len(game.Positions),
 			gps, totalPositions)
 	})
