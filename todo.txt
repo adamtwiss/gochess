@@ -1,93 +1,17 @@
 
-# Claude's ideas 2nd Feb
 
-  [Done] Lazy SMP (multi-threaded search) -- The engine is single-threaded. On modern hardware this leaves a lot of performance
-   on the table. Lazy SMP is the standard approach: multiple threads share the transposition table and search the same
-  root position, relying on hash collisions and timing differences for natural work distribution. This is probably the
-  single biggest strength gain available.
-
-  Texel tuning -- Every eval parameter (mobility arrays, king safety weights, pawn bonuses, passed pawn values, etc.) is
-   hand-tuned. A Texel tuning framework uses a large set of labeled positions (from engine self-play or databases) to
-  optimize all constants via gradient descent against game outcomes. This typically finds non-obvious parameter
-  interactions that humans miss.
-
-  (in progress - first version failed, tuning mad it netural) Continuation history -- Currently the engine has basic from-to history and counter-moves. Continuation history
-  (indexing by the previous 1-2 moves' piece-to-square) significantly improves quiet move ordering, which makes LMR more
-   effective and reduces the search tree.
-
-  [Done] SEE pruning of quiet moves in main search -- The engine already uses SEE in quiescence, but applying it to prune
-  losing captures and bad quiet moves in the main search (at low depths) is relatively cheap to implement and reduces
-  the tree further.
-
-  Syzygy tablebase support -- Perfect endgame play with 6-7 pieces. There are existing Go libraries for probing Syzygy
-  tables, so the integration effort is moderate.
-
-  Of the five, Lazy SMP and Texel tuning would give the most visible improvement. Lazy SMP is the more self-contained
-  project; Texel tuning requires building a dataset of positions with game results first. What interests you?
-
-
-# Next things to look at:
-
-* Texel tuning (coded, training underway)
-* Syzgy tablebase
 
 
 # Bugs
-This position
-  r4r1k/p2bp1b1/qpp2pB1/2Pp4/Pn1P4/4PNP1/1P1N1KP1/RQ3R2 b - - 2 22
-We seem to evaluate at +3 which seems way out, and later proves false.
 
-The current Texel output performs much worse due to scaling. I think Claude has fixed this. But code is again all mixed in.
-
-
-Texel Training Regression ends up sorting the file which is somehow taking 1.2GB or more of RAM. Scrap sort.
-
-Claude did some weird optimisation of allocation, but it's not helped the RAM Usage. Current code
-includes multiple changes. One is to make sure the piece trading stuuff is tunable (keep), the
-optimsation is bad.
-
-The RFP implementation looks correct but conservative. Many engines extend this to depth 5-6 with scaled margins. Currently margin = depth * 120, which is reasonable, but the depth cutoff limits its effect.
-
-5. No history penalty for quiet moves that don't cause cutoffs
-
-At line 629, history is incremented on beta cutoff, but quiet moves that were tried and didn't cause cutoffs aren't penalized. Adding History[from][to] -= depth * depth for all quiet moves tried before the cutoff move improves move ordering measurably — the table then captures relative quality, not just absolute cutoff counts.
-
-6. TT is single-entry per bucket (tt.go:82-98)
-
-Depth-preferred replacement means shallow-but-recent entries get thrown out by deep-but-stale ones. A two-entry bucket (one depth-preferred, one always-replace) is a common improvement that reduces collision losses with minimal complexity.
-
-7. No SEE pruning for quiet moves in main search
-
-SEE is used for capture ordering in the move picker and for quiescence pruning, but not for pruning quiet moves at shallow depths. Adding if depth <= 3 && SEESign(move, -threshold) { skip } for quiet moves that lose material can prune bad tactical moves early.
-
-8. Missing: delta pruning in quiescence
-
-In quiescence, every capture is searched if SEE >= 0, regardless of how far below alpha the stand-pat score is. A delta cutoff (if standPat + maxPossibleGain + margin < alpha { return alpha }) avo
-
-# Adam's ideas
-
-Eval hashes (done)
-Eval seems pretty simple still.
-* Do we consider rooks on open file, doubled rooks, rooks behind passed pawns.
-NPS Performance still trails GNU Chess by 20%
-Extensions?
-* are we generating capture moves twice in move generator
-* Do we have any end game knowledge (e.g avoid trading down into minor and king End game)
-* end game table bases? We don't know how to play a KP vs K end game. Even strugglign with a KQ vs K mate
-* Taper score if rep-counter or 50 move counter are high.
-* Are we properly claiming a 50 move or rep draw in UCI mode?
-
-* Opposite colour bishops in an EG is drawy.
-* Swap material if up, pawns if behind. Encouraging trading when ahead.
-
+* We are still eating too much time, and in short games we can lose on time alone.
 
 Cosmetics:
-* CLI mode to make it easier to test positions, and debug how we score positions. (done)
 * Max depth report e.g. 12/17
-* With EPD report the time we first got it right (and didn't later get it wrong). (done)
-* Use the solve time to generate points in some way - gives a better indication across more positions than just right/wrong.
 * Run a particular set of puzzles from an EPD.
 
+
+Specific position bugs:
 
 1B6/8/8/4bp2/4k1p1/6P1/8/6K1 w - - 98 129  - our contempt may have stopped us accepting a drawn game
 8/8/8/5p2/3k2p1/6P1/5K2/8 w - - 2 131  - we don't know we-ve lost
@@ -95,14 +19,405 @@ Cosmetics:
 
 # EPD performance
 
-## WAC Failures (at 100ms):
-WAC.071, WAC.080, WAC.081, WAC.087, WAC.100, WAC.109, WAC.116, WAC.141,
-WAC.151, WAC.163, WAC.180, WAC.196, WAC.213, WAC.222, WAC.237, WAC.265,
-WAC.283, WAC.293
 
-Primary pattern: 8/18 require quiet moves (no check/capture) that get LMR-reduced or LMP-pruned.
-Secondary pattern: 5/18 involve mating attacks starting with quiet moves.
-Minor: 2-3 endgame eval weaknesses.
+# Claude's latest ideas (27 Feb)
 
-[comment from Adam] I wonder if we need to think about extensions to counter this, where
-we have mate threat, recapture, check extensions. This selective pushes back on pruning.
+
+  
+  2. Syzygy Tablebases (endgame)
+  Already on your radar. Perfect play with 6-7 pieces eliminates the endgame weaknesses seen in WAC.087/WAC.100. Go libraries
+  exist for probing, so integration effort is moderate.
+
+  
+Later Claude list:
+
+
+  Evaluation improvements:
+  - King safety tuning — the attack unit weights and safety table are tunable but the non-linear lookup makes Texel tuning
+  hard; could linearize or use a polynomial approximation
+  - Tempo bonus tuning — small but often undertested
+  - Better endgame knowledge — KBN vs K, fortress detection, etc.
+
+  Performance/infrastructure:
+  - Lazy SMP improvements — the current skip table is static; could use dynamic depth diversification
+
+  Testing/quality:
+  - STC self-play framework — automated Elo testing (e.g. via cutechess-cli) to validate changes with statistical confidence
+  - More EPD suites — the engine runs WAC/ECM but could benefit from strategic test suites (STS, Eigenmann)
+
+
+Claude's Search Ideas
+
+
+  Search Pruning Review — Current vs Best Practice
+
+  Critical Gaps (biggest Elo potential)
+
+  ┌─────────────────────┬─────────────┬────────────────────────────────────┬──────────┐
+  │      Technique      │   Current   │          Modern Practice           │ Est. Elo │
+  ├─────────────────────┼─────────────┼────────────────────────────────────┼──────────┤
+  │ Null Move Reduction │ Fixed R=2/3 │ R=3+depth/3+min(3,(eval-beta)/200) │ 30-60    │  DONE (11%)
+  ├─────────────────────┼─────────────┼────────────────────────────────────┼──────────┤
+  │ Reverse Futility    │ depth <= 3  │ depth <= 7-8                       │ 20-40    │  DONE (4.5%)
+  ├─────────────────────┼─────────────┼────────────────────────────────────┼──────────┤ 
+  │ Futility Pruning    │ depth <= 2  │ depth <= 6-8                       │ 10-25    │  DONE (somewhat marginal 1%)
+  └─────────────────────┴─────────────┴────────────────────────────────────┴──────────┘
+
+  Medium Gaps
+
+  ┌─────────────────────────┬──────────────────────────────────────────────────────────────────────────────┬──────────┐
+  │        Technique        │                                    Issue                                     │ Est. Elo │
+  ├─────────────────────────┼──────────────────────────────────────────────────────────────────────────────┼──────────┤
+  │ LMP improving split     │ No distinction improving/non-improving (SF doubles threshold when improving) │ 5-15     │  DONE (+8%!)
+  ├─────────────────────────┼──────────────────────────────────────────────────────────────────────────────┼──────────┤
+  │ SEE capture pruning     │ Bad captures ordered last but never pruned                                   │ 5-15     │  DONE (+3.2%)
+  ├─────────────────────────┼──────────────────────────────────────────────────────────────────────────────┼──────────┤
+  │ LMR cut-node adjustment │ No +1 reduction at cut nodes                                                 │ 5-15     │  DONE (+2.7%)
+  ├─────────────────────────┼──────────────────────────────────────────────────────────────────────────────┼──────────┤
+  │ ProbCut                 │ Previously failed but worth revisiting now                                   │ 5-15     │  DONE (+4%)
+  └─────────────────────────┴──────────────────────────────────────────────────────────────────────────────┴──────────┘
+
+
+Performance Improvements from above (on our Benchmark):
+
+  ┌─────────────────────────────┬─────────────────┐
+  │           Change            │ Benchmark Delta │
+  ├─────────────────────────────┼─────────────────┤
+  │ Adaptive NMP + verification │ +11.1%          │
+  ├─────────────────────────────┼─────────────────┤
+  │ LMP improving split         │ +8.0%           │
+  ├─────────────────────────────┼─────────────────┤
+  │ RFP depth extension (3→6)   │ +4.5%           │
+  ├─────────────────────────────┼─────────────────┤
+  │ Futility pruning (2→6)      │ ~+1%            │
+  ├─────────────────────────────┼─────────────────┤
+  │ SEE capture pruning         │ +3.2%           │
+  ├─────────────────────────────┼─────────────────┤
+  │ ProbCut                     │ +4.0%           │
+  ├─────────────────────────────┼─────────────────┤
+  │ LMR cut-node adjustment     │ +2.7%           │
+  └─────────────────────────────┴─────────────────┘
+  
+  That's a 34% in effective search speed score combined, which is amazing. Note this is not NPS but effective time to solve puzzles or find moves.  This is a log2 (time)
+  score as well so it's pretty amazing.
+
+
+
+  Minor Gaps (still todo, given the benefits of the bigger ones - then I'd like to try these):
+
+  - Razoring only depth <= 2 (could be 3)
+  - SEE quiet pruning uses linear formula (quadratic is better at high depths)  (rejected)
+  - LMR fully exempts killers instead of just reducing less   (rejected - didn't work)
+  - IIR doesn't handle stale TT entries
+  - No history-based pruning (outright prune deeply negative history moves)
+
+  What's Already Reasonable
+
+  - Delta pruning in QS (margin 200, fine)
+  - IIR (depth >= 5, reduce 1 — close to SF)
+  - LMR base formula (C=2.0, good)
+  - LMP thresholds (close to SF non-improving)
+  - History divisor for LMR (5000 vs Ethereal's 6167)
+
+
+Adam's List:
+
+* More end game reocognisers = e.g. KRB vs KR is a draw. We are exchanging down to these 'fortress positions' and drawing winning games.
+* Our NPS score is slow still (50-100% slower than some other engines - i feel this is more than GoLang tax). TT cache friendliness (how we probe on a collision, lines, pre-fetch), Eval caches, 
+  pruning before search.  Move ordering can also be a big win.
+* Get a big self play database, and try and get the tuning working. It would be nice if we could make pasting in the tuned values easier.
+* Not fully convinced on our SMP code.
+* Eval can always get better.
+
+
+
+# Eval stuff - the STS and Eigenmann sutites are good.
+
+  
+  Eigenmann: 20/110 (18%) — breakdown:
+
+  ┌──────────────────┬────────────┬──────┐
+  │      Theme       │ Pass/Total │ Rate │
+  ├──────────────────┼────────────┼──────┤
+  │ Endgame          │ 2/26       │ 8%   │
+  ├──────────────────┼────────────┼──────┤
+  │ King Attack      │ 2/8        │ 25%  │
+  ├──────────────────┼────────────┼──────┤
+  │ Zugzwang         │ 0/5        │ 0%   │
+  ├──────────────────┼────────────┼──────┤
+  │ Development      │ 3/7        │ 43%  │
+  ├──────────────────┼────────────┼──────┤
+  │ Initiative       │ 0/4        │ 0%   │
+  ├──────────────────┼────────────┼──────┤
+  │ Strong Squares   │ 2/5        │ 40%  │
+  ├──────────────────┼────────────┼──────┤
+  │ Knight Sacrifice │ 2/4        │ 50%  │
+  ├──────────────────┼────────────┼──────┤
+  │ Everything else  │ 9/51       │ 18%  │
+  └──────────────────┴────────────┴──────┘
+
+  STS: 644/1187 (54%)
+
+  Yes, this clearly highlights eval weaknesses — but it's a mix of eval and search depth:
+
+  Endgame is the biggest gap (2/26, 8%). This is overwhelmingly an eval problem. The engine's endgame knowledge is essentially just tapered PST +
+  passed pawn bonuses. It lacks:
+  - King centralization/activity bonuses that scale with piece count
+  - Pawn race evaluation (counting tempi to promote)
+  - Fortress/drawn endgame recognition beyond basic insufficient material
+  - Rook endgame patterns (Lucena, Philidor, rook behind passer effectiveness)
+  - Proper king-and-pawn endgame evaluation
+
+  Zugzwang (0/5) — the engine has no zugzwang detection. Null-move pruning actively hurts here since it assumes passing is good. This is partly
+  search (null move verification) and partly eval (recognizing positions where tempo matters negatively).
+
+  Initiative/King Attack (2/12 combined) — the king safety eval is table-driven with fixed attack unit weights. It doesn't capture dynamic factors
+   like open lines toward the king, coordination of attacking pieces, or the cost of weakening moves. The STS themes around "open files and
+  diagonals" likely suffer similarly.
+
+  Strategic themes (strong squares, center, bishop pair) — the eval has basic outpost and bishop pair bonuses, but these are fixed values rather
+  than context-sensitive. The STS 54% score suggests the positional eval is mediocre across the board.
+
+  The honest answer: ~70% eval, ~30% search depth. At only 750 kNPS and depth 10-13, the engine can't calculate its way to strategic truths that
+  deeper engines find. But the endgame and zugzwang failures wouldn't improve much with more depth — they need fundamentally better evaluation
+  terms.
+
+
+27th Feb vs GNU Chess
+
+Gnuchess, Gregko and Rodent3 are all similarish standards and good benchmark.
+
+Score of GoChess vs GnuChess: 8 - 5 - 5 [0.583]
+...      GoChess playing White: 4 - 1 - 4  [0.667] 9
+...      GoChess playing Black: 4 - 4 - 1  [0.500] 9
+...      White vs Black: 8 - 5 - 5  [0.583] 18
+Elo difference: 58.5 +/- 146.1, LOS: 79.7 %, DrawRatio: 27.8 %
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+18 of 100 games finished.
+
+However - replaying (sams binaries) next day it's a 4-19-3 loss (-228 Elo)
+
+
+About 200 behind Rodent3 as well.
+
+Score of GoChess vs Rodent3: 3 - 14 - 3 [0.225]
+...      GoChess playing White: 1 - 7 - 2  [0.200] 10
+...      GoChess playing Black: 2 - 7 - 1  [0.250] 10
+...      White vs Black: 8 - 9 - 3  [0.475] 20
+Elo difference: -214.8 +/- 194.4, LOS: 0.4 %, DrawRatio: 15.0 %
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+20 of 20 games finished.
+
+
+
+# Hash Evaluation
+
+
+  Cache Line Friendliness
+
+  Transposition Table (tt.go) — Well designed
+
+  - TTBucket = 4 slots x 16 bytes = 64 bytes = exactly 1 cache line. This is textbook. A single memory fetch brings the entire bucket into L1.
+  - Probe scans all 4 slots sequentially within that one cache line — no additional cache misses.
+  - The 4-way set-associative design means collisions (different keys mapping to the same index) have 4 chances before eviction. This is the
+  standard approach (Stockfish uses the same layout).
+
+  Pawn Table (pawns.go) — Direct-mapped, collision = eviction
+
+  - PawnEntry = 32 bytes. Direct-mapped (1 entry per index, always-replace).
+  - Any collision immediately evicts the old entry. No associativity at all.
+  - Two PawnEntry values fit in one cache line, but only one is ever probed — the second is wasted bandwidth.
+  - This is the weakest table for collision handling. However, pawn structures repeat heavily (pawn hash space is much smaller than full position
+  space), so the hit rate is typically still decent.
+
+  Eval Cache (eval.go) — Direct-mapped, same story
+
+  - EvalEntry = 10 bytes (padded to 16). Direct-mapped, always-replace.
+  - 4 entries fit in a cache line but only 1 is probed. Same collision weakness as the pawn table.
+  - The eval cache has even higher collision pressure because it's keyed by the full Zobrist hash (huge key space) and is only 1MB by default.
+
+  Collision Impact
+
+  The key question: how much are direct-mapped collisions hurting you?
+
+  For the TT, you're fine — 4-way associativity is the proven approach and you have age-based replacement for stale entries.
+
+  For the pawn table and eval cache, the direct-mapped design means:
+  - Two positions that hash to the same index keep thrashing each other
+  - In search, this happens frequently because sibling nodes often differ by one non-pawn piece move (same pawn hash → no collision) but the eval
+  cache gets hammered by positions that differ by one move mapping to the same slot
+
+  Potential Improvements
+
+  Pawn table — 2-way buckets (low effort, likely win):
+  Pack 2 entries per 64-byte cache line. On probe, check both. On store, replace the one that doesn't match (or the older one). This costs zero
+  extra cache misses and cuts thrashing significantly. The struct is already 32 bytes, so two entries = 64 bytes = 1 cache line.
+
+  Eval cache — 4-way buckets (low effort, likely win):
+  EvalEntry is 16 bytes padded, so 4 fit in a cache line. Make a bucket of 4 entries, probe all 4, always-replace the oldest/first-non-matching.
+  Same memory, same cache behavior, 4x fewer collisions.
+
+  Alternatively for eval cache — use a different replacement trick:
+  Store only the upper 32 bits of the key (saves space, still catches 99.99999% of collisions) and pack the score alongside it. This shrinks
+  entries to 8 bytes, fitting 8 per cache line if you went bucket-style.
+
+  The TT is already optimal for its design. The cheap wins are in making the pawn and eval tables bucket-associative to match what the TT already
+  does — same number of cache misses, fewer collisions. Want me to implement either of these?
+
+
+ [Adam] How big are the eval and pawn hashes?
+
+● Looking at the code, here are the defaults:
+
+  Eval cache: 1 MB (hardcoded in Evaluate() at eval.go:240)
+
+  Pawn table: Let me check where it's initialized.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Both are 1 MB everywhere.
+
+  That means:
+  - Eval cache: 1 MB / 16 bytes per entry = 65,536 entries (direct-mapped)
+  - Pawn table: 1 MB / 32 bytes per entry = 32,768 entries (direct-mapped)
+
+  These are quite small. With 65K eval entries, you have only 16 bits of index, so any two positions whose Zobrist hashes share the same lower 16
+  bits will collide. In a typical search of millions of nodes, that's a lot of thrashing.
+
+  The pawn table is even smaller at 32K entries, though pawn structures repeat much more than full positions, so the effective collision rate is
+  lower.
+
+  For context, the TT defaults to 64 MB in UCI (configurable via Hash option), giving it ~1M buckets with 4-way associativity — orders of
+  magnitude more capacity.
+
+  Bumping these to 2-4 MB would be essentially free (memory is cheap) and would directly cut collision rates. Combined with bucket-associativity,
+  you'd get a meaningful reduction in redundant eval/pawn computation.
+
+
+
+  To try:
+  * Check Pawn hash and eval hash help with speed. If we disable them what do we see.
+  * First check is to make them 4x bigger and seeing if it  has an impact.
+  * Then we look at bucket associative (like TT)
+
+
+  # Claude Suggestions
+
+  
+  Low-Hanging Fruit Optimizations (ranked by effort/reward)
+
+  1. givesCheck after MakeMove — the big one
+
+  At search.go:995, every move that passes legality and isn't pruned pre-MakeMove calls:
+  b.MakeMove(move)
+  givesCheck := b.InCheck()  // full IsAttacked: 5 piece-type checks + 2 magic lookups
+
+  InCheck() calls IsAttacked() which does 5 conditional checks plus 2 magic bitboard lookups. This runs for every move searched, and it's used to
+  gate check extensions, futility pruning, LMP, and LMR.
+
+  The optimization: Compute givesCheck cheaply before MakeMove using the moving piece type and destination square. Most moves don't give check, so
+   a fast pre-filter avoids the full IsAttacked call. You only need to check:
+  - Does piece X attack the enemy king from the destination square? (1 table lookup)
+  - Does the move create a discovered check? (is the piece on a line between own king and enemy king, and moving off that line?)
+
+  Stockfish does this with a checkSquares[pieceType] bitboard precomputed at the start of each node — the set of squares from which each piece
+  type attacks the enemy king. Then givesCheck = (checkSquares[piece] & toBB) != 0 || discoveredCheck. This replaces 5 attack checks with 1
+  bitboard AND.
+
+  Estimated gain: 5-10% NPS. This is called on every non-pruned move.
+
+  2. Avoid IsLegal make/unmake for en passant
+
+  Currently IsLegal falls through to full make/unmake for en passant moves because of the tricky discovered check case. But en passant is rare
+  (~0.1% of moves). This is already well-handled — the cost is negligible. Skip this.
+
+  3. Incremental givesCheck in MakeMove
+
+  A more ambitious version of #1: have MakeMove set a GivesCheck flag on the board. Since MakeMove already knows the piece, from, and to squares,
+  it can check discovered + direct check cheaply as part of the move application. This eliminates the separate InCheck() call entirely.
+
+  4. Node time check optimization
+
+  Currently at search.go:656:
+  time.Now()
+  every 4096 nodes. time.Now() is a vDSO call (~20ns on Linux). Could use a monotonic counter or nanotime directly, but honestly 4096-node batches
+   make this negligible. Not worth it.
+
+  5. Move generation isn't allocating in the hot path
+
+  The explorer flagged GenerateAllMoves() as allocating, but that function isn't used in search. The MovePicker uses
+  GenerateCapturesAppend/GenerateQuietsAppend/GenerateEvasionsAppend which append to pre-allocated slices (mp.moves). The pickers are
+  pre-allocated in info.pickers[ply] and reuse their slices. This is already well-optimized.
+
+  My recommendation
+
+  Do #1 — precomputed check squares. It's the clearest win:
+  - Compute checkSquaresBB[6] once per node (6 piece types) using the enemy king square
+  - Replace givesCheck := b.InCheck() with givesCheck := isCheckMove(piece, from, to, checkSquares, discoverers)
+  - Eliminates a full IsAttacked() per searched move
+
+  This is a well-understood optimization that most strong engines implement. Want me to plan it out?
+
+
+
+
+  # Gauntlet Tests
+
+    For your engine specifically:
+
+  cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess cmd=./chess arg=-uci proto=uci option.MoveOverhead=100 \
+    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
+    -engine name=Rodent3 cmd=rodentIII  proto=uci \
+    -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 4 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+
+  SPRT testing (stop early when statistically significant):
+
+  cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess-new cmd=./chess arg=-uci \
+    -engine name=GoChess-old cmd=./chess.old arg=-uci \
+    -each tc=0/10+0.1 option.Hash=64 \
+    -rounds 5000 -concurrency 8 \
+    -sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout sprt.pgn -recover -ratinginterval 20
+
+Self play vs old
+
+  cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess-new cmd=./chess proto=uci \
+    -engine name=GoChess-old cmd=./chess.old  proto=uci \
+    -each tc=0/10+0.1 option.Hash=64 option.MoveOverhead=100\
+    -rounds 200 -concurrency 4 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+  cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess-new cmd=./chess proto=uci \
+    -engine name=GoChess-revert cmd=./chess.revert  proto=uci \
+    -each tc=0/10+0.1 option.Hash=64 option.Move\ Overhead=100\
+    -rounds 200 -concurrency 4 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+28 Feb - 20:45   10/0.1
+
+Finished game 371 (Rodent3 vs GoChess): * {No result}
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                      -220      40     370   22.0%    8.4%
+   1 Rodent3                       301      85     123   85.0%    5.7%
+   2 Greko                         275      77     123   82.9%    9.8%
+   3 GnuChess                      116      62     124   66.1%    9.7%
+This included 10 losses on time (and same with other engines)
