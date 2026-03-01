@@ -134,15 +134,9 @@ func (mp *MovePicker) Next() Move {
 			mp.index = 0
 
 		case stageGoodCaptures:
+			// TT move already filtered during scoring
 			for mp.index < len(mp.moves) {
-				move := mp.pickBest()
-				if move == NoMove {
-					break
-				}
-				if move == mp.ttMove {
-					continue // Already tried
-				}
-				return move
+				return mp.pickBest()
 			}
 			if mp.skipQuiet {
 				mp.stage = stageBadCaptures
@@ -182,24 +176,18 @@ func (mp *MovePicker) Next() Move {
 			mp.stage = stageQuiets
 
 		case stageQuiets:
+			// TT/killers/counter already filtered during scoring
 			for mp.index < len(mp.moves) {
-				move := mp.pickBest()
-				if move == mp.ttMove || move == mp.killers[0] || move == mp.killers[1] || move == mp.counterMove {
-					continue // Already tried
-				}
-				return move
+				return mp.pickBest()
 			}
 			mp.stage = stageBadCaptures
 			// Restore capture list for bad captures
 			mp.restoreBadCaptures()
 
 		case stageBadCaptures:
+			// TT move already filtered during capture scoring
 			for mp.index < len(mp.moves) {
-				move := mp.pickBest()
-				if move == mp.ttMove {
-					continue
-				}
-				return move
+				return mp.pickBest()
 			}
 			mp.stage = stageDone
 
@@ -221,19 +209,17 @@ func (mp *MovePicker) Next() Move {
 			mp.stage = stageEvasions
 
 		case stageEvasions:
+			// TT move already filtered during evasion scoring
 			for mp.index < len(mp.moves) {
-				move := mp.pickBest()
-				if move == mp.ttMove {
-					continue // Already tried
-				}
-				return move
+				return mp.pickBest()
 			}
 			mp.stage = stageDone
 		}
 	}
 }
 
-// generateAndScoreCaptures generates all captures, partitions into good and bad
+// generateAndScoreCaptures generates all captures, partitions into good and bad.
+// The TT move is filtered out so pickBest never returns it (avoids redundant scan).
 func (mp *MovePicker) generateAndScoreCaptures() {
 	mp.moves = mp.board.GenerateCapturesAppend(mp.moves[:0])
 	mp.scores = mp.scores[:0]
@@ -241,9 +227,13 @@ func (mp *MovePicker) generateAndScoreCaptures() {
 	mp.badScores = mp.badScores[:0]
 
 	// Partition: good captures stay in mp.moves, bad go to mp.badMoves
+	// TT move is excluded from both (already tried in stageTTMove)
 	j := 0
 	for i := 0; i < len(mp.moves); i++ {
 		m := mp.moves[i]
+		if m == mp.ttMove {
+			continue
+		}
 		see := mp.board.SEE(m)
 		if see < 0 {
 			mp.badMoves = append(mp.badMoves, m)
@@ -258,33 +248,48 @@ func (mp *MovePicker) generateAndScoreCaptures() {
 	mp.index = 0
 }
 
-// generateAndScoreQuiets generates quiet moves and scores by history
+// generateAndScoreQuiets generates quiet moves and scores by history.
+// TT move, killers, and counter-move are filtered out to avoid redundant pickBest scans.
 func (mp *MovePicker) generateAndScoreQuiets() {
 	mp.moves = mp.board.GenerateQuietsAppend(mp.moves[:0])
 	mp.scores = mp.scores[:0]
 
+	j := 0
 	for i := 0; i < len(mp.moves); i++ {
+		m := mp.moves[i]
+		if m == mp.ttMove || m == mp.killers[0] || m == mp.killers[1] || m == mp.counterMove {
+			continue
+		}
+		mp.moves[j] = m
 		score := 0
 		if mp.history != nil {
-			score = int(mp.history[mp.moves[i].From()][mp.moves[i].To()])
+			score = int(mp.history[m.From()][m.To()])
 		}
 		if mp.contHist != nil {
-			piece := mp.board.Squares[mp.moves[i].From()]
-			score += int(mp.contHist[piece][mp.moves[i].To()])
+			piece := mp.board.Squares[m.From()]
+			score += int(mp.contHist[piece][m.To()])
 		}
 		mp.scores = append(mp.scores, score)
+		j++
 	}
+	mp.moves = mp.moves[:j]
 	mp.index = 0
 }
 
 // generateAndScoreEvasions generates evasion moves and scores them.
 // Captures scored above quiets for natural ordering.
+// TT move is filtered out (already tried in stageEvasionTTMove).
 func (mp *MovePicker) generateAndScoreEvasions() {
 	mp.moves = mp.board.GenerateEvasionsAppend(mp.moves[:0], mp.checkers, mp.pinned)
 	mp.scores = mp.scores[:0]
 
+	j := 0
 	for i := 0; i < len(mp.moves); i++ {
 		m := mp.moves[i]
+		if m == mp.ttMove {
+			continue
+		}
+		mp.moves[j] = m
 		score := 0
 
 		if m.IsPromotion() {
@@ -308,7 +313,9 @@ func (mp *MovePicker) generateAndScoreEvasions() {
 		}
 
 		mp.scores = append(mp.scores, score)
+		j++
 	}
+	mp.moves = mp.moves[:j]
 	mp.index = 0
 }
 
