@@ -39,8 +39,8 @@ var (
 
 // Piece evaluation bonuses (MG/EG)
 var (
-	BishopPairMG = 22
-	BishopPairEG = 82
+	BishopPairMG = 44
+	BishopPairEG = 92
 
 	KnightOutpostMG          = 43
 	KnightOutpostEG          = 10 // kept: tuned value (-24) is suspect
@@ -61,8 +61,8 @@ var (
 	BishopOpenPositionMG = 4
 	BishopOpenPositionEG = 3 // kept: tuned value (-18) is suspect
 
-	BadBishopPawnMG = -6
-	BadBishopPawnEG = -5
+	BadBishopPawnMG = -4
+	BadBishopPawnEG = -14
 
 	DoubledRooksMG = 43
 	DoubledRooksEG = 18 // kept: tuned value (-13) is suspect
@@ -117,10 +117,10 @@ var (
 	NoQueenAttackScale = 40
 
 	// Castling rights bonus (MG only, per retained right)
-	CastlingRightsMG = 35
+	CastlingRightsMG = 45
 
 	// Space evaluation (per safe square in center files, ranks 4-6 relative)
-	SpaceBonusMG = 6
+	SpaceBonusMG = 14
 	SpaceBonusEG = 1
 
 	// Knight closed position bonus (per pawn on the board)
@@ -128,20 +128,20 @@ var (
 	KnightClosedPositionEG = 24
 
 	// Pawn threat bonuses (pawns attacking enemy pieces)
-	PawnThreatMinorMG = 61
-	PawnThreatMinorEG = 76
-	PawnThreatRookMG  = 35
-	PawnThreatRookEG  = 66
-	PawnThreatQueenMG = 49
-	PawnThreatQueenEG = 5
+	PawnThreatMinorMG = 77
+	PawnThreatMinorEG = 92
+	PawnThreatRookMG  = 105
+	PawnThreatRookEG  = 57
+	PawnThreatQueenMG = 83
+	PawnThreatQueenEG = 54
 
 	// Piece-on-piece threats (minor/rook attacking higher-value enemy pieces)
-	MinorThreatRookMG  = 88
-	MinorThreatRookEG  = 33
-	MinorThreatQueenMG = 43
-	MinorThreatQueenEG = 85
-	RookThreatQueenMG  = 96
-	RookThreatQueenEG  = 78
+	MinorThreatRookMG  = 90
+	MinorThreatRookEG  = 80
+	MinorThreatQueenMG = 81
+	MinorThreatQueenEG = 47
+	RookThreatQueenMG  = 102
+	RookThreatQueenEG  = 143
 )
 
 // Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
