@@ -921,18 +921,17 @@ func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 
 // TuneK finds the optimal sigmoid scaling constant K using golden section search.
 func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
-	// Subsample up to 50K positions for speed (TuneK doesn't need full dataset)
+	// Sample up to 50K positions from the start (data is pre-shuffled in .nnbin)
 	numTrain := int(bf.NumTrain)
-	maxSample := 50000
-	step := 1
-	if numTrain > maxSample {
-		step = numTrain / maxSample
+	sampleSize := numTrain
+	if sampleSize > 50000 {
+		sampleSize = 50000
 	}
 
 	computeError := func(K float64) float64 {
 		totalLoss := 0.0
 		count := 0
-		for i := 0; i < numTrain; i += step {
+		for i := 0; i < sampleSize; i++ {
 			s, err := bf.ReadRecord(i)
 			if err != nil {
 				continue
@@ -965,8 +964,7 @@ func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
 		return totalLoss / float64(count)
 	}
 
-	sampleSize := (numTrain + step - 1) / step
-	fmt.Printf("  Sampling %d/%d positions (step=%d)\n", sampleSize, numTrain, step)
+	fmt.Printf("  Sampling %d/%d positions\n", sampleSize, numTrain)
 
 	// Golden section search
 	phi := (math.Sqrt(5) + 1) / 2
