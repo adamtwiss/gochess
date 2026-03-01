@@ -211,6 +211,7 @@ This trains a quantized NNUE network from scratch. On first run, the training da
 | `-epochs` | 100 | Training epochs |
 | `-lr` | 0.001 | Learning rate |
 | `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
+| `-K` | 400 | Sigmoid scaling constant |
 | `-output` | `net.nnue` | Output network file |
 
 Training uses float32 weights internally, then quantizes to int16 for inference. The `.nnbin` cache is rebuilt automatically when the source `.dat` file changes.
