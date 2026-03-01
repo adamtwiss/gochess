@@ -115,7 +115,7 @@ func runTune(args []string) {
 	epochs := fs.Int("epochs", 500, "number of optimization epochs")
 	lr := fs.Float64("lr", 1.0, "learning rate")
 	lambda := fs.Float64("lambda", 0, "L2 regularization strength toward initial values (0=disabled)")
-	scoreBlend := fs.Float64("score-blend", 0, "blend search scores into loss (0=result-only, 1=score-only)")
+	scoreBlend := fs.Float64("score-blend", 0, "blend search scores into loss: 0=result-only (default), 1=score-only")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
