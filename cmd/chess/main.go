@@ -79,17 +79,7 @@ func main() {
 		return
 	}
 
-	if *benchmark {
-		runBenchmark(*maxTimeMS, *hashMB, *depth, *threads, *benchSave, *benchCompare)
-		return
-	}
-
-	if *epdFile != "" {
-		runEPD(*epdFile, *depth, time.Duration(*maxTimeMS)*time.Millisecond, *maxPositions, *hashMB, *verbose, *threads)
-		return
-	}
-
-	// Load NNUE network if specified
+	// Load NNUE network if specified (before any mode branches)
 	var nnueNet *chess.NNUENet
 	if *nnueFile != "" {
 		var err error
@@ -99,7 +89,18 @@ func main() {
 			os.Exit(1)
 		}
 		chess.UseNNUE = true
+		chess.GlobalNNUENet = nnueNet
 		fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
+	}
+
+	if *benchmark {
+		runBenchmark(*maxTimeMS, *hashMB, *depth, *threads, *benchSave, *benchCompare)
+		return
+	}
+
+	if *epdFile != "" {
+		runEPD(*epdFile, *depth, time.Duration(*maxTimeMS)*time.Millisecond, *maxPositions, *hashMB, *verbose, *threads)
+		return
 	}
 
 	// If forced UCI or stdin is not a terminal, use UCI mode

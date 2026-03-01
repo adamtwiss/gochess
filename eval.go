@@ -187,6 +187,11 @@ var OCBScale = 64
 // EvaluateRelative dispatches to the NNUE forward pass.
 var UseNNUE = false
 
+// GlobalNNUENet is the shared NNUE network pointer. When non-nil and UseNNUE
+// is true, newly created boards (e.g. in EPD tests, benchmarks) automatically
+// get the NNUE net wired in via AttachNNUE.
+var GlobalNNUENet *NNUENet
+
 // KingSafetyTable maps accumulated attack units to centipawn penalties.
 // Superlinear growth: near-zero for low indices, rapid growth from 15-50, capped at 999.
 var KingSafetyTable = [100]int{

@@ -146,6 +146,11 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 		return nil, fmt.Errorf("invalid FEN: %w", err)
 	}
 
+	// Attach global NNUE network if available
+	if UseNNUE && GlobalNNUENet != nil {
+		b.AttachNNUE(GlobalNNUENet)
+	}
+
 	// Parse expected best moves from SAN into Move values
 	var expectedMoves []Move
 	for _, bm := range epd.BestMoves {

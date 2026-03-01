@@ -133,6 +133,18 @@ type Board struct {
 	NNUEAcc *NNUEAccumulatorStack
 }
 
+// AttachNNUE wires an NNUE network into this board, creating an accumulator
+// stack and computing the initial accumulator state.
+func (b *Board) AttachNNUE(net *NNUENet) {
+	b.NNUENet = net
+	if net != nil {
+		b.NNUEAcc = NewNNUEAccumulatorStack(512)
+		net.RecomputeAccumulator(b.NNUEAcc.Current(), b)
+	} else {
+		b.NNUEAcc = nil
+	}
+}
+
 // Clear removes all pieces from the board and resets state
 func (b *Board) Clear() {
 	for i := range b.Squares {
