@@ -171,7 +171,7 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Check extensions**: Extend search by 1 ply when move gives check.
 - **Recapture extensions**: Extend by 1 ply when recapturing on the same square the opponent just captured on, to fully resolve tactical exchanges. Gated on `RecaptureExtEnabled`.
 - **Passed pawn push extensions**: Extend by 1 ply for quiet pawn pushes to 6th or 7th rank that are verified as passed pawns (via `PassedPawnMask`). Helps resolve promotion races and endgame tactics. Gated on `PassedPawnExtEnabled`.
-- **Quiescence search**: Captures only at leaf nodes, pruned by SEE >= 0. Stand-pat evaluation as lower bound. Depth-limited to 32. When in check: uses evasion generator for all legal moves (not just captures), skips stand-pat, detects checkmate (moveCount == 0).
+- **Quiescence search**: Captures only at leaf nodes, pruned by SEE >= 0. Stand-pat evaluation as lower bound. Depth-limited to 32. Uses fail-soft (returns bestScore, not alpha/beta). TT probed at top for cutoffs; results stored on all exit paths with depth 0. When in check: uses evasion generator for all legal moves (not just captures), skips stand-pat, detects checkmate (moveCount == 0).
 - **Killer moves**: 2 slots per ply, updated on beta cutoff with quiet moves.
 - **Counter-move heuristic**: `CounterMoves[piece][toSquare]` indexed by opponent's previous move. Stored on beta cutoff, used as a MovePicker stage between killers and quiets.
 - **History heuristic**: `history[from][to] += depth * depth` on beta cutoff. Quiet moves tried before the cutoff move receive a matching penalty (`-= depth * depth`). Used to score quiet moves in move ordering and to adjust LMR reductions.
