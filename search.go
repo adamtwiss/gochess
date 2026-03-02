@@ -1346,7 +1346,9 @@ func (b *Board) quiescence(alpha, beta int, info *SearchInfo) int {
 	return b.quiescenceWithDepth(alpha, beta, info, 0)
 }
 
-// quiescenceWithDepth is the internal quiescence search with depth tracking
+// quiescenceWithDepth is the internal quiescence search with depth tracking.
+// Uses fail-soft: returns the actual best score (not clamped to [alpha, beta]),
+// which is required for correct TT interaction.
 func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth int) int {
 	// Limit quiescence depth to prevent stack overflow
 	if qsDepth >= 32 {
@@ -1367,6 +1369,40 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		return 0
 	}
 
+	// Ply from root (for mate score adjustment in TT)
+	ply := int(info.Depth) + qsDepth
+
+	// Probe transposition table
+	ttMove := NoMove
+	alphaOrig := alpha
+
+	if entry, found := info.TT.Probe(b.HashKey); found {
+		ttMove = entry.Move
+
+		if int(entry.Depth) >= 0 {
+			score := int(entry.Score)
+			// Adjust mate scores for distance from root
+			if score > MateScore-100 {
+				score -= ply
+			} else if score < -MateScore+100 {
+				score += ply
+			}
+
+			switch entry.Flag {
+			case TTExact:
+				return score
+			case TTLower:
+				if score >= beta {
+					return score
+				}
+			case TTUpper:
+				if score <= alpha {
+					return score
+				}
+			}
+		}
+	}
+
 	// Precompute pinned pieces and checkers
 	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
 	qsInCheck := checkers != 0
@@ -1375,9 +1411,10 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 
 	// When in check, generate all evasion moves (captures + blocks + king moves)
 	if qsInCheck {
-		info.pickers[qsIdx].InitEvasion(b, NoMove, 0, checkers, pinned, nil, nil, &info.CaptHistory)
+		info.pickers[qsIdx].InitEvasion(b, ttMove, 0, checkers, pinned, nil, nil, &info.CaptHistory)
 		picker := &info.pickers[qsIdx]
 		bestScore := -Infinity
+		bestMove := NoMove
 		moveCount := 0
 
 		for {
@@ -1393,36 +1430,57 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 
 			if score > bestScore {
 				bestScore = score
-			}
-			if score >= beta {
-				return beta
+				bestMove = move
 			}
 			if score > alpha {
 				alpha = score
+				if score >= beta {
+					break
+				}
 			}
 		}
 
 		// Checkmate detection
 		if moveCount == 0 {
-			return -MateScore + int(info.Depth) + qsDepth
+			return -MateScore + ply
 		}
+
+		// Store in TT
+		storeScore := bestScore
+		if storeScore > MateScore-100 {
+			storeScore += ply
+		} else if storeScore < -MateScore+100 {
+			storeScore -= ply
+		}
+		var flag TTFlag
+		if bestScore >= beta {
+			flag = TTLower
+		} else if bestScore <= alphaOrig {
+			flag = TTUpper
+		} else {
+			flag = TTExact
+		}
+		info.TT.Store(b.HashKey, 0, storeScore, flag, bestMove, -Infinity)
 		return bestScore
 	}
 
 	// Stand pat - evaluate the current position (only when not in check)
 	standPat := b.EvaluateRelative()
+	bestScore := standPat
 
-	if standPat >= beta {
-		return beta
+	if bestScore >= beta {
+		info.TT.Store(b.HashKey, 0, bestScore, TTLower, NoMove, -Infinity)
+		return bestScore
 	}
 
-	if standPat > alpha {
-		alpha = standPat
+	if bestScore > alpha {
+		alpha = bestScore
 	}
 
 	// Use MovePicker for captures only (reuse pre-allocated picker)
 	info.pickers[qsIdx].InitQuiescence(b, &info.CaptHistory)
 	picker := &info.pickers[qsIdx]
+	bestMove := NoMove
 
 	for {
 		move := picker.Next()
@@ -1456,15 +1514,35 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		score := -b.quiescenceWithDepth(-beta, -alpha, info, qsDepth+1)
 		b.UnmakeMove(move)
 
-		if score >= beta {
-			return beta
+		if score > bestScore {
+			bestScore = score
+			bestMove = move
 		}
 		if score > alpha {
 			alpha = score
+			if score >= beta {
+				break
+			}
 		}
 	}
 
-	return alpha
+	// Store in TT
+	storeScore := bestScore
+	if storeScore > MateScore-100 {
+		storeScore += ply
+	} else if storeScore < -MateScore+100 {
+		storeScore -= ply
+	}
+	var flag TTFlag
+	if bestScore >= beta {
+		flag = TTLower
+	} else if bestScore <= alphaOrig {
+		flag = TTUpper
+	} else {
+		flag = TTExact
+	}
+	info.TT.Store(b.HashKey, 0, storeScore, flag, bestMove, -Infinity)
+	return bestScore
 }
 
 // isCapture returns true if the move is a capture
