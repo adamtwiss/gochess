@@ -712,8 +712,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 			switch entry.Flag {
 			case TTExact:
-				info.pvTable[ply][0] = ttMove
-				info.pvLen[ply] = 1
+				if ttMove != NoMove {
+					info.pvTable[ply][0] = ttMove
+					info.pvLen[ply] = 1
+				} else {
+					info.pvLen[ply] = 0
+				}
 				return score
 			case TTLower:
 				if score > alpha {
@@ -726,8 +730,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 
 			if alpha >= beta {
-				info.pvTable[ply][0] = ttMove
-				info.pvLen[ply] = 1
+				if ttMove != NoMove {
+					info.pvTable[ply][0] = ttMove
+					info.pvLen[ply] = 1
+				} else {
+					info.pvLen[ply] = 0
+				}
 				return score
 			}
 		}
