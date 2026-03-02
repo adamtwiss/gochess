@@ -1,6 +1,7 @@
 package chess
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -967,4 +968,91 @@ func TestSEEQuietPruneComparison(t *testing.T) {
 	t.Logf("Total nodes without SEE prune: %d", totalNodesWithout)
 	t.Logf("Overall node reduction:        %.1f%%", overallNodeReduction)
 	t.Logf("Overall speedup:               %.2fx", overallSpeedup)
+}
+
+// ttDensityPositions are complex middlegame positions for TT density testing.
+var ttDensityPositions = []struct {
+	fen   string
+	name  string
+	depth int
+}{
+	{"r1bq1rk1/2ppbppp/p1n2n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - 0 8", "Ruy Lopez middlegame", 16},
+	{"rnbqkb1r/1p2pppp/p2p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R w KQkq - 0 6", "Sicilian Najdorf", 16},
+	{"r1bq1rk1/pp1nbppp/2p1pn2/3p4/2PP4/2NBPN2/PP3PPP/R1BQ1RK1 w - - 4 8", "QGD middlegame", 16},
+	{"r2qkb1r/1b1n1ppp/p3pn2/1pp5/3PP3/2NB1N2/PP3PPP/R1BQ1RK1 w kq - 0 10", "Complex imbalance", 16},
+	{"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Starting position", 15},
+}
+
+// runTTDensityTest runs the standard positions with a given TT size and reports stats.
+func runTTDensityTest(t *testing.T, ttSizeMB int) {
+	tt := NewTranspositionTable(ttSizeMB)
+
+	var totalNodes uint64
+	var totalTimeMs int64
+
+	for _, pos := range ttDensityPositions {
+		var b Board
+		b.SetFEN(pos.fen)
+		tt.Clear()
+
+		info := &SearchInfo{
+			StartTime: time.Now(),
+			TT:        tt,
+		}
+
+		move, result := b.SearchWithInfo(pos.depth, info)
+		elapsed := time.Since(info.StartTime)
+
+		probes, hits, writes := tt.Stats()
+		hashfull := tt.Hashfull()
+
+		hitRate := float64(0)
+		if probes > 0 {
+			hitRate = float64(hits) * 100 / float64(probes)
+		}
+
+		nps := uint64(0)
+		if elapsed.Milliseconds() > 0 {
+			nps = result.Nodes * 1000 / uint64(elapsed.Milliseconds())
+		}
+
+		t.Logf("[%s] depth=%d move=%s score=%d", pos.name, pos.depth, move.String(), result.Score)
+		t.Logf("  nodes=%d  time=%v  nps=%d", result.Nodes, elapsed.Round(time.Millisecond), nps)
+		t.Logf("  TT: probes=%d hits=%d (%.1f%%) writes=%d hashfull=%d‰",
+			probes, hits, hitRate, writes, hashfull)
+
+		totalNodes += result.Nodes
+		totalTimeMs += elapsed.Milliseconds()
+	}
+
+	t.Logf("\n=== SUMMARY (%dMB TT) ===", ttSizeMB)
+	t.Logf("Total nodes: %d", totalNodes)
+	t.Logf("Total time:  %dms", totalTimeMs)
+	if totalTimeMs > 0 {
+		t.Logf("Overall NPS: %d", totalNodes*1000/uint64(totalTimeMs))
+	}
+}
+
+// TestTTDensityBaseline searches complex middlegame positions to fixed depth,
+// reporting nodes, time, and TT statistics. Used to measure TT density changes.
+// Run: go test -v -run TestTTDensityBaseline -timeout 30m
+func TestTTDensityBaseline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TT density baseline in short mode")
+	}
+	runTTDensityTest(t, 32)
+}
+
+// TestTTDensitySweep runs the same positions with multiple TT sizes to measure
+// how capacity affects hit rate and node count.
+// Run: go test -v -run TestTTDensitySweep -timeout 60m
+func TestTTDensitySweep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TT density sweep in short mode")
+	}
+	for _, sizeMB := range []int{16, 32, 64, 128, 256} {
+		t.Run(fmt.Sprintf("%dMB", sizeMB), func(t *testing.T) {
+			runTTDensityTest(t, sizeMB)
+		})
+	}
 }
