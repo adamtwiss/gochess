@@ -24,13 +24,6 @@ type TTEntry struct {
 	StaticEval int16  // Static eval (stored as int8 * 4, range ±508)
 }
 
-// ttSlot stores a TT entry as two uint64 fields for lockless concurrent access.
-// keyXor = key XOR data — torn reads are detected by checking key XOR keyXor == data.
-type ttSlot struct {
-	keyXor uint64
-	data   uint64
-}
-
 // packTTData packs entry fields into a single uint64:
 //
 //	bits  0-15: Move (uint16)
@@ -66,9 +59,13 @@ func unpackTTData(data uint64) (depth int8, score int16, flag TTFlag, move Move,
 	return
 }
 
-// TTBucket holds four TT slots (64 bytes = 1 cache line).
+// TTBucket holds five TT entries in parallel arrays (64 bytes = 1 cache line).
+// Parallel arrays avoid struct padding: a struct{uint64; uint32} pads to 16 bytes,
+// but arrays keep data at 8-byte alignment and keys at 4-byte alignment.
 type TTBucket struct {
-	slots [4]ttSlot
+	data [5]uint64 // 40 bytes — packed entry data
+	keys [5]uint32 // 20 bytes — upper-32-bit hash XOR'd with lower 32 bits of data
+	_pad [4]byte   // 4 bytes padding to reach 64 bytes
 }
 
 // TranspositionTable stores search results for position lookup
@@ -84,7 +81,7 @@ type TranspositionTable struct {
 
 // NewTranspositionTable creates a new TT with the given size in MB
 func NewTranspositionTable(sizeMB int) *TranspositionTable {
-	// Calculate number of buckets (64 bytes each: 4 x 16-byte slots)
+	// Calculate number of buckets (64 bytes each: 5 x 12-byte entries + 4 padding)
 	bucketSize := uint64(64)
 	numBuckets := uint64(sizeMB*1024*1024) / bucketSize
 
@@ -124,19 +121,19 @@ func (tt *TranspositionTable) index(key uint64) uint64 {
 }
 
 // Probe looks up a position in the table.
-// Uses atomic loads and XOR verification for lockless thread safety.
+// Uses atomic loads and 32-bit XOR verification for lockless thread safety.
 func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
 	atomic.AddUint64(&tt.probes, 1)
 	bucket := &tt.buckets[tt.index(key)]
+	keyUpper := uint32(key >> 32)
 
-	// Check all 4 slots
-	for i := 0; i < 4; i++ {
-		slot := &bucket.slots[i]
-		data := atomic.LoadUint64(&slot.data)
-		keyXor := atomic.LoadUint64(&slot.keyXor)
+	// Check all 5 slots
+	for i := 0; i < 5; i++ {
+		data := atomic.LoadUint64(&bucket.data[i])
+		storedKey := atomic.LoadUint32(&bucket.keys[i])
 
-		// Verify: stored key = keyXor XOR data; check it matches requested key
-		if keyXor^data != key {
+		// Verify: storedKey = upper32(key) XOR lower32(data)
+		if storedKey^uint32(data) != keyUpper {
 			continue
 		}
 
@@ -160,7 +157,7 @@ func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
 }
 
 // Store saves a position to the table.
-// Uses atomic stores with XOR key verification for lockless thread safety.
+// Uses atomic stores with 32-bit XOR key verification for lockless thread safety.
 // Replacement uses Stockfish-style scoring: depth - 4*age. Stale entries
 // from older generations are cheap to evict; current-generation deep entries
 // are preserved.
@@ -168,32 +165,34 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 	bucket := &tt.buckets[tt.index(key)]
 	d := int8(depth)
 	gen := tt.generation
+	keyUpper := uint32(key >> 32)
 
 	newData := packTTData(d, int16(score), flag, move, gen, int16(staticEval))
+	newKey := keyUpper ^ uint32(newData)
 
-	// Scan all 4 slots: look for key match, empty slot, and worst-scoring slot
+	// Scan all 5 slots: look for key match, empty slot, and worst-scoring slot
 	replaceIdx := 0
-	replaceScore := int(1<<30) // impossibly high so any real slot beats it
-	for i := 0; i < 4; i++ {
-		slotData := atomic.LoadUint64(&bucket.slots[i].data)
-		slotKeyXor := atomic.LoadUint64(&bucket.slots[i].keyXor)
-		slotKey := slotKeyXor ^ slotData
+	replaceScore := int(1 << 30) // impossibly high so any real slot beats it
+	for i := 0; i < 5; i++ {
+		slotData := atomic.LoadUint64(&bucket.data[i])
+		slotKeyStored := atomic.LoadUint32(&bucket.keys[i])
+		recoveredUpper := slotKeyStored ^ uint32(slotData)
 
 		slotDepth, _, slotFlag, _, slotGen, _ := unpackTTData(slotData)
 
 		// Empty slot: use immediately
 		if slotFlag == TTNone {
-			atomic.StoreUint64(&bucket.slots[i].data, newData)
-			atomic.StoreUint64(&bucket.slots[i].keyXor, key^newData)
+			atomic.StoreUint64(&bucket.data[i], newData)
+			atomic.StoreUint32(&bucket.keys[i], newKey)
 			atomic.AddUint64(&tt.writes, 1)
 			return
 		}
 
 		// Key match: update if newer generation or deeper/equal depth
-		if slotKey == key {
+		if recoveredUpper == keyUpper {
 			if d >= slotDepth || gen != slotGen {
-				atomic.StoreUint64(&bucket.slots[i].data, newData)
-				atomic.StoreUint64(&bucket.slots[i].keyXor, key^newData)
+				atomic.StoreUint64(&bucket.data[i], newData)
+				atomic.StoreUint32(&bucket.keys[i], newKey)
 				atomic.AddUint64(&tt.writes, 1)
 			}
 			return
@@ -210,8 +209,8 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 	}
 
 	// No key match and no empty slot: replace worst-scoring slot
-	atomic.StoreUint64(&bucket.slots[replaceIdx].data, newData)
-	atomic.StoreUint64(&bucket.slots[replaceIdx].keyXor, key^newData)
+	atomic.StoreUint64(&bucket.data[replaceIdx], newData)
+	atomic.StoreUint32(&bucket.keys[replaceIdx], newKey)
 	atomic.AddUint64(&tt.writes, 1)
 }
 
@@ -224,10 +223,10 @@ func (tt *TranspositionTable) Stats() (probes, hits, writes uint64) {
 func (tt *TranspositionTable) Hashfull() int {
 	used := 0
 	sampleBuckets := min(1000, len(tt.buckets))
-	totalSlots := sampleBuckets * 4
+	totalSlots := sampleBuckets * 5
 	for i := 0; i < sampleBuckets; i++ {
-		for j := 0; j < 4; j++ {
-			data := atomic.LoadUint64(&tt.buckets[i].slots[j].data)
+		for j := 0; j < 5; j++ {
+			data := atomic.LoadUint64(&tt.buckets[i].data[j])
 			_, _, flag, _, _, _ := unpackTTData(data)
 			if flag != TTNone {
 				used++

@@ -40,7 +40,7 @@ func TestTTCollision(t *testing.T) {
 	entry1, found1 := tt.Probe(key1)
 	entry2, found2 := tt.Probe(key2)
 
-	// With four slots per bucket, both should be found if they collide
+	// With five slots per bucket, both should be found if they collide
 	if !found1 && !found2 {
 		t.Error("Neither entry found after storing both")
 	}
@@ -89,16 +89,18 @@ func TestTTDepthReplacement(t *testing.T) {
 func TestTTBucketBehavior(t *testing.T) {
 	tt := NewTranspositionTable(1)
 
-	// Craft keys that map to the same bucket index.
-	// Since mask = size-1, keys that differ by multiples of tt.size collide.
+	// Craft keys that map to the same bucket index but differ in upper 32 bits.
+	// Adding n<<32 preserves the bucket index (lower bits) while giving each
+	// key a unique upper-32-bit fingerprint for 32-bit key verification.
 	baseKey := uint64(42)
 
-	keys := [5]uint64{
+	keys := [6]uint64{
 		baseKey,
-		baseKey + tt.size,
-		baseKey + 2*tt.size,
-		baseKey + 3*tt.size,
-		baseKey + 4*tt.size,
+		baseKey + (1 << 32),
+		baseKey + (2 << 32),
+		baseKey + (3 << 32),
+		baseKey + (4 << 32),
+		baseKey + (5 << 32),
 	}
 	for i := 1; i < len(keys); i++ {
 		if tt.index(keys[i]) != tt.index(keys[0]) {
@@ -106,29 +108,30 @@ func TestTTBucketBehavior(t *testing.T) {
 		}
 	}
 
-	// Fill all 4 slots with varying depths
+	// Fill all 5 slots with varying depths
 	tt.Store(keys[0], 10, 150, TTExact, NewMove(12, 28), 0)
 	tt.Store(keys[1], 3, 50, TTLower, NewMove(52, 36), 0)
 	tt.Store(keys[2], 6, 80, TTUpper, NewMove(1, 18), 0)
 	tt.Store(keys[3], 8, 120, TTExact, NewMove(6, 21), 0)
+	tt.Store(keys[4], 5, 90, TTLower, NewMove(10, 26), 0)
 
-	// All 4 should be found
-	for i := 0; i < 4; i++ {
+	// All 5 should be found
+	for i := 0; i < 5; i++ {
 		_, found := tt.Probe(keys[i])
 		if !found {
-			t.Errorf("key%d not found after filling 4 slots", i)
+			t.Errorf("key%d not found after filling 5 slots", i)
 		}
 	}
 
-	// Store a 5th entry — should evict the shallowest (key1, depth 3)
-	tt.Store(keys[4], 5, 90, TTLower, NewMove(10, 26), 0)
+	// Store a 6th entry — should evict the shallowest (key1, depth 3)
+	tt.Store(keys[5], 7, 110, TTLower, NewMove(11, 27), 0)
 
-	entry4, found4 := tt.Probe(keys[4])
-	if !found4 {
-		t.Error("key4 not found after storing into full bucket")
+	entry5, found5 := tt.Probe(keys[5])
+	if !found5 {
+		t.Error("key5 not found after storing into full bucket")
 	}
-	if found4 && entry4.Depth != 5 {
-		t.Errorf("key4 depth = %d, want 5", entry4.Depth)
+	if found5 && entry5.Depth != 7 {
+		t.Errorf("key5 depth = %d, want 7", entry5.Depth)
 	}
 
 	// The deepest entry (key0, depth 10) must survive
@@ -191,16 +194,17 @@ func TestTTGeneration(t *testing.T) {
 	// Test that stale entries are evicted first in a full bucket
 	tt2 := NewTranspositionTable(1)
 	baseKey := uint64(99)
-	k := [5]uint64{
+	k := [6]uint64{
 		baseKey,
-		baseKey + tt2.size,
-		baseKey + 2*tt2.size,
-		baseKey + 3*tt2.size,
-		baseKey + 4*tt2.size,
+		baseKey + (1 << 32),
+		baseKey + (2 << 32),
+		baseKey + (3 << 32),
+		baseKey + (4 << 32),
+		baseKey + (5 << 32),
 	}
 
-	// Fill 4 slots at generation 0 with high depth
-	for i := 0; i < 4; i++ {
+	// Fill 5 slots at generation 0 with high depth
+	for i := 0; i < 5; i++ {
 		tt2.Store(k[i], 10, 100, TTExact, NewMove(12, 28), 0)
 	}
 
@@ -208,12 +212,12 @@ func TestTTGeneration(t *testing.T) {
 	tt2.NewSearch()
 	tt2.NewSearch()
 
-	// Store 5th key — should evict one of the stale depth-10 entries
+	// Store 6th key — should evict one of the stale depth-10 entries
 	// because age penalty makes them score 10 - 4*2 = 2
-	tt2.Store(k[4], 4, 50, TTLower, NewMove(52, 36), 0)
+	tt2.Store(k[5], 4, 50, TTLower, NewMove(52, 36), 0)
 
-	_, found5 := tt2.Probe(k[4])
-	if !found5 {
+	_, found6 := tt2.Probe(k[5])
+	if !found6 {
 		t.Error("New-generation entry not found after evicting stale entry")
 	}
 }
