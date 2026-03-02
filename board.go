@@ -130,9 +130,6 @@ type Board struct {
 	// Pawn hash table for caching pawn structure evaluation
 	PawnTable *PawnTable
 
-	// Eval cache for caching Evaluate() results
-	EvalTable *EvalTable
-
 	// Incremental PST+material scores per color
 	PSTScoreMG [2]int
 	PSTScoreEG [2]int

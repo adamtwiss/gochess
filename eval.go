@@ -207,54 +207,10 @@ var KingSafetyTable = [100]int{
 	1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003,
 }
 
-// EvalEntry is a single eval cache entry.
-type EvalEntry struct {
-	Key   uint64
-	Score int16
-}
-
-// EvalTable caches Evaluate() results keyed by Zobrist hash.
-type EvalTable struct {
-	entries []EvalEntry
-	mask    uint64
-	probes  uint64
-	hits    uint64
-}
-
-// Stats returns probe and hit counts for the eval cache.
-func (et *EvalTable) Stats() (probes, hits uint64) {
-	return et.probes, et.hits
-}
-
-// NewEvalTable creates a new eval cache with the given size in MB.
-func NewEvalTable(sizeMB int) *EvalTable {
-	entrySize := uint64(16) // sizeof(EvalEntry) with padding
-	numEntries := uint64(sizeMB*1024*1024) / entrySize
-	size := uint64(1)
-	for size*2 <= numEntries {
-		size *= 2
-	}
-	return &EvalTable{
-		entries: make([]EvalEntry, size),
-		mask:    size - 1,
-	}
-}
-
 // Evaluate returns a static evaluation of the position in centipawns.
 // Positive values favor White, negative values favor Black.
 // Uses tapered evaluation blending middlegame and endgame PST scores.
 func (b *Board) Evaluate() int {
-	// Eval cache probe
-	if b.EvalTable == nil {
-		b.EvalTable = NewEvalTable(1)
-	}
-	b.EvalTable.probes++
-	idx := b.HashKey & b.EvalTable.mask
-	if e := b.EvalTable.entries[idx]; e.Key == b.HashKey {
-		b.EvalTable.hits++
-		return int(e.Score)
-	}
-
 	wMG, wEG := b.PSTScoreMG[White], b.PSTScoreEG[White]
 	bMG, bEG := b.PSTScoreMG[Black], b.PSTScoreEG[Black]
 
@@ -379,9 +335,6 @@ func (b *Board) Evaluate() int {
 		score = score * (100 - hmc) / 100
 	}
 
-	// Eval cache store
-	b.EvalTable.entries[idx] = EvalEntry{Key: b.HashKey, Score: int16(score)}
-
 	return score
 }
 
@@ -401,17 +354,6 @@ func (b *Board) EvaluateRelative() int {
 // NNUEEvaluateRelative returns the NNUE evaluation from the perspective
 // of the side to move. Applies endgame scaling and 50-move rule scaling.
 func (b *Board) NNUEEvaluateRelative() int {
-	// Eval cache probe (larger cache for NNUE since forward pass is expensive)
-	if b.EvalTable == nil {
-		b.EvalTable = NewEvalTable(8)
-	}
-	b.EvalTable.probes++
-	idx := b.HashKey & b.EvalTable.mask
-	if e := b.EvalTable.entries[idx]; e.Key == b.HashKey {
-		b.EvalTable.hits++
-		return int(e.Score)
-	}
-
 	acc := b.NNUEAcc.Current()
 	if !acc.Computed {
 		b.NNUENet.RecomputeAccumulator(acc, b)
@@ -446,9 +388,6 @@ func (b *Board) NNUEEvaluateRelative() int {
 		}
 		score = score * (100 - hmc) / 100
 	}
-
-	// Eval cache store
-	b.EvalTable.entries[idx] = EvalEntry{Key: b.HashKey, Score: int16(score)}
 
 	return score
 }

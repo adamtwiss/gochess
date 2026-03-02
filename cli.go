@@ -232,7 +232,6 @@ func (c *CLIEngine) cmdSearch(args []string) {
 	// Copy board for search (preserves undo stack for repetition detection)
 	var searchBoard Board = c.board
 	searchBoard.UndoStack = append([]UndoInfo(nil), c.board.UndoStack...)
-	searchBoard.EvalTable = c.board.EvalTable
 	searchBoard.PawnTable = c.board.PawnTable
 
 	info := &SearchInfo{
@@ -277,16 +276,12 @@ func (c *CLIEngine) cmdSearch(args []string) {
 
 	// Hash table hit rates
 	ttProbes, ttHits, _ := c.tt.Stats()
-	var evalProbes, evalHits, pawnProbes, pawnHits uint64
-	if searchBoard.EvalTable != nil {
-		evalProbes, evalHits = searchBoard.EvalTable.Stats()
-	}
+	var pawnProbes, pawnHits uint64
 	if searchBoard.PawnTable != nil {
 		pawnProbes, pawnHits = searchBoard.PawnTable.Stats()
 	}
-	fmt.Printf("  TT: %s  eval: %s  pawn: %s\n",
+	fmt.Printf("  TT: %s  pawn: %s\n",
 		formatHitrate(ttProbes, ttHits),
-		formatHitrate(evalProbes, evalHits),
 		formatHitrate(pawnProbes, pawnHits))
 }
 
@@ -392,12 +387,9 @@ func (c *CLIEngine) cmdEPD(rawArgs string) {
 }
 
 func (c *CLIEngine) cmdEval() {
-	// Ensure pawn table and eval table are initialized
+	// Ensure pawn table is initialized
 	if c.board.PawnTable == nil {
 		c.board.PawnTable = NewPawnTable(1)
-	}
-	if c.board.EvalTable == nil {
-		c.board.EvalTable = NewEvalTable(1)
 	}
 
 	fmt.Print(c.board.Print())

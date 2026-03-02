@@ -344,9 +344,8 @@ func runVerbose(pos *chess.EPDPosition, id string, depth int, maxTime time.Durat
 	fmt.Printf("  ---\n")
 	fmt.Printf("  nodes: %d  %s  max depth: %d  solve: %s  time: %v\n",
 		result.SearchInfo.Nodes, nps, result.SearchInfo.Depth, solveStr, result.TimeTaken.Round(time.Millisecond))
-	fmt.Printf("  TT: %s  eval: %s  pawn: %s\n",
+	fmt.Printf("  TT: %s  pawn: %s\n",
 		formatHitrate(result.TTProbes, result.TTHits),
-		formatHitrate(result.EvalProbes, result.EvalHits),
 		formatHitrate(result.PawnProbes, result.PawnHits))
 
 	return result, nil

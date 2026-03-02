@@ -446,9 +446,8 @@ func (b *Board) SearchParallel(maxDepth int, info *SearchInfo, numThreads int) (
 		helperBoards[i] = *b
 		helperBoards[i].UndoStack = make([]UndoInfo, len(b.UndoStack), len(b.UndoStack)+256)
 		copy(helperBoards[i].UndoStack, b.UndoStack)
-		// Per-thread eval and pawn tables
+		// Per-thread pawn table
 		helperBoards[i].PawnTable = NewPawnTable(1)
-		helperBoards[i].EvalTable = NewEvalTable(1)
 		// Per-thread NNUE accumulator (net is shared read-only)
 		if b.NNUEAcc != nil {
 			helperBoards[i].NNUEAcc = b.NNUEAcc.DeepCopy()
@@ -748,10 +747,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Compute static eval for pruning and LMR improving detection.
 	// Stored per-ply so we can compare to 2 plies ago.
 	// Computed early because NMP, RFP, razoring, and futility all need it.
+	// Use TT staticEval when available to avoid recomputing.
 	staticEval := -Infinity
 	improving := false
 	if !inCheck {
-		staticEval = b.EvaluateRelative()
+		if ttHit && ttEntry.StaticEval > -MateScore+100 {
+			staticEval = int(ttEntry.StaticEval)
+		} else {
+			staticEval = b.EvaluateRelative()
+		}
 		if ply <= MaxPly {
 			info.StaticEvals[ply] = staticEval
 		}
@@ -1375,9 +1379,13 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 	// Probe transposition table
 	ttMove := NoMove
 	alphaOrig := alpha
+	var ttHit bool
+	var ttStaticEval int16
 
 	if entry, found := info.TT.Probe(b.HashKey); found {
+		ttHit = true
 		ttMove = entry.Move
+		ttStaticEval = entry.StaticEval
 
 		if int(entry.Depth) >= 0 {
 			score := int(entry.Score)
@@ -1464,12 +1472,18 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		return bestScore
 	}
 
-	// Stand pat - evaluate the current position (only when not in check)
-	standPat := b.EvaluateRelative()
+	// Stand pat - evaluate the current position (only when not in check).
+	// Use TT staticEval when available to avoid recomputing.
+	var standPat int
+	if ttHit && ttStaticEval > int16(-MateScore+100) {
+		standPat = int(ttStaticEval)
+	} else {
+		standPat = b.EvaluateRelative()
+	}
 	bestScore := standPat
 
 	if bestScore >= beta {
-		info.TT.Store(b.HashKey, 0, bestScore, TTLower, NoMove, -Infinity)
+		info.TT.Store(b.HashKey, 0, bestScore, TTLower, NoMove, standPat)
 		return bestScore
 	}
 
@@ -1541,7 +1555,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 	} else {
 		flag = TTExact
 	}
-	info.TT.Store(b.HashKey, 0, storeScore, flag, bestMove, -Infinity)
+	info.TT.Store(b.HashKey, 0, storeScore, flag, bestMove, standPat)
 	return bestScore
 }
 

@@ -124,7 +124,6 @@ type EPDTestResult struct {
 
 	// Hash table stats (probes, hits)
 	TTProbes, TTHits     uint64
-	EvalProbes, EvalHits uint64
 	PawnProbes, PawnHits uint64
 }
 
@@ -213,9 +212,6 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 	// Collect hash table stats
 	if tt != nil {
 		result.TTProbes, result.TTHits, _ = tt.Stats()
-	}
-	if b.EvalTable != nil {
-		result.EvalProbes, result.EvalHits = b.EvalTable.Stats()
 	}
 	if b.PawnTable != nil {
 		result.PawnProbes, result.PawnHits = b.PawnTable.Stats()

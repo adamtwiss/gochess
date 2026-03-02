@@ -762,16 +762,15 @@ func TestEvalCalibration(t *testing.T) {
 	}
 }
 
-func TestEvalCache(t *testing.T) {
-	// Verify cached eval matches fresh eval
+func TestEvalConsistency(t *testing.T) {
+	// Verify eval is consistent after make/unmake
 	var b Board
 	b.Reset()
-	b.EvalTable = NewEvalTable(1)
 
 	score1 := b.Evaluate()
-	score2 := b.Evaluate() // should hit cache
+	score2 := b.Evaluate()
 	if score1 != score2 {
-		t.Errorf("Cached eval %d != fresh eval %d", score2, score1)
+		t.Errorf("Repeated eval %d != %d", score2, score1)
 	}
 
 	// After a move, eval should change
@@ -781,7 +780,7 @@ func TestEvalCache(t *testing.T) {
 	_ = score3 // just verify no panic
 
 	b.UnmakeMove(moves[0])
-	score4 := b.Evaluate() // should hit original cache entry
+	score4 := b.Evaluate()
 	if score4 != score1 {
 		t.Errorf("Eval after unmake %d != original %d", score4, score1)
 	}
