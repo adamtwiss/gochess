@@ -48,7 +48,7 @@ movegen.go           Pseudo-legal/legal move generation, IsAttacked, InCheck
 makemove.go          MakeMove/UnmakeMove, null move, UndoInfo
 movepicker.go        Staged move ordering for search, IsPseudoLegal
 search.go            Negamax, alpha-beta, iterative deepening, LMR, LMP, PVS, Lazy SMP
-eval.go              Tapered eval: PST, mobility, king safety, positional bonuses, eval cache
+eval.go              Tapered eval: PST, mobility, king safety, positional bonuses
 pst.go               PeSTO piece-square tables, material values, phase constants
 pawns.go             Pawn structure eval (doubled/isolated/passed), pawn hash table, pawn shield
 tt.go                Transposition table (lockless, 4-slot buckets with Stockfish-style age/depth replacement)
@@ -178,7 +178,7 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Capture history**: `CaptHistory[piece][toSquare][capturedPieceType]` (int16, ~11.4KB per thread). Tracks which captures caused beta cutoffs. Updated with `depth * depth` bonus on cutoff, penalty for captures tried before. Added to MVV-LVA scores for good captures and to SEE scores for bad captures, improving ordering among equal-value captures.
 - **Continuation history**: `ContHistory[prevPiece][prevTo][curPiece][curTo]` (int16, ~1.3MB per thread). Captures the pattern "after piece X moved to square Y, quiet move Z tends to be good/bad". Updated alongside History on quiet beta cutoffs (bonus) and for quiet moves tried before cutoff (penalty). Added to quiet move scores in MovePicker and to the LMR history adjustment. Nil-safe: disabled at root and after null moves.
 - **Time management**: Dual soft/hard deadline system. `computeSearchTime()` returns soft (base allocation) and hard (3× soft, capped at 75% remaining) limits. Between iterations (depth ≥ 4), the soft deadline is dynamically scaled based on best-move stability (stable → scale down to 0.5×) and score instability (large delta → scale up to 1.4×). Mate-range score swings are ignored. The adjusted soft deadline is clamped to the hard deadline. Checks clock every 4096 nodes against hard deadline. Helper threads, EPD, benchmark, and `go movetime` use hard deadline only (SoftDeadline=0). `go infinite`/`go depth` set no deadlines.
-- **Lazy SMP**: Multi-threaded search via `SearchParallel()`. All threads search the same root position independently, sharing only the transposition table. Each thread has its own `Board` copy (with undo stack for repetition detection), `SearchInfo` (killers, history, counter-moves), eval cache, and pawn hash table. Helper threads use depth diversification (a skip table indexed by thread index and depth) to ensure threads are at different depths at any given time, improving TT entry diversity. The main thread (thread 0) runs normally with the `OnDepth` callback; helper threads run a stripped-down iterative deepening loop. Node counts from all threads are aggregated for NPS reporting. Default: 1 thread (no behavior change). Configurable via UCI `Threads` option (1-256) and `-threads` CLI flag.
+- **Lazy SMP**: Multi-threaded search via `SearchParallel()`. All threads search the same root position independently, sharing only the transposition table. Each thread has its own `Board` copy (with undo stack for repetition detection), `SearchInfo` (killers, history, counter-moves), and pawn hash table. Helper threads use depth diversification (a skip table indexed by thread index and depth) to ensure threads are at different depths at any given time, improving TT entry diversity. The main thread (thread 0) runs normally with the `OnDepth` callback; helper threads run a stripped-down iterative deepening loop. Node counts from all threads are aggregated for NPS reporting. Default: 1 thread (no behavior change). Configurable via UCI `Threads` option (1-256) and `-threads` CLI flag.
 
 ### Transposition Table Thread Safety
 
@@ -218,7 +218,7 @@ Tapered evaluation blending middlegame and endgame scores based on game phase (p
 - **Pawn storm bonus** (eval.go): Direct MG+EG bonus for friendly pawns advanced toward the enemy king, not gated on attacker count. `PawnStormBonusMG/EG[2][8]` indexed by opposed/unopposed and relative rank. Evaluated over 3 files around the enemy king (king file ±1). Separate from the legacy `PawnStormUnits` system in king safety.
 - **Endgame king activity** (eval.go): Two EG-only components. (1) Unconditional centralization: both kings penalized per center-distance unit (`KingCenterBonusEG`), tapered eval scales this out in middlegames. (2) Material advantage bonuses: when one side has more material (weighted: N/B=1, R=3, Q=6), reward king proximity (`KingProximityAdvantageEG`) and pushing enemy king to edge (`KingCornerPushEG`). No piece-type gates.
 - **Endgame scaling** (eval.go): Per-side scale factors (0-128) for draw/insufficient material detection. Handles KNN, KR vs KB/KN, pawnless 2 minors vs 1+ minor (KBB/KBN vs KB/KN, scale 16), opposite-colored bishop drawishness (OCBScale=64), and 50-move rule scaling.
-- **Eval cache** (eval.go): `EvalTable` caches full `Evaluate()` results keyed by Zobrist hash. Auto-initialized at 1 MB. Avoids redundant recomputation on transpositions.
+- **Static eval caching via TT**: Instead of a separate eval cache, static eval is stored in TT entries (`StaticEval` field, int8*4, ±508cp range). Main search and qsearch read it back on TT hits to skip `EvaluateRelative()` calls.
 - **Phase calculation**: Knight=1, Bishop=1, Rook=2, Queen=4, Total=24. Phase increases as pieces are traded.
 
 ### Zobrist Hashing
@@ -293,9 +293,8 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - Castling rights are lost both when a rook/king moves AND when a rook is captured on its home square.
 - En passant hash uses file only (8 keys), not full square.
 - TT mate scores are ply-adjusted: stored as `mate + ply`, retrieved as `mate - ply`.
-- Eval cache uses full `HashKey` (includes side-to-move). `Evaluate()` is White-relative, so same position with different side-to-move gets separate cache entries — correct but slightly lower hit rate.
-- Pawn hash table and eval cache auto-initialize on first `Evaluate()` call if nil.
-- Lazy SMP threads share only the TT. Board, SearchInfo, eval cache, and pawn table are per-thread. The `Stopped` and `Deadline` fields on `SearchInfo` are accessed atomically (`int32`/`int64`). When adding new shared state, it must use atomic operations or be per-thread.
+- Pawn hash table auto-initializes on first `Evaluate()` call if nil.
+- Lazy SMP threads share only the TT. Board, SearchInfo, and pawn table are per-thread. The `Stopped` and `Deadline` fields on `SearchInfo` are accessed atomically (`int32`/`int64`). When adding new shared state, it must use atomic operations or be per-thread.
 - TT `Probe`/`Store` are lockless via packed atomics — do not add non-atomic fields to `ttSlot`.
 - Tuner PST parameters are pre-scaled (raw × scale/100). Adding a new PST-related eval term requires initializing the tuner param with the effective value, not the raw table value.
 - Tuner traces must mirror `Evaluate()` exactly. When modifying eval, update `computeTrace()` in tuner.go to match. Non-additive eval terms (king safety table lookup, endgame scaling, 50-move scaling) cannot be represented in the trace.
