@@ -1392,7 +1392,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		ttMove = entry.Move
 		ttStaticEval = entry.StaticEval
 
-		if int(entry.Depth) >= 0 {
+		if int(entry.Depth) >= -1 {
 			score := int(entry.Score)
 			// Adjust mate scores for distance from root
 			if score > MateScore-100 {
@@ -1473,7 +1473,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		} else {
 			flag = TTExact
 		}
-		info.TT.Store(b.HashKey, 0, storeScore, flag, bestMove, -Infinity)
+		info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, -Infinity)
 		return bestScore
 	}
 
@@ -1488,7 +1488,6 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	bestScore := standPat
 
 	if bestScore >= beta {
-		info.TT.Store(b.HashKey, 0, bestScore, TTLower, NoMove, standPat)
 		return bestScore
 	}
 
@@ -1560,7 +1559,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	} else {
 		flag = TTExact
 	}
-	info.TT.Store(b.HashKey, 0, storeScore, flag, bestMove, standPat)
+	info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, standPat)
 	return bestScore
 }
 
