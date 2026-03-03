@@ -743,7 +743,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	// Leaf node - go to quiescence search
 	if depth <= 0 {
-		return b.quiescence(alpha, beta, info)
+		return b.quiescence(alpha, beta, ply, info)
 	}
 
 	// Compute pinned pieces and checkers together (shares slider ray work).
@@ -839,7 +839,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if RazoringEnabled && depth <= 2 && ply > 0 {
 			razoringMargin := 400 + depth*100
 			if staticEval+razoringMargin < alpha {
-				score := b.quiescence(alpha, beta, info)
+				score := b.quiescence(alpha, beta, ply, info)
 				if score < alpha {
 					return score
 				}
@@ -1354,14 +1354,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 }
 
 // quiescence searches captures until the position is quiet
-func (b *Board) quiescence(alpha, beta int, info *SearchInfo) int {
-	return b.quiescenceWithDepth(alpha, beta, info, 0)
+func (b *Board) quiescence(alpha, beta, ply int, info *SearchInfo) int {
+	return b.quiescenceWithDepth(alpha, beta, ply, info, 0)
 }
 
 // quiescenceWithDepth is the internal quiescence search with depth tracking.
 // Uses fail-soft: returns the actual best score (not clamped to [alpha, beta]),
 // which is required for correct TT interaction.
-func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth int) int {
+func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDepth int) int {
 	// Limit quiescence depth to prevent stack overflow
 	if qsDepth >= 32 {
 		return b.EvaluateRelative()
@@ -1380,9 +1380,6 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 	if atomic.LoadInt32(&info.Stopped) != 0 {
 		return 0
 	}
-
-	// Ply from root (for mate score adjustment in TT)
-	ply := int(info.Depth) + qsDepth
 
 	// Probe transposition table
 	ttMove := NoMove
@@ -1441,7 +1438,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 			moveCount++
 
 			b.MakeMove(move)
-			score := -b.quiescenceWithDepth(-beta, -alpha, info, qsDepth+1)
+			score := -b.quiescenceWithDepth(-beta, -alpha, ply+1, info, qsDepth+1)
 			b.UnmakeMove(move)
 
 			if score > bestScore {
@@ -1533,7 +1530,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta int, info *SearchInfo, qsDepth i
 		}
 
 		b.MakeMove(move)
-		score := -b.quiescenceWithDepth(-beta, -alpha, info, qsDepth+1)
+		score := -b.quiescenceWithDepth(-beta, -alpha, ply+1, info, qsDepth+1)
 		b.UnmakeMove(move)
 
 		if score > bestScore {

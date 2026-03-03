@@ -116,7 +116,7 @@ func TestQSCheckEvasion(t *testing.T) {
 	info.TT = NewTranspositionTable(1)
 	info.Depth = 1
 
-	score := b.quiescence(-Infinity, Infinity, info)
+	score := b.quiescence(-Infinity, Infinity, 0, info)
 	if score > -MateScore+200 {
 		t.Errorf("QS should detect checkmate, got score %d", score)
 	}
@@ -131,7 +131,7 @@ func TestQSCheckNonMate(t *testing.T) {
 	info.TT = NewTranspositionTable(1)
 	info.Depth = 1
 
-	score := b.quiescence(-Infinity, Infinity, info)
+	score := b.quiescence(-Infinity, Infinity, 0, info)
 	// Should not be a mate score since there are legal evasions
 	if score < -MateScore+200 {
 		t.Errorf("QS should find evasions, got mate-like score %d", score)
