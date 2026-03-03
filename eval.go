@@ -5,95 +5,95 @@ package chess
 var (
 	// Knight: 9 entries (0-8 squares).
 	KnightMobility = [9][2]int{
-		{-1, -193}, {18, -106}, {34, -62}, {41, -19},
-		{57, 5}, {61, 38}, {71, 40}, {90, 36}, {110, 13},
+		{24, -230}, {56, -68}, {69, -7}, {74, 34},
+		{84, 55}, {87, 85}, {95, 87}, {105, 84}, {131, 51},
 	}
 
 	// Bishop: 14 entries (0-13 squares).
 	BishopMobility = [14][2]int{
-		{41, 98}, {60, 133}, {72, 171}, {78, 194},
-		{88, 200}, {93, 219}, {90, 227}, {96, 225},
-		{87, 221}, {93, 218}, {74, 200}, {111, 185},
-		{189, 170}, {208, 131},
+		{81, 144}, {96, 180}, {108, 216}, {116, 241},
+		{123, 255}, {130, 270}, {131, 272}, {132, 274},
+		{132, 268}, {133, 261}, {129, 250}, {136, 235},
+		{175, 181}, {179, 176},
 	}
 
 	// Rook: 15 entries (0-14 squares).
 	RookMobility = [15][2]int{
-		{31, 43}, {50, 101}, {47, 137}, {56, 147},
-		{66, 160}, {68, 175}, {80, 176}, {84, 178},
-		{90, 193}, {81, 200}, {78, 201}, {78, 207},
-		{77, 204}, {65, 197}, {110, 180},
+		{67, 90}, {81, 142}, {82, 165}, {87, 178},
+		{90, 202}, {97, 208}, {106, 212}, {106, 223},
+		{110, 236}, {107, 244}, {106, 247}, {107, 250},
+		{99, 254}, {90, 253}, {95, 243},
 	}
 
 	// Queen: 28 entries (0-27 squares).
 	QueenMobility = [28][2]int{
-		{126, 23}, {121, 76}, {119, 102}, {125, 110},
-		{123, 159}, {130, 191}, {137, 203}, {142, 231},
-		{143, 261}, {146, 275}, {145, 299}, {146, 290},
-		{145, 309}, {147, 301}, {153, 286}, {164, 285},
-		{172, 273}, {177, 260}, {193, 253}, {231, 203},
-		{239, 194}, {247, 196}, {239, 186}, {236, 176},
-		{224, 169}, {221, 157}, {215, 153}, {220, 161},
+		{179, 25}, {169, 78}, {172, 134}, {174, 151},
+		{175, 214}, {180, 235}, {185, 262}, {190, 290},
+		{191, 320}, {194, 336}, {194, 352}, {198, 349},
+		{197, 368}, {199, 369}, {201, 362}, {209, 361},
+		{214, 347}, {223, 334}, {224, 325}, {270, 277},
+		{283, 258}, {290, 251}, {279, 226}, {263, 200},
+		{240, 184}, {225, 148}, {212, 144}, {219, 156},
 	}
 )
 
 // Piece evaluation bonuses (MG/EG)
 var (
-	BishopPairMG = 43
-	BishopPairEG = 100
+	BishopPairMG = 40
+	BishopPairEG = 150
 
-	KnightOutpostMG          = 17
-	KnightOutpostEG          = -4
+	KnightOutpostMG          = 26
+	KnightOutpostEG          = -22
 	KnightOutpostSupportedMG = 50
-	KnightOutpostSupportedEG = -2
+	KnightOutpostSupportedEG = 1
 
-	RookOpenFileMG     = 63
-	RookOpenFileEG     = 10
-	RookSemiOpenFileMG = 25
-	RookSemiOpenFileEG = 30
-	RookOn7thMG        = 88
-	RookOn7thEG        = 86
+	RookOpenFileMG     = 68
+	RookOpenFileEG     = 3
+	RookSemiOpenFileMG = 32
+	RookSemiOpenFileEG = 34
+	RookOn7thMG        = 117
+	RookOn7thEG        = 100
 
 	// Trapped rook: rook on back-rank corner with king blocking escape
-	TrappedRookPenaltyMG = -26
-	TrappedRookPenaltyEG = -55
+	TrappedRookPenaltyMG = -37
+	TrappedRookPenaltyEG = -68
 
-	BishopOpenPositionMG = 11
-	BishopOpenPositionEG = -5
+	BishopOpenPositionMG = 7
+	BishopOpenPositionEG = -7
 
 	BadBishopPawnMG = -10
-	BadBishopPawnEG = -6
+	BadBishopPawnEG = -9
 
-	DoubledRooksMG = 34
-	DoubledRooksEG = 14
+	DoubledRooksMG = 36
+	DoubledRooksEG = 9
 
 	// Passed pawn: not-blocked bonus scaled by relative rank
-	PassedPawnNotBlockedMG = [8]int{0, 0, -15, 8, 60, 94, 62, 0}
-	PassedPawnNotBlockedEG = [8]int{0, 28, 32, 15, 2, 18, 85, 0}
+	PassedPawnNotBlockedMG = [8]int{0, 5, 2, 16, 30, 87, 77, 0}
+	PassedPawnNotBlockedEG = [8]int{0, 13, 25, 27, 35, 44, 76, 0}
 
 	// Passed pawn: entire path to promotion clear
-	PassedPawnFreePathMG = [8]int{0, 1, -23, 0, -8, 8, 62, 0}
-	PassedPawnFreePathEG = [8]int{0, 19, 11, 29, 62, 116, 105, 0}
+	PassedPawnFreePathMG = [8]int{0, -7, -7, -10, -21, -12, 77, 0}
+	PassedPawnFreePathEG = [8]int{0, 17, 6, 21, 46, 95, 96, 0}
 
 	// King proximity (EG only, per Chebyshev distance unit)
-	PassedPawnFriendlyKingDistEG = -9  // closer = better
-	PassedPawnEnemyKingDistEG    = 22  // farther = better
+	PassedPawnFriendlyKingDistEG = -10 // closer = better
+	PassedPawnEnemyKingDistEG    = 20  // farther = better
 	PassedPawnKingScale          = [8]int{0, 0, 0, 1, 2, 3, 4, 0}
 
 	// Protected passer (defended by own pawn)
-	PassedPawnProtectedMG = 28
-	PassedPawnProtectedEG = 3
+	PassedPawnProtectedMG = 36
+	PassedPawnProtectedEG = 2
 
 	// Connected passers (friendly passer on adjacent file)
-	PassedPawnConnectedMG = 5
-	PassedPawnConnectedEG = 28
+	PassedPawnConnectedMG = -3
+	PassedPawnConnectedEG = 32
 
 	RookBehindPassedMG = 27
-	RookBehindPassedEG = 52
+	RookBehindPassedEG = 56
 
 	// Passed pawn: enemy piece blocking the stop square (partially cancels base bonus)
-	PassedPawnBlockedMG = [8]int{0, -2, -36, -21, 20, -26, -148, 0}
-	PassedPawnBlockedEG = [8]int{0, 9, -20, -19, -25, -39, -10, 0}
+	PassedPawnBlockedMG = [8]int{0, 1, -26, -10, -9, -39, -176, 0}
+	PassedPawnBlockedEG = [8]int{0, -11, -12, -11, -20, -31, -13, 0}
 
 	// King attack unit weights (base per attacker + bonus per king-zone square)
 	KnightAttackUnits   = 7
@@ -117,37 +117,37 @@ var (
 	NoQueenAttackScale = 40
 
 	// Castling rights bonus (MG only, per retained right)
-	CastlingRightsMG = 33
+	CastlingRightsMG = 40
 
 	// Space evaluation (per safe square in center files, ranks 4-6 relative)
-	SpaceBonusMG = 6
-	SpaceBonusEG = 12
+	SpaceBonusMG = 7
+	SpaceBonusEG = 19
 
 	// Knight closed position bonus (per pawn on the board)
-	KnightClosedPositionMG = 2
-	KnightClosedPositionEG = 25
+	KnightClosedPositionMG = 1
+	KnightClosedPositionEG = 26
 
 	// Pawn threat bonuses (pawns attacking enemy pieces)
-	PawnThreatMinorMG = 84
-	PawnThreatMinorEG = 85
-	PawnThreatRookMG  = 69
-	PawnThreatRookEG  = 95
-	PawnThreatQueenMG = 73
-	PawnThreatQueenEG = 19
+	PawnThreatMinorMG = 82
+	PawnThreatMinorEG = 95
+	PawnThreatRookMG  = 75
+	PawnThreatRookEG  = 90
+	PawnThreatQueenMG = 67
+	PawnThreatQueenEG = 43
 
 	// Piece-on-piece threats (minor/rook attacking higher-value enemy pieces)
-	MinorThreatRookMG  = 119
-	MinorThreatRookEG  = 45
-	MinorThreatQueenMG = 69
-	MinorThreatQueenEG = 102
-	RookThreatQueenMG  = 114
-	RookThreatQueenEG  = 98
+	MinorThreatRookMG  = 106
+	MinorThreatRookEG  = 49
+	MinorThreatQueenMG = 67
+	MinorThreatQueenEG = 91
+	RookThreatQueenMG  = 103
+	RookThreatQueenEG  = 99
 )
 
 // Endgame king activity (EG only, unconditional centralization + material advantage bonuses)
 var KingCenterBonusEG = -14       // per center-distance unit (penalty, both sides)
-var KingProximityAdvantageEG = 29 // per unit closer to enemy king (stronger side)
-var KingCornerPushEG = 99         // per center-distance unit of weaker king (stronger side)
+var KingProximityAdvantageEG = 26 // per unit closer to enemy king (stronger side)
+var KingCornerPushEG = 131        // per center-distance unit of weaker king (stronger side)
 
 // Pawn storm (legacy): attack units for friendly pawns advanced near enemy king, by relative rank
 var PawnStormUnits = [8]int{0, 0, 0, 0, 1, 2, 3, 0}
@@ -158,12 +158,12 @@ var PawnStormEnabled = false // disabled in favor of direct PawnStormBonusMG
 // opposed=0: enemy pawn present on this file (blocked storm)
 // opposed=1: no enemy pawn on this file (open storm)
 var PawnStormBonusMG = [2][8]int{
-	{0, -11, -18, -10, 2, 34, 5, 0}, // Opposed
-	{0, 2, -6, 0, 15, 20, 2, 0},     // Unopposed
+	{0, -13, -18, -14, -4, 20, -36, 0}, // Opposed
+	{0, 3, -14, 2, 13, 61, -57, 0},     // Unopposed
 }
 var PawnStormBonusEG = [2][8]int{
-	{0, 16, 27, 17, 5, 26, 13, 0},     // Opposed
-	{0, 0, -7, -12, -20, -20, -10, 0}, // Unopposed
+	{0, 8, 19, 12, 6, -4, -32, 0},      // Opposed
+	{0, -9, -10, -19, -38, -89, -65, 0}, // Unopposed
 }
 var PawnStormBonusEnabled = true
 
@@ -172,13 +172,13 @@ var SafeCheckEnabled = true
 var NoQueenScaleEnabled = true
 
 // Tempo bonus for the side to move.
-var TempoMG = 21
+var TempoMG = 22
 var TempoEG = 7
 
 // Trade bonus: when ahead, bonus per opponent non-pawn piece traded (encourages
 // simplification) and per own pawn remaining (discourages pawn trades).
-var TradePieceBonus = 44 // bonus per missing enemy non-pawn piece when ahead
-var TradePawnBonus = 29  // bonus per own pawn when ahead
+var TradePieceBonus = 47 // bonus per missing enemy non-pawn piece when ahead
+var TradePawnBonus = 28  // bonus per own pawn when ahead
 
 // OCBScale is the endgame scale factor (out of 128) for opposite-colored bishop endings.
 var OCBScale = 64
@@ -196,15 +196,15 @@ var GlobalNNUENet *NNUENet
 // Superlinear growth: near-zero for low indices, rapid growth from 15-50, capped at 999.
 var KingSafetyTable = [100]int{
 	0, 0, 1, 2, 3, 5, 7, 10, 13, 16,
-	20, 24, 29, 34, 39, 45, 52, 72, 85, 93,
-	93, 93, 93, 93, 97, 105, 110, 124, 138, 148,
-	159, 179, 190, 208, 226, 245, 265, 287, 308, 331,
-	354, 379, 405, 433, 460, 489, 519, 550, 582, 615,
-	649, 684, 721, 758, 796, 835, 875, 916, 953, 953,
-	953, 954, 954, 958, 959, 959, 964, 964, 964, 971,
-	971, 979, 980, 980, 980, 986, 991, 991, 993, 1003,
-	1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003,
-	1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003, 1003,
+	20, 24, 29, 34, 39, 44, 59, 64, 74, 74,
+	74, 74, 74, 74, 74, 74, 77, 77, 82, 89,
+	89, 118, 118, 124, 142, 161, 184, 207, 223, 245,
+	266, 290, 317, 345, 371, 400, 429, 460, 491, 524,
+	559, 593, 631, 668, 706, 745, 786, 826, 864, 864,
+	864, 868, 868, 879, 887, 887, 896, 896, 898, 919,
+	925, 947, 948, 948, 950, 971, 977, 983, 985, 1000,
+	1004, 1004, 1004, 1004, 1004, 1004, 1004, 1004, 1004, 1004,
+	1004, 1004, 1004, 1004, 1004, 1004, 1004, 1004, 1004, 1004,
 }
 
 // Evaluate returns a static evaluation of the position in centipawns.
