@@ -27,9 +27,9 @@ func TestEvalMaterialAdvantage(t *testing.T) {
 	scoreWithoutBQ := b.Evaluate()
 
 	diff := scoreWithoutBQ - baseScore
-	// Should reflect queen value from PST (varies by square, ~900-1300 range)
-	if diff < 700 || diff > 1500 {
-		t.Errorf("Queen removal changed score by %d, expected ~1000", diff)
+	// Should reflect queen value from PST (varies by square, ~900-1600 range)
+	if diff < 700 || diff > 1700 {
+		t.Errorf("Queen removal changed score by %d, expected ~1000-1500", diff)
 	}
 }
 
