@@ -189,6 +189,49 @@ func (info *SearchInfo) storeKiller(ply int, move Move) {
 	}
 }
 
+// historyBonus computes a depth-based bonus for history updates, capped to avoid
+// over-weighting very deep searches.
+func historyBonus(depth int) int32 {
+	b := int32(depth * depth)
+	if b > 1200 {
+		b = 1200
+	}
+	return b
+}
+
+// updateHistory applies the gravity formula: new = old + bonus - old*|bonus|/D.
+// This naturally bounds values to approximately [-D, +D] and prevents saturation.
+// D=16384 for the int32 history table.
+func (info *SearchInfo) updateHistory(from, to Square, bonus int32) {
+	v := info.History[from][to]
+	abs := bonus
+	if abs < 0 {
+		abs = -abs
+	}
+	info.History[from][to] = v + bonus - v*abs/16384
+}
+
+// updateContHistory applies gravity to a continuation history entry.
+// D=16384 for int16 (values stay in [-16384, 16384] which fits int16 range).
+func updateContHistory(table *[13][64]int16, piece Piece, to Square, bonus int32) {
+	v := int32(table[piece][to])
+	abs := bonus
+	if abs < 0 {
+		abs = -abs
+	}
+	table[piece][to] = int16(v + bonus - v*abs/16384)
+}
+
+// updateCaptHistory applies gravity to a capture history entry.
+func (info *SearchInfo) updateCaptHistory(piece Piece, to Square, cpt int, bonus int32) {
+	v := int32(info.CaptHistory[piece][to][cpt])
+	abs := bonus
+	if abs < 0 {
+		abs = -abs
+	}
+	info.CaptHistory[piece][to][cpt] = int16(v + bonus - v*abs/16384)
+}
+
 // Search performs iterative deepening search and returns the best move
 func (b *Board) Search(maxDepth int, maxTime time.Duration) (Move, SearchInfo) {
 	return b.SearchWithTT(maxDepth, maxTime, nil)
@@ -1238,33 +1281,25 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				if alpha >= beta {
 					// Beta cutoff - update killer moves, history, and counter-move for quiet moves
 					if !isCap {
-						bonus := int32(depth * depth)
+						bonus := historyBonus(depth)
 						info.storeKiller(ply, move)
-						info.History[move.From()][move.To()] += bonus
+						info.updateHistory(move.From(), move.To(), bonus)
 
 						// Update continuation history
 						if contHistPtr != nil {
 							curPiece := b.Squares[move.From()]
-							ch := int32(contHistPtr[curPiece][move.To()]) + bonus
-							if ch > 32000 {
-								ch = 32000
-							}
-							contHistPtr[curPiece][move.To()] = int16(ch)
+							updateContHistory(contHistPtr, curPiece, move.To(), bonus)
 						}
 
 						// Penalize all quiet moves tried before the cutoff move
 						for i := 0; i < quietsCount-1; i++ {
 							q := quietsTried[i]
-							info.History[q.From()][q.To()] -= bonus
+							info.updateHistory(q.From(), q.To(), -bonus)
 
 							// Penalize continuation history
 							if contHistPtr != nil {
 								qPiece := b.Squares[q.From()]
-								ch := int32(contHistPtr[qPiece][q.To()]) - bonus
-								if ch < -32000 {
-									ch = -32000
-								}
-								contHistPtr[qPiece][q.To()] = int16(ch)
+								updateContHistory(contHistPtr, qPiece, q.To(), -bonus)
 							}
 						}
 
@@ -1281,17 +1316,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 						}
 					} else {
 						// Capture caused beta cutoff — update capture history
-						bonus := int32(depth * depth)
+						bonus := historyBonus(depth)
 						piece := b.Squares[move.From()]
 						cpt := capturedType(b.Squares[move.To()])
 						if move.Flags() == FlagEnPassant {
 							cpt = 1 // pawn
 						}
-						ch := int32(info.CaptHistory[piece][move.To()][cpt]) + bonus
-						if ch > 32000 {
-							ch = 32000
-						}
-						info.CaptHistory[piece][move.To()][cpt] = int16(ch)
+						info.updateCaptHistory(piece, move.To(), cpt, bonus)
 
 						// Penalize captures tried before cutoff
 						for i := 0; i < capturesCount-1; i++ {
@@ -1301,11 +1332,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 							if c.Flags() == FlagEnPassant {
 								ct = 1
 							}
-							cv := int32(info.CaptHistory[cp][c.To()][ct]) - bonus
-							if cv < -32000 {
-								cv = -32000
-							}
-							info.CaptHistory[cp][c.To()][ct] = int16(cv)
+							info.updateCaptHistory(cp, c.To(), ct, -bonus)
 						}
 					}
 					break
