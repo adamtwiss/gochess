@@ -224,7 +224,13 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 	var target float64
 	if sample.HasScore {
 		// Blended target: lambda * result + (1-lambda) * nnueSigmoid(score/K)
-		scoreTarget := nnueSigmoid(float64(sample.Score), cfg.K)
+		// Score is White-relative but network output is side-to-move relative,
+		// so negate for Black positions before sigmoid.
+		score := float64(sample.Score)
+		if sample.SideToMove == Black {
+			score = -score
+		}
+		scoreTarget := nnueSigmoid(score, cfg.K)
 		// Convert result to side-to-move relative
 		result := float64(sample.Result)
 		if sample.SideToMove == Black {
@@ -278,24 +284,27 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 		oppFeatures = sample.WhiteFeatures
 	}
 
-	// STM perspective accumulator gradients
+	// Input bias gradients — accumulate once per perspective, NOT per feature.
+	// STM perspective bias gradient
+	for i := 0; i < NNUEHiddenSize; i++ {
+		grads.InputBiases[i] += dHidden1[i] * clippedReLUGrad(hidden1[i])
+	}
+	// Opponent perspective bias gradient
+	for i := 0; i < NNUEHiddenSize; i++ {
+		grads.InputBiases[i] += dHidden1[NNUEHiddenSize+i] * clippedReLUGrad(hidden1[NNUEHiddenSize+i])
+	}
+
+	// STM perspective accumulator weight gradients
 	for _, idx := range stmFeatures {
 		for i := 0; i < NNUEHiddenSize; i++ {
-			// dL/dAcc[i] * dAcc[i]/dW = dHidden1[i] * clippedReLUGrad(acc[i])
-			// Since hidden1[i] = clippedReLU(acc[i]), we need the pre-activation
-			// But we stored the post-activation in hidden1. Use the grad of the clipped version.
-			grad := dHidden1[i] * clippedReLUGrad(hidden1[i])
-			grads.InputWeights[idx][i] += grad
-			grads.InputBiases[i] += grad
+			grads.InputWeights[idx][i] += dHidden1[i] * clippedReLUGrad(hidden1[i])
 		}
 	}
 
-	// Opponent perspective accumulator gradients
+	// Opponent perspective accumulator weight gradients
 	for _, idx := range oppFeatures {
 		for i := 0; i < NNUEHiddenSize; i++ {
-			grad := dHidden1[NNUEHiddenSize+i] * clippedReLUGrad(hidden1[NNUEHiddenSize+i])
-			grads.InputWeights[idx][i] += grad
-			grads.InputBiases[i] += grad
+			grads.InputWeights[idx][i] += dHidden1[NNUEHiddenSize+i] * clippedReLUGrad(hidden1[NNUEHiddenSize+i])
 		}
 	}
 }
@@ -737,7 +746,11 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 							if samples[i].SideToMove == Black {
 								result = 1.0 - result
 							}
-							scoreTarget := nnueSigmoid(float64(samples[i].Score), cfg.K)
+							score := float64(samples[i].Score)
+							if samples[i].SideToMove == Black {
+								score = -score
+							}
+							scoreTarget := nnueSigmoid(score, cfg.K)
 							target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
 						} else {
 							target = float64(samples[i].Result)
@@ -876,7 +889,11 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 			if s.SideToMove == Black {
 				result = 1.0 - result
 			}
-			scoreTarget := nnueSigmoid(float64(s.Score), cfg.K)
+			score := float64(s.Score)
+			if s.SideToMove == Black {
+				score = -score
+			}
+			scoreTarget := nnueSigmoid(score, cfg.K)
 			target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
 		} else {
 			target = float64(s.Result)
@@ -1003,7 +1020,11 @@ func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
 				if s.SideToMove == Black {
 					result = 1.0 - result
 				}
-				scoreTarget := nnueSigmoid(float64(s.Score), K)
+				score := float64(s.Score)
+				if s.SideToMove == Black {
+					score = -score
+				}
+				scoreTarget := nnueSigmoid(score, K)
 				target = lambda*result + (1.0-lambda)*scoreTarget
 			} else {
 				target = float64(s.Result)
