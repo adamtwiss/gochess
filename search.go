@@ -57,10 +57,6 @@ var RecaptureExtEnabled = true
 // PassedPawnExtEnabled controls whether passed pawn push extensions are used
 var PassedPawnExtEnabled = true
 
-// Late Move Pruning: at shallow depths, skip quiet moves past this move count.
-// Indexed by depth (0 unused). Roughly 3 + depth*depth.
-var lmpThreshold = [9]int{0, 5, 8, 12, 18, 25, 34, 44, 56}
-
 // LMR reduction table - indexed by [depth][moveNumber]
 // Precomputed for efficiency
 var lmrTable [64][64]int
@@ -1163,12 +1159,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 		// Late Move Pruning: at shallow depths, skip late quiet moves
 		// Placed after MakeMove so we can exempt check-giving moves
+	// Formula: (3 + depth*depth) / (2 - improving)
 		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
 			!isCap && !move.IsPromotion() && !givesCheck &&
 			bestScore > -MateScore+100 {
-			lmpLimit := lmpThreshold[depth]
-			if improving && depth >= 3 {
-				lmpLimit += lmpLimit / 2 // Search 50% more moves when improving
+			lmpLimit := 3 + depth*depth
+			if !improving {
+				lmpLimit /= 2
 			}
 			if moveCount > lmpLimit {
 				info.LMPPrunes++
