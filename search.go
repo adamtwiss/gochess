@@ -264,22 +264,44 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		var score int
 
 		if depth >= 4 && prevScore > -MateScore+100 && prevScore < MateScore-100 {
-			// Aspiration window search
-			delta := 25
-			alpha, beta := prevScore-delta, prevScore+delta
+			// Aspiration window search with Stockfish-style fail handling:
+			// On fail-low: narrow beta down (we know score <= old alpha),
+			//   re-center alpha on actual score. On fail-high: narrow alpha
+			//   up, re-center beta on actual score.
+			delta := 15
+			alpha := prevScore - delta
+			beta := prevScore + delta
+			if alpha < -Infinity {
+				alpha = -Infinity
+			}
+			if beta > Infinity {
+				beta = Infinity
+			}
 			for {
 				score = b.negamax(depth, 0, alpha, beta, info)
 				if atomic.LoadInt32(&info.Stopped) != 0 {
 					break
 				}
 				if score <= alpha {
-					delta = widenDelta(delta)
-					alpha = prevScore - delta
+					// Fail low: true score is below window.
+					// Narrow beta down to old alpha, widen alpha based on score.
+					beta = (alpha + beta) / 2
+					alpha = score - delta
+					if alpha < -Infinity {
+						alpha = -Infinity
+					}
+					delta += delta / 2
 					continue
 				}
 				if score >= beta {
-					delta = widenDelta(delta)
-					beta = prevScore + delta
+					// Fail high: true score is above window.
+					// Narrow alpha up to old beta, widen beta based on score.
+					alpha = beta
+					beta = score + delta
+					if beta > Infinity {
+						beta = Infinity
+					}
+					delta += delta / 2
 					continue
 				}
 				break // score within window
@@ -558,21 +580,36 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 
 		var score int
 		if depth >= 4 && prevScore > -MateScore+100 && prevScore < MateScore-100 {
-			delta := 25
-			alpha, beta := prevScore-delta, prevScore+delta
+			delta := 15
+			alpha := prevScore - delta
+			beta := prevScore + delta
+			if alpha < -Infinity {
+				alpha = -Infinity
+			}
+			if beta > Infinity {
+				beta = Infinity
+			}
 			for {
 				score = b.negamax(depth, 0, alpha, beta, info)
 				if atomic.LoadInt32(&info.Stopped) != 0 {
 					break
 				}
 				if score <= alpha {
-					delta = widenDelta(delta)
-					alpha = prevScore - delta
+					beta = (alpha + beta) / 2
+					alpha = score - delta
+					if alpha < -Infinity {
+						alpha = -Infinity
+					}
+					delta += delta / 2
 					continue
 				}
 				if score >= beta {
-					delta = widenDelta(delta)
-					beta = prevScore + delta
+					alpha = beta
+					beta = score + delta
+					if beta > Infinity {
+						beta = Infinity
+					}
+					delta += delta / 2
 					continue
 				}
 				break
@@ -598,17 +635,6 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 	}
 }
 
-// widenDelta returns the next wider aspiration window delta
-func widenDelta(delta int) int {
-	switch {
-	case delta <= 25:
-		return 100
-	case delta <= 100:
-		return 500
-	default:
-		return Infinity
-	}
-}
 
 // extendPVFromTT extends a PV by walking the transposition table from the
 // position after the last PV move. This recovers full-length PVs when the
