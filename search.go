@@ -411,13 +411,20 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			// Time scaling factor (1.0 = use soft limit as-is)
 			scale := 1.0
 
-			// Stable best move → stop early
-			if info.tmBestMoveStable >= 5 {
+			// Stable best move → stop early (more aggressive with longer stability)
+			if info.tmBestMoveStable >= 8 {
+				scale *= 0.35
+			} else if info.tmBestMoveStable >= 5 {
 				scale *= 0.5
 			} else if info.tmBestMoveStable >= 3 {
 				scale *= 0.7
 			} else if info.tmBestMoveStable >= 1 {
 				scale *= 0.85
+			}
+
+			// Effort concentration: very stable move with stable score → extra reduction
+			if info.tmBestMoveStable >= 5 && scoreDelta <= 10 {
+				scale *= 0.8
 			}
 
 			// Unstable score → extend time
