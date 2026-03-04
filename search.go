@@ -850,7 +850,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	// Internal Iterative Reduction: reduce depth when no TT move exists.
 	// Searching without a good move to try first is less efficient.
-	if IIREnabled && depth >= 5 && ttMove == NoMove && !inCheck {
+	if IIREnabled && depth >= 6 && ttMove == NoMove && !inCheck {
 		depth--
 	}
 
