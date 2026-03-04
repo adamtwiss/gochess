@@ -1126,11 +1126,29 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				discoverers&SquareBB(move.From()) != 0
 		}
 
-		// Futility pruning: at shallow depths, skip quiet moves that can't raise alpha
-		if staticEval > -Infinity && depth <= 6 && !inCheck && !givesCheck &&
+		// Futility pruning: use estimated post-LMR depth for tighter margin
+		if staticEval > -Infinity && depth <= 8 && !inCheck && !givesCheck &&
 			!isCap && !move.IsPromotion() &&
 			bestScore > -MateScore+100 {
-			if staticEval+depth*200 <= alpha {
+			// Estimate LMR reduction for this move
+			lmrDepth := depth
+			if moveCount > 1 && depth >= 2 {
+				d, m := depth, moveCount
+				if d >= 64 {
+					d = 63
+				}
+				if m >= 64 {
+					m = 63
+				}
+				r := lmrTable[d][m]
+				if r > 0 {
+					lmrDepth = depth - r
+					if lmrDepth < 1 {
+						lmrDepth = 1
+					}
+				}
+			}
+			if staticEval+100+lmrDepth*100 <= alpha {
 				b.UnmakeMove(move)
 				continue
 			}
@@ -1153,7 +1171,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// SEE quiet pruning: prune quiet moves where piece lands on a losing square
-		if checkSEEQuiet && !givesCheck && seeQuietScore < -depth*80 {
+		if checkSEEQuiet && !givesCheck && seeQuietScore < -20*depth*depth {
 			info.SEEQuietPrunes++
 			b.UnmakeMove(move)
 			continue
