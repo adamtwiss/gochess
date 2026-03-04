@@ -1262,6 +1262,32 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		}
 
+		// LMR for captures: reduce captures with bad capture history
+		if LMREnabled && !inCheck && isCap && !move.IsPromotion() && !givesCheck && moveCount > 1 && move != ttMove {
+			// Only reduce at non-PV nodes (zero window search)
+			if beta-alpha == 1 {
+				piece := b.Squares[move.From()]
+				cpt := capturedType(b.Squares[move.To()])
+				if move.Flags() == FlagEnPassant {
+					cpt = 1 // pawn
+				}
+				captHistVal := info.CaptHistory[piece][move.To()][cpt]
+
+				// Only reduce captures with negative capture history
+				if captHistVal < 0 {
+					reduction = 1
+					// Increase reduction for very bad capture history
+					if captHistVal < -2000 {
+						reduction = 2
+					}
+					// Never reduce past depth 1
+					if reduction > newDepth-1 {
+						reduction = newDepth - 1
+					}
+				}
+			}
+		}
+
 		if reduction > 0 {
 			info.LMRAttempts++
 
