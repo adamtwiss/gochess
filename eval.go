@@ -167,6 +167,13 @@ var PawnStormBonusEG = [2][8]int{
 }
 var PawnStormBonusEnabled = true
 
+// Same-side pawn storm: extra MG bonus for pawns storming toward the enemy king
+// when both kings are on the same wing. These pawns serve a dual purpose (attack +
+// defense compromise) that the regular storm tables don't capture well.
+// Indexed by relative rank. Only ranks 4-6 are relevant (earlier = still shield).
+var SameSideStormMG = [8]int{0, 0, 0, 0, 8, 15, 5, 0}
+var SameSideStormEnabled = true
+
 // Feature toggles for king safety improvements
 var SafeCheckEnabled = true
 var NoQueenScaleEnabled = true
@@ -1130,6 +1137,14 @@ func (b *Board) evaluatePawnStorm(color Color) (mg, eg int) {
 		endFile = 7
 	}
 
+	// Detect same-side castling: both kings on the same wing
+	sameSide := false
+	if SameSideStormEnabled {
+		ourKingSq := b.Pieces[pieceOf(WhiteKing, color)].LSB()
+		ourKingFile := ourKingSq.File()
+		sameSide = (ourKingFile <= 3 && enemyKingFile <= 3) || (ourKingFile >= 4 && enemyKingFile >= 4)
+	}
+
 	for f := startFile; f <= endFile; f++ {
 		filePawns := friendlyPawns & FileMasks[f]
 		if filePawns == 0 {
@@ -1155,6 +1170,13 @@ func (b *Board) evaluatePawnStorm(color Color) (mg, eg int) {
 
 		mg += PawnStormBonusMG[opposed][relRank]
 		eg += PawnStormBonusEG[opposed][relRank]
+
+		// Same-side storm: extra bonus for advanced pawns (rank 4+) aimed at
+		// the enemy king when our own king is on the same wing. Rewards the
+		// attacking potential that offsets the self-weakening shield cost.
+		if sameSide && relRank >= 4 {
+			mg += SameSideStormMG[relRank]
+		}
 	}
 
 	return
