@@ -204,8 +204,8 @@ var candidatePassedEG = [8]int{0, 1, 15, 48, 79, 246, 0, 0}
 var CandidatePassedEnabled = true
 
 // Pawn majority: bonus per pawn advantage on a wing (queenside/kingside)
-var PawnMajorityMG = 12
-var PawnMajorityEG = 7
+var PawnMajorityMG = 20
+var PawnMajorityEG = 12
 var PawnMajorityEnabled = true
 
 // Queenside pawn advancement bonus by relative rank (files a, b, c only).
