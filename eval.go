@@ -54,6 +54,12 @@ var (
 	RookOn7thMG        = 146
 	RookOn7thEG        = 131
 
+	// Rook on enemy king file: extra bonus when on open/semi-open file
+	// that is the same file as (or adjacent to) the enemy king
+	RookEnemyKingFileMG     = 15
+	RookEnemyKingFileEG     = 0
+	RookEnemyKingFileEnabled = true
+
 	// Trapped rook: rook on back-rank corner with king blocking escape
 	TrappedRookPenaltyMG = -41
 	TrappedRookPenaltyEG = -70
@@ -602,13 +608,29 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		fileMask := FileMasks[file]
 
 		// Open file: no pawns at all on this file
+		isOpenOrSemiOpen := false
 		if fileMask&(friendlyPawns|enemyPawns) == 0 {
 			mg += RookOpenFileMG
 			eg += RookOpenFileEG
+			isOpenOrSemiOpen = true
 		} else if fileMask&friendlyPawns == 0 {
 			// Semi-open file: no friendly pawns on this file
 			mg += RookSemiOpenFileMG
 			eg += RookSemiOpenFileEG
+			isOpenOrSemiOpen = true
+		}
+
+		// Rook on enemy king file: bonus for pressuring the enemy king's file
+		if RookEnemyKingFileEnabled && isOpenOrSemiOpen {
+			enemyKingFile := enemyKingSq.File()
+			fileDist := file - enemyKingFile
+			if fileDist < 0 {
+				fileDist = -fileDist
+			}
+			if fileDist <= 1 {
+				mg += RookEnemyKingFileMG
+				eg += RookEnemyKingFileEG
+			}
 		}
 
 		// Rook on 7th rank (relative)
