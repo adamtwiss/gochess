@@ -11,18 +11,21 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
 - Optional NNUE evaluation (HalfKP architecture, SIMD-accelerated on x86-64 and ARM64)
 - Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
+- Syzygy endgame tablebase support (3-4-5-6 piece, via bundled Fathom C library)
 - Opening book support (built from PGN databases)
 - Full UCI protocol support for use with chess GUIs
 - EPD test suite runner (WAC, ECM)
 
 ## Building
 
-Requires Go 1.21 or later.
+Requires Go 1.21 or later and a C compiler (for Syzygy tablebase support via CGO).
 
 ```bash
 go build -o chess ./cmd/chess   # Chess engine
 go build -o tuner ./cmd/tuner   # Texel tuner
 ```
+
+The engine bundles the [Fathom](https://github.com/jdart1/Fathom) C library for Syzygy tablebase probing. This is compiled automatically via CGO during `go build` — no separate build step is needed. CGO is enabled by default in Go; if you've disabled it (`CGO_ENABLED=0`), the engine will still build but without tablebase support.
 
 ## Usage
 
@@ -49,6 +52,8 @@ The engine also enters UCI mode automatically when stdin is not a terminal (e.g.
 | `NNUEFile` | | Path to NNUE network file (`.nnue`) |
 | `OwnBook` | false | Use the engine's opening book |
 | `BookFile` | | Path to opening book file |
+| `SyzygyPath` | | Path to Syzygy tablebase files |
+| `SyzygyProbeDepth` | 1 | Minimum depth for WDL probing during search |
 
 #### Connecting to a Chess GUI
 
@@ -267,6 +272,50 @@ The NNUE forward pass is accelerated with platform-specific SIMD assembly:
 - **ARM64 (NEON)**: SIMD always available, no runtime detection needed
 
 Accumulator updates are incremental — only changed features are updated when pieces move. King moves trigger a full recompute since they change the perspective for all features.
+
+### Syzygy Tablebases
+
+The engine supports [Syzygy endgame tablebases](https://syzygy-tables.info/) for perfect play in positions with few pieces. When enabled, the engine will:
+
+- **At the root**: Probe DTZ (Distance To Zeroing move) tables to immediately return the optimal move without searching.
+- **During search**: Probe WDL (Win/Draw/Loss) tables to get exact scores for positions with ≤N pieces, cutting off the search tree early.
+
+#### Obtaining tablebase files
+
+Syzygy tables come in two file types — `.rtbw` (WDL) and `.rtbz` (DTZ). Both are needed. You can download them from:
+
+- https://tablebase.lichess.ovh/tables/standard/ (3-4-5 piece: ~1GB, 6-piece: ~150GB)
+- Various chess tablebase mirrors
+
+Download the WDL and DTZ files into the same directory:
+
+```bash
+mkdir -p /path/to/tablebases
+# Download 3-4-5 piece tables (recommended minimum)
+# See https://tablebase.lichess.ovh/tables/standard/3-4-5-wdl/ and 3-4-5-dtz/
+```
+
+#### Using tablebases
+
+Via CLI flag:
+
+```bash
+./chess -syzygy /path/to/tablebases -uci
+```
+
+Via UCI option (from a GUI or at runtime):
+
+```
+setoption name SyzygyPath value /path/to/tablebases
+setoption name SyzygyProbeDepth value 1
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `SyzygyPath` | | Path to directory containing `.rtbw` and `.rtbz` files |
+| `SyzygyProbeDepth` | 1 | Minimum search depth to probe WDL tables (higher = less overhead at shallow depths) |
+
+The engine reports `tbhits` in UCI info strings when tablebases are active.
 
 ## Running Tests
 
