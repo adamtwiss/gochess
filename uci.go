@@ -2,6 +2,7 @@ package chess
 
 import (
 	"bufio"
+	"chess/syzygy"
 	"fmt"
 	"io"
 	"os"
@@ -131,6 +132,8 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("option name BookFile type string default <empty>")
 	e.send("option name UseNNUE type check default false")
 	e.send("option name NNUEFile type string default <empty>")
+	e.send("option name SyzygyPath type string default <empty>")
+	e.send("option name SyzygyProbeDepth type spin default 1 min 1 max 100")
 	e.send("uciok")
 }
 
@@ -312,8 +315,12 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			pvStrs[i] = m.String()
 		}
 
-		e.send("info depth %d score %s nodes %d nps %d time %d hashfull %d pv %s",
-			d, scoreStr, nodes, nps, ms, hashfull, strings.Join(pvStrs, " "))
+		tbhitsStr := ""
+		if SyzygyEnabled && info.TBHits > 0 {
+			tbhitsStr = fmt.Sprintf(" tbhits %d", info.TBHits)
+		}
+		e.send("info depth %d score %s nodes %d nps %d time %d hashfull %d%s pv %s",
+			d, scoreStr, nodes, nps, ms, hashfull, tbhitsStr, strings.Join(pvStrs, " "))
 	}
 	e.searchInfo = info
 	numThreads := e.threads
@@ -537,6 +544,24 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
 		e.send("info string NNUE loaded from %s", value)
+	} else if strings.EqualFold(name, "SyzygyPath") {
+		value := strings.Join(tokens[valueIdx:], " ")
+		if value == "" || value == "<empty>" {
+			SyzygyFree()
+			e.send("info string Syzygy tablebases disabled")
+			return
+		}
+		if SyzygyInit(value) {
+			e.send("info string Syzygy tablebases loaded: up to %d-piece", syzygy.MaxPieceCount)
+		} else {
+			e.send("info string failed to load Syzygy tablebases from %s", value)
+		}
+	} else if strings.EqualFold(name, "SyzygyProbeDepth") {
+		n, err := strconv.Atoi(tokens[valueIdx])
+		if err != nil || n < 1 {
+			return
+		}
+		SyzygyProbeDepth = n
 	}
 }
 

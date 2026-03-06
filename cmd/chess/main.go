@@ -38,6 +38,9 @@ func main() {
 	// NNUE flag
 	nnueFile := flag.String("nnue", "", "NNUE network file")
 
+	// Syzygy tablebase flag
+	syzygyPath := flag.String("syzygy", "", "path to Syzygy tablebase files")
+
 	// Benchmark flags
 	benchmark := flag.Bool("benchmark", false, "run multi-suite benchmark")
 	benchSave := flag.String("save", "", "save benchmark results to JSON file")
@@ -91,6 +94,15 @@ func main() {
 		chess.UseNNUE = true
 		chess.GlobalNNUENet = nnueNet
 		fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
+	}
+
+	// Initialize Syzygy tablebases if specified
+	if *syzygyPath != "" {
+		if chess.SyzygyInit(*syzygyPath) {
+			fmt.Fprintf(os.Stderr, "Syzygy tablebases loaded from %s (up to %d-piece)\n", *syzygyPath, chess.SyzygyMaxPieceCount())
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load Syzygy tablebases from %s\n", *syzygyPath)
+		}
 	}
 
 	if *benchmark {
