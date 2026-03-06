@@ -72,6 +72,7 @@ var (
 	idxKingSafetyTbl int // king safety table (100 entries, MG only)
 	idxPawnShield    int // pawn shield constants (5 entries, MG only)
 	idxPawnStorm     int // pawn storm bonus (2x8 MG + 2x8 EG = 32 entries)
+	idxSameSideStorm int // same-side pawn storm bonus (8 entries, MG only)
 	idxEndgameKing   int // endgame king activity (3 entries, EG only)
 	idxMisc          int // space, threats, castling, OCB
 )
@@ -212,6 +213,8 @@ func (t *Tuner) initTunerParams() {
 	add("DoubledRooksEG", DoubledRooksEG, func(v int) { DoubledRooksEG = v })
 	add("KnightClosedPositionMG", KnightClosedPositionMG, func(v int) { KnightClosedPositionMG = v })
 	add("KnightClosedPositionEG", KnightClosedPositionEG, func(v int) { KnightClosedPositionEG = v })
+	add("RookEnemyKingFileMG", RookEnemyKingFileMG, func(v int) { RookEnemyKingFileMG = v })
+	add("RookEnemyKingFileEG", RookEnemyKingFileEG, func(v int) { RookEnemyKingFileEG = v })
 
 	// === Passed pawn bonuses ===
 	idxPassedStart = len(t.Params)
@@ -366,6 +369,15 @@ func (t *Tuner) initTunerParams() {
 			add(fmt.Sprintf("PawnStormBonusEG[%s][%d]", oppLabel, r), PawnStormBonusEG[opp][r],
 				func(v int) { PawnStormBonusEG[o][rr] = v })
 		}
+	}
+
+	// === Same-Side Pawn Storm (8 entries, MG only) ===
+	idxSameSideStorm = len(t.Params)
+	addSection("Same-Side Storm", idxSameSideStorm)
+	for i := 0; i < 8; i++ {
+		ii := i
+		add(fmt.Sprintf("SameSideStormMG[%d]", i), SameSideStormMG[i],
+			func(v int) { SameSideStormMG[ii] = v })
 	}
 
 	// === Endgame King Activity (3 entries, EG only) ===
@@ -942,6 +954,7 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 		friendlyPawns := b.Pieces[pieceOf(WhitePawn, color)]
 		enemyPawns := b.Pieces[pieceOf(WhitePawn, enemy)]
 		totalPawns := b.Pieces[WhitePawn].Count() + b.Pieces[BlackPawn].Count()
+		enemyKingSq := b.Pieces[pieceOf(WhiteKing, enemy)].LSB()
 
 		// Precompute friendly pawn attacks
 		var friendlyPawnAttacks Bitboard
@@ -1008,12 +1021,28 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 			}
 
 			// Open/semi-open file
+			isOpenOrSemiOpen := false
 			if fileMask&(friendlyPawns|enemyPawns) == 0 {
 				addMG(base+6, s)  // RookOpenFileMG
 				addEG(base+7, s)  // RookOpenFileEG
+				isOpenOrSemiOpen = true
 			} else if fileMask&friendlyPawns == 0 {
 				addMG(base+8, s)  // RookSemiOpenFileMG
 				addEG(base+9, s)  // RookSemiOpenFileEG
+				isOpenOrSemiOpen = true
+			}
+
+			// Rook on enemy king file
+			if RookEnemyKingFileEnabled && isOpenOrSemiOpen {
+				enemyKingFile := enemyKingSq.File()
+				fileDist := file - enemyKingFile
+				if fileDist < 0 {
+					fileDist = -fileDist
+				}
+				if fileDist <= 1 {
+					addMG(base+22, s) // RookEnemyKingFileMG
+					addEG(base+23, s) // RookEnemyKingFileEG
+				}
 			}
 
 			// Rook on 7th
@@ -1640,6 +1669,16 @@ func (t *Tuner) computeTrace(b *Board) TunerTrace {
 
 			addMG(idxPawnStorm+opposed*8+relRank, s)
 			addEG(idxPawnStorm+16+opposed*8+relRank, s)
+
+			// Same-side storm: extra MG bonus when both kings on same wing
+			if SameSideStormEnabled && relRank >= 4 {
+				ourKingSq := b.Pieces[pieceOf(WhiteKing, color)].LSB()
+				ourKingFile := ourKingSq.File()
+				sameSide := (ourKingFile <= 3 && enemyKingFile <= 3) || (ourKingFile >= 4 && enemyKingFile >= 4)
+				if sameSide {
+					addMG(idxSameSideStorm+relRank, s)
+				}
+			}
 		}
 	}
 
@@ -2155,6 +2194,7 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 		"BadBishopPawnMG", "BadBishopPawnEG",
 		"DoubledRooksMG", "DoubledRooksEG",
 		"KnightClosedPositionMG", "KnightClosedPositionEG",
+		"RookEnemyKingFileMG", "RookEnemyKingFileEG",
 	}
 	for i, name := range bonusNames {
 		fmt.Fprintf(w, "var %s = %d\n", name, int(math.Round(t.Values[idxBonusStart+i])))
@@ -2413,6 +2453,16 @@ func (t *Tuner) PrintParams(w *bufio.Writer) {
 			fmt.Fprintf(w, "%d", int(math.Round(t.Values[idxPawnStorm+16+opp*8+r])))
 		}
 		fmt.Fprintf(w, "}, // %s\n", oppLabels[opp])
+	}
+	w.WriteString("}\n\n")
+
+	// Same-Side Storm
+	w.WriteString("var SameSideStormMG = [8]int{")
+	for r := 0; r < 8; r++ {
+		if r > 0 {
+			w.WriteString(", ")
+		}
+		fmt.Fprintf(w, "%d", int(math.Round(t.Values[idxSameSideStorm+r])))
 	}
 	w.WriteString("}\n\n")
 
