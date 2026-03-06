@@ -148,6 +148,9 @@ type SearchInfo struct {
 	RecaptureExtensions  uint64
 	PassedPawnExtensions uint64
 
+	// Tablebase statistics
+	TBHits uint64
+
 	// OnDepth is called after each completed iteration of iterative deepening.
 	// Parameters: depth, score, cumulative nodes, PV for this depth.
 	OnDepth func(depth, score int, nodes uint64, pv []Move)
@@ -291,6 +294,32 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 	// Advance TT generation so stale entries from previous searches are cheap to evict.
 	// Only called here (main thread); helpers share the TT and see the same generation.
 	info.TT.NewSearch()
+
+	// Probe Syzygy tablebases at root (DTZ)
+	if b.tbCanProbeRoot() {
+		if tbMove, tbWDL, _, ok := b.TBProbeRoot(); ok {
+			info.TBHits++
+			var tbScore int
+			switch tbWDL {
+			case 4: // WDLWin
+				tbScore = TBWinScore
+			case 3: // WDLCursedWin
+				tbScore = 1
+			case 2: // WDLDraw
+				tbScore = 0
+			case 1: // WDLBlessedLoss
+				tbScore = -1
+			case 0: // WDLLoss
+				tbScore = TBLossScore
+			}
+			info.Score = tbScore
+			info.PV = []Move{tbMove}
+			if info.OnDepth != nil {
+				info.OnDepth(1, tbScore, 1, info.PV)
+			}
+			return tbMove, *info
+		}
+	}
 
 	var bestMove Move
 	prevScore := 0
@@ -759,6 +788,38 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 		if b.IsRepetition() {
 			return -Contempt
+		}
+	}
+
+	// Syzygy WDL probe (after draw detection, before TT)
+	if ply > 0 && b.tbCanProbeWDL(depth) && b.HalfmoveClock == 0 {
+		if tbScore, ok := b.TBProbeWDL(); ok {
+			info.TBHits++
+			// Store in TT for future cutoffs
+			var ttFlag TTFlag
+			var score int
+			if tbScore >= TBWinScore {
+				score = tbScore - ply // Adjust for distance like mate scores
+				ttFlag = TTLower
+			} else if tbScore <= TBLossScore {
+				score = tbScore + ply
+				ttFlag = TTUpper
+			} else {
+				score = tbScore
+				ttFlag = TTExact
+			}
+
+			if ttFlag == TTExact ||
+				(ttFlag == TTLower && score >= beta) ||
+				(ttFlag == TTUpper && score <= alpha) {
+				info.TT.Store(b.HashKey, MaxPly, score, ttFlag, NoMove, 0)
+				return score
+			}
+
+			// Use TB score as bound even if we can't cut
+			if ttFlag == TTLower && score > alpha {
+				alpha = score
+			}
 		}
 	}
 
