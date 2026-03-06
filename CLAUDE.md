@@ -247,7 +247,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### Texel Tuner
 
-`cmd/tuner/main.go` — Two-phase system for optimizing ~1162 evaluation parameters.
+`cmd/tuner/main.go` — Two-phase system for optimizing ~1172 evaluation parameters.
 
 **Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;score;result` lines (score is White-relative centipawns). Games run concurrently with independent Board+TT per game.
 
@@ -261,7 +261,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 **Parameter optimization** (`tuner.go`): Texel tuning via Adam optimizer. The `Tuner` holds the parameter catalog (no in-memory training data):
 
-- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (22), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), misc (14).
+- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (24), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), pawn storm (32), same-side storm (8), misc (14).
 - `computeTrace()` mirrors `Evaluate()` but records sparse MG/EG coefficients per parameter instead of computing a score. Each position produces a `TunerTrace` with `[]SparseEntry` for MG and EG contributions.
 - `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
 - `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
@@ -269,7 +269,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - `Tune(tf, K, cfg, onEpoch)` runs Adam optimizer: per epoch, streams training batches from disk, computes parallel gradients within each batch, aggregates across all batches, then applies Adam update. `cfg.ScoreBlend` (0-1) blends search scores into the loss target: `target = (1-blend)*result + blend*sigmoid(score/K)`.
 - `ComputeTrainError(tf, K, scoreBlend)` / `ComputeValidationError(tf, K, scoreBlend)` compute MSE by streaming from the respective region of the `.tbin` file
 
-**What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, etc.), passed pawn enhancements (blocked penalty, not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement, pawn majority, queenside pawn advancement, candidate passed pawns, pawn lever), king attack unit weights, safe check bonuses (knight, bishop, rook, queen), king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), pawn storm bonus (MG+EG, 32 params), endgame king activity (centralization, proximity, corner push), space/pawn threat/piece threat/castling bonuses, tempo, trade bonuses, OCB scale.
+**What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, rook-on-enemy-king-file, etc.), passed pawn enhancements (blocked penalty, not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement, pawn majority, queenside pawn advancement, candidate passed pawns, pawn lever), king attack unit weights, safe check bonuses (knight, bishop, rook, queen), king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), pawn storm bonus (MG+EG, 32 params), same-side pawn storm bonus (MG, 8 params), endgame king activity (centralization, proximity, corner push), space/pawn threat/piece threat/castling bonuses, tempo, trade bonuses, OCB scale.
 
 **What's NOT tuned**: Endgame scale factors (multiplicative), phase constants, PST scale factors (folded into PST values), 50-move rule scaling, no-queen attack scale (multiplicative, can't represent in trace).
 
