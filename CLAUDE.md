@@ -29,6 +29,43 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume training
 
 ./chess -nnue net.nnue -uci                                                  # UCI with NNUE
+
+# Self-play testing with cutechess-cli (ALWAYS use these patterns)
+# New vs old binary (200 games, 10s+0.1s increment, draw/resign adjudication):
+cutechess-cli \
+  -tournament gauntlet \
+  -engine name=GoChess-new cmd=./chess proto=uci \
+  -engine name=GoChess-old cmd=./chess.older proto=uci \
+  -each tc=0/10+0.1 option.Hash=64 option.MoveOverhead=100 \
+  -rounds 200 -concurrency 4 \
+  -openings file=testdata/noob_3moves.epd format=epd order=random \
+  -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+  -draw movenumber=20 movecount=10 score=10 \
+  -resign movecount=3 score=500 twosided=true
+
+# Gauntlet vs external engines:
+cutechess-cli \
+  -tournament gauntlet \
+  -engine name=GoChess cmd=./chess arg=-uci proto=uci option.MoveOverhead=100 \
+  -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
+  -engine name=Rodent3 cmd=rodentIII proto=uci \
+  -each tc=0/10+0.1 \
+  -rounds 200 -concurrency 4 \
+  -openings file=testdata/noob_3moves.epd format=epd order=random \
+  -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+  -draw movenumber=20 movecount=10 score=10 \
+  -resign movecount=3 score=500 twosided=true
+
+# SPRT testing (stops early when statistically significant):
+cutechess-cli \
+  -tournament gauntlet \
+  -engine name=GoChess-new cmd=./chess arg=-uci \
+  -engine name=GoChess-old cmd=./chess.older arg=-uci \
+  -each tc=0/10+0.1 option.Hash=64 \
+  -rounds 5000 -concurrency 8 \
+  -sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 \
+  -openings file=testdata/noob_3moves.epd format=epd order=random \
+  -pgnout sprt.pgn -recover -ratinginterval 20
 ```
 
 ## Project Structure
