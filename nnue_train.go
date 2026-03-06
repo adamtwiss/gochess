@@ -236,6 +236,10 @@ type NNUETrainGradients struct {
 	Hidden2Biases  [NNUEHidden3Size]float32
 	OutputWeights  [NNUEHidden3Size]float32
 	OutputBias     float32
+
+	// Sparse tracking for InputWeights — only zero/aggregate touched rows
+	dirtyInputs []int  // which InputWeights rows were modified
+	dirtySet    []bool // fast membership test (indexed by input feature)
 }
 
 // Backward computes gradients for a single sample and accumulates into grads.
@@ -334,6 +338,10 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 
 	// STM perspective accumulator weight gradients
 	for _, idx := range stmFeatures {
+		if !grads.dirtySet[idx] {
+			grads.dirtySet[idx] = true
+			grads.dirtyInputs = append(grads.dirtyInputs, idx)
+		}
 		for i := 0; i < NNUEHiddenSize; i++ {
 			grads.InputWeights[idx][i] += dHidden1[i] * clippedReLUGrad(hidden1[i])
 		}
@@ -341,6 +349,10 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 
 	// Opponent perspective accumulator weight gradients
 	for _, idx := range oppFeatures {
+		if !grads.dirtySet[idx] {
+			grads.dirtySet[idx] = true
+			grads.dirtyInputs = append(grads.dirtyInputs, idx)
+		}
 		for i := 0; i < NNUEHiddenSize; i++ {
 			grads.InputWeights[idx][i] += dHidden1[NNUEHiddenSize+i] * clippedReLUGrad(hidden1[NNUEHiddenSize+i])
 		}
@@ -600,45 +612,70 @@ func (bf *NNBinFile) Close() error {
 	return bf.file.Close()
 }
 
+// nnbinRecordSize is the fixed-size header of each record (before variable-length features).
+const nnbinRecordSize = 1 + 4 + 4 + 1 + 2 + 2 // SideToMove + Result + Score + HasScore + NumWhite + NumBlack = 14 bytes
+
 // ReadRecord reads a single training sample at the given record index.
 func (bf *NNBinFile) ReadRecord(index int) (*NNUETrainSample, error) {
 	if index < 0 || index >= len(bf.recordOffsets) {
 		return nil, fmt.Errorf("record index %d out of range [0, %d)", index, len(bf.recordOffsets))
 	}
+	return bf.readRecordAt(index, nil)
+}
 
-	if _, err := bf.file.Seek(bf.recordOffsets[index], io.SeekStart); err != nil {
+// readRecordAt reads a record using ReadAt (concurrent-safe, no seek).
+// If sample is non-nil, it reuses the struct and feature slices.
+func (bf *NNBinFile) readRecordAt(index int, sample *NNUETrainSample) (*NNUETrainSample, error) {
+	offset := bf.recordOffsets[index]
+
+	// Read fixed header
+	var hdr [nnbinRecordSize]byte
+	if _, err := bf.file.ReadAt(hdr[:], offset); err != nil {
 		return nil, err
 	}
 
-	var rec NNBinRecord
-	if err := binary.Read(bf.file, binary.LittleEndian, &rec); err != nil {
+	// Manual decode (little-endian)
+	stm := hdr[0]
+	result := math.Float32frombits(binary.LittleEndian.Uint32(hdr[1:5]))
+	score := math.Float32frombits(binary.LittleEndian.Uint32(hdr[5:9]))
+	hasScore := hdr[9]
+	numWhite := int(binary.LittleEndian.Uint16(hdr[10:12]))
+	numBlack := int(binary.LittleEndian.Uint16(hdr[12:14]))
+
+	if sample == nil {
+		sample = &NNUETrainSample{}
+	}
+	sample.SideToMove = Color(stm)
+	sample.Result = result
+	sample.Score = score
+	sample.HasScore = hasScore != 0
+
+	// Read feature indices in one ReadAt call
+	numFeatures := numWhite + numBlack
+	featureBytes := numFeatures * 2
+	buf := make([]byte, featureBytes)
+	if _, err := bf.file.ReadAt(buf, offset+nnbinRecordSize); err != nil {
 		return nil, err
 	}
 
-	sample := &NNUETrainSample{
-		SideToMove: Color(rec.SideToMove),
-		Result:     rec.Result,
-		Score:      rec.Score,
-		HasScore:   rec.HasScore != 0,
+	// Reuse or allocate feature slices
+	if cap(sample.WhiteFeatures) >= numWhite {
+		sample.WhiteFeatures = sample.WhiteFeatures[:numWhite]
+	} else {
+		sample.WhiteFeatures = make([]int, numWhite)
+	}
+	if cap(sample.BlackFeatures) >= numBlack {
+		sample.BlackFeatures = sample.BlackFeatures[:numBlack]
+	} else {
+		sample.BlackFeatures = make([]int, numBlack)
 	}
 
-	// Read feature indices
-	sample.WhiteFeatures = make([]int, rec.NumWhite)
-	for i := 0; i < int(rec.NumWhite); i++ {
-		var idx uint16
-		if err := binary.Read(bf.file, binary.LittleEndian, &idx); err != nil {
-			return nil, err
-		}
-		sample.WhiteFeatures[i] = int(idx)
+	for i := 0; i < numWhite; i++ {
+		sample.WhiteFeatures[i] = int(binary.LittleEndian.Uint16(buf[i*2 : i*2+2]))
 	}
-
-	sample.BlackFeatures = make([]int, rec.NumBlack)
-	for i := 0; i < int(rec.NumBlack); i++ {
-		var idx uint16
-		if err := binary.Read(bf.file, binary.LittleEndian, &idx); err != nil {
-			return nil, err
-		}
-		sample.BlackFeatures[i] = int(idx)
+	base := numWhite * 2
+	for i := 0; i < numBlack; i++ {
+		sample.BlackFeatures[i] = int(binary.LittleEndian.Uint16(buf[base+i*2 : base+i*2+2]))
 	}
 
 	return sample, nil
@@ -719,6 +756,25 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 	}
 	numWorkers := runtime.NumCPU()
 
+	// Pre-allocate worker gradient structs (~40MB each) once, reuse across all batches.
+	workerGrads := make([]NNUETrainGradients, numWorkers)
+	for w := range workerGrads {
+		initGradientTracking(&workerGrads[w])
+	}
+	workerLoss := make([]float64, numWorkers)
+	workerCount := make([]int, numWorkers)
+
+	// Pre-allocate sample storage reused across batches.
+	// Each worker gets its own slice of samples to read into (parallel ReadAt).
+	maxBatch := cfg.BatchSize
+	samples := make([]*NNUETrainSample, maxBatch)
+	for i := range samples {
+		samples[i] = &NNUETrainSample{}
+	}
+
+	var totalGrads NNUETrainGradients
+	initGradientTracking(&totalGrads)
+
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		// Check for early stop signal
 		if cfg.Stop != nil {
@@ -749,21 +805,10 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 			batchIndices := indices[batchStart:batchEnd]
 			batchSize := len(batchIndices)
 
-			// Read batch
-			samples := make([]*NNUETrainSample, batchSize)
-			for i, idx := range batchIndices {
-				s, err := bf.ReadRecord(idx)
-				if err != nil {
-					continue
-				}
-				samples[i] = s
-			}
-
-			// Parallel gradient computation
+			// Parallel read + forward + backward.
+			// Each worker reads its own samples using ReadAt (no shared seek pointer),
+			// zeros its own gradients, and computes in one pass.
 			perWorker := (batchSize + numWorkers - 1) / numWorkers
-			workerGrads := make([]NNUETrainGradients, numWorkers)
-			workerLoss := make([]float64, numWorkers)
-			workerCount := make([]int, numWorkers)
 
 			var wg sync.WaitGroup
 			for w := 0; w < numWorkers; w++ {
@@ -776,31 +821,39 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 						end = batchSize
 					}
 
+					// Zero this worker's accumulators (parallel — each worker zeros its own)
+					workerLoss[workerIdx] = 0
+					workerCount[workerIdx] = 0
+					zeroGradients(&workerGrads[workerIdx])
+
 					for i := start; i < end; i++ {
-						if samples[i] == nil {
+						s, err := bf.readRecordAt(batchIndices[i], samples[i])
+						if err != nil {
 							continue
 						}
-						output, hidden1, hidden2, hidden3 := trainer.Net.Forward(samples[i])
-						trainer.Net.Backward(samples[i], &workerGrads[workerIdx],
+						samples[i] = s
+
+						output, hidden1, hidden2, hidden3 := trainer.Net.Forward(s)
+						trainer.Net.Backward(s, &workerGrads[workerIdx],
 							output, hidden1, hidden2, hidden3, cfg)
 
 						// Compute loss
 						pred := nnueSigmoid(float64(output), cfg.K)
 						var target float64
-						if samples[i].HasScore {
-							result := float64(samples[i].Result)
-							if samples[i].SideToMove == Black {
+						if s.HasScore {
+							result := float64(s.Result)
+							if s.SideToMove == Black {
 								result = 1.0 - result
 							}
-							score := float64(samples[i].Score)
-							if samples[i].SideToMove == Black {
+							score := float64(s.Score)
+							if s.SideToMove == Black {
 								score = -score
 							}
 							scoreTarget := nnueSigmoid(score, cfg.K)
 							target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
 						} else {
-							target = float64(samples[i].Result)
-							if samples[i].SideToMove == Black {
+							target = float64(s.Result)
+							if s.SideToMove == Black {
 								target = 1.0 - target
 							}
 						}
@@ -813,7 +866,7 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 			wg.Wait()
 
 			// Aggregate gradients and loss
-			var totalGrads NNUETrainGradients
+			zeroGradients(&totalGrads)
 			for w := 0; w < numWorkers; w++ {
 				totalLoss += workerLoss[w]
 				numSamples += workerCount[w]
@@ -842,6 +895,48 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 	}
 }
 
+// initGradientTracking initializes the sparse tracking arrays (call once at allocation).
+func initGradientTracking(g *NNUETrainGradients) {
+	g.dirtyInputs = make([]int, 0, 4096)
+	g.dirtySet = make([]bool, NNUEInputSize)
+}
+
+// zeroGradients resets all gradient accumulators to zero.
+// InputWeights uses sparse zeroing — only rows touched since last zero are cleared.
+func zeroGradients(g *NNUETrainGradients) {
+	g.OutputBias = 0
+	for k := range g.OutputWeights {
+		g.OutputWeights[k] = 0
+	}
+	for k := range g.Hidden2Biases {
+		g.Hidden2Biases[k] = 0
+	}
+	for j := range g.Hidden2Weights {
+		for k := range g.Hidden2Weights[j] {
+			g.Hidden2Weights[j][k] = 0
+		}
+	}
+	for j := range g.HiddenBiases {
+		g.HiddenBiases[j] = 0
+	}
+	for i := range g.HiddenWeights {
+		for j := range g.HiddenWeights[i] {
+			g.HiddenWeights[i][j] = 0
+		}
+	}
+	for j := range g.InputBiases {
+		g.InputBiases[j] = 0
+	}
+	// Sparse zero: only clear rows that were actually written
+	for _, idx := range g.dirtyInputs {
+		for j := range g.InputWeights[idx] {
+			g.InputWeights[idx][j] = 0
+		}
+		g.dirtySet[idx] = false
+	}
+	g.dirtyInputs = g.dirtyInputs[:0]
+}
+
 func addGradients(dst, src *NNUETrainGradients) {
 	dst.OutputBias += src.OutputBias
 	for k := 0; k < NNUEHidden3Size; k++ {
@@ -859,12 +954,14 @@ func addGradients(dst, src *NNUETrainGradients) {
 			dst.HiddenWeights[i][j] += src.HiddenWeights[i][j]
 		}
 	}
-	// Sparse input gradients — only non-zero entries
-	for i := 0; i < NNUEInputSize; i++ {
+	// Sparse input gradients — only dirty rows
+	for _, idx := range src.dirtyInputs {
+		if !dst.dirtySet[idx] {
+			dst.dirtySet[idx] = true
+			dst.dirtyInputs = append(dst.dirtyInputs, idx)
+		}
 		for j := 0; j < NNUEHiddenSize; j++ {
-			if src.InputWeights[i][j] != 0 {
-				dst.InputWeights[i][j] += src.InputWeights[i][j]
-			}
+			dst.InputWeights[idx][j] += src.InputWeights[idx][j]
 		}
 	}
 	for j := 0; j < NNUEHiddenSize; j++ {
@@ -907,22 +1004,12 @@ func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, l
 		}
 	}
 
-	// Input layer (sparse)
-	for i := 0; i < NNUEInputSize; i++ {
-		hasNonZero := false
+	// Input layer (sparse — only dirty rows)
+	for _, idx := range grads.dirtyInputs {
 		for j := 0; j < NNUEHiddenSize; j++ {
-			if grads.InputWeights[i][j] != 0 {
-				hasNonZero = true
-				break
-			}
-		}
-		if !hasNonZero {
-			continue
-		}
-		for j := 0; j < NNUEHiddenSize; j++ {
-			if grads.InputWeights[i][j] != 0 {
-				adamUpdate(&trainer.Net.InputWeights[i][j], float64(grads.InputWeights[i][j])*scale,
-					&trainer.adam.inputWeights[i][j], lr, step)
+			if grads.InputWeights[idx][j] != 0 {
+				adamUpdate(&trainer.Net.InputWeights[idx][j], float64(grads.InputWeights[idx][j])*scale,
+					&trainer.adam.inputWeights[idx][j], lr, step)
 			}
 		}
 	}
@@ -937,42 +1024,69 @@ func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, l
 func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainConfig) float64 {
 	valStart := int(bf.NumTrain)
 	valEnd := valStart + int(bf.NumValidation)
+	numVal := valEnd - valStart
+	if numVal == 0 {
+		return 0
+	}
+
+	numWorkers := runtime.NumCPU()
+	perWorker := (numVal + numWorkers - 1) / numWorkers
+	wLoss := make([]float64, numWorkers)
+	wCount := make([]int, numWorkers)
+
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+			start := valStart + workerIdx*perWorker
+			end := start + perWorker
+			if end > valEnd {
+				end = valEnd
+			}
+
+			var sample NNUETrainSample
+			for i := start; i < end; i++ {
+				s, err := bf.readRecordAt(i, &sample)
+				if err != nil {
+					continue
+				}
+				output, _, _, _ := trainer.Net.Forward(s)
+				pred := nnueSigmoid(float64(output), cfg.K)
+
+				var target float64
+				if s.HasScore {
+					result := float64(s.Result)
+					if s.SideToMove == Black {
+						result = 1.0 - result
+					}
+					score := float64(s.Score)
+					if s.SideToMove == Black {
+						score = -score
+					}
+					scoreTarget := nnueSigmoid(score, cfg.K)
+					target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
+				} else {
+					target = float64(s.Result)
+					if s.SideToMove == Black {
+						target = 1.0 - target
+					}
+				}
+
+				diff := pred - target
+				wLoss[workerIdx] += diff * diff
+				wCount[workerIdx]++
+			}
+		}(w)
+	}
+	wg.Wait()
 
 	totalLoss := 0.0
 	count := 0
-
-	for i := valStart; i < valEnd; i++ {
-		s, err := bf.ReadRecord(i)
-		if err != nil {
-			continue
-		}
-		output, _, _, _ := trainer.Net.Forward(s)
-		pred := nnueSigmoid(float64(output), cfg.K)
-
-		var target float64
-		if s.HasScore {
-			result := float64(s.Result)
-			if s.SideToMove == Black {
-				result = 1.0 - result
-			}
-			score := float64(s.Score)
-			if s.SideToMove == Black {
-				score = -score
-			}
-			scoreTarget := nnueSigmoid(score, cfg.K)
-			target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
-		} else {
-			target = float64(s.Result)
-			if s.SideToMove == Black {
-				target = 1.0 - target
-			}
-		}
-
-		diff := pred - target
-		totalLoss += diff * diff
-		count++
+	for w := 0; w < numWorkers; w++ {
+		totalLoss += wLoss[w]
+		count += wCount[w]
 	}
-
 	if count == 0 {
 		return 0
 	}
