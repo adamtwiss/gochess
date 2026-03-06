@@ -29,6 +29,7 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume training
 
 ./chess -nnue net.nnue -uci                                                  # UCI with NNUE
+./chess -syzygy /path/to/tablebases -uci                                      # UCI with Syzygy tablebases
 ```
 
 ## Project Structure
@@ -70,6 +71,15 @@ nnue_arm64.go        NNUE SIMD stubs for ARM64 (NEON always available)
 nnue_arm64.s         NNUE NEON assembly: CReLU, MatMul, accumulator ops
 nnue_nosimd.go       NNUE fallback stubs for non-SIMD platforms
 nnue_train.go        NNUE training: float32 net, backprop, Adam optimizer, binary cache, quantization, resume from .nnue
+tb.go                Syzygy tablebase integration: init/free, WDL/DTZ probing, move matching
+syzygy/              Fathom C library (CGO wrapper for Syzygy tablebase probing)
+syzygy/syzygy.go     CGO wrapper: Init, Free, ProbeWDL, ProbeRoot
+syzygy/syzygy_stub.go  No-op stubs when CGO is disabled
+syzygy/tbprobe.c     Fathom probing implementation (includes tbchess.inc)
+syzygy/tbchess.inc   Fathom move generation (included by tbprobe.c, not compiled separately)
+syzygy/tbprobe.h     Fathom public API
+syzygy/tbconfig.h    Engine-specific Fathom configuration (builtin popcount/lsb, no helper API)
+syzygy/tbwrappers.h  Go-callable inline functions wrapping Fathom C macros
 ```
 
 ## Architecture
@@ -180,6 +190,19 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Time management**: Dual soft/hard deadline system. `computeSearchTime()` returns soft (base allocation) and hard (3× soft, capped at 75% remaining) limits. Between iterations (depth ≥ 4), the soft deadline is dynamically scaled based on best-move stability (stable → scale down to 0.5×) and score instability (large delta → scale up to 1.4×). Mate-range score swings are ignored. The adjusted soft deadline is clamped to the hard deadline. Checks clock every 4096 nodes against hard deadline. Helper threads, EPD, benchmark, and `go movetime` use hard deadline only (SoftDeadline=0). `go infinite`/`go depth` set no deadlines.
 - **Lazy SMP**: Multi-threaded search via `SearchParallel()`. All threads search the same root position independently, sharing only the transposition table. Each thread has its own `Board` copy (with undo stack for repetition detection), `SearchInfo` (killers, history, counter-moves), and pawn hash table. Helper threads use depth diversification (a skip table indexed by thread index and depth) to ensure threads are at different depths at any given time, improving TT entry diversity. The main thread (thread 0) runs normally with the `OnDepth` callback; helper threads run a stripped-down iterative deepening loop. Node counts from all threads are aggregated for NPS reporting. Default: 1 thread (no behavior change). Configurable via UCI `Threads` option (1-256) and `-threads` CLI flag.
 
+### Syzygy Tablebases
+
+Optional endgame tablebase support via the bundled Fathom C library (CGO). Controlled by `SyzygyPath` UCI option or `-syzygy` CLI flag.
+
+- **Root DTZ probing** (`SearchWithInfo`): Before iterative deepening, if the position has ≤`MaxPieceCount` pieces and no castling rights, probe DTZ tables to get the optimal move immediately. Returns without searching. The move from Fathom is matched against `GenerateLegalMoves()` by from/to squares and promotion piece.
+- **Search WDL probing** (`negamax`): At interior nodes (ply > 0), after draw detection and before the TT probe, if the position has ≤`MaxPieceCount` pieces, no castling, and `HalfmoveClock == 0`, probe WDL tables. Results are stored in TT with depth `MaxPly` so they persist. Win/loss scores use `TBWinScore/TBLossScore` (28800/-28800), adjusted by ply like mate scores. Cursed wins and blessed losses are scored as ±1.
+- **Score constants**: `TBWinScore = MateScore - 200` (28800). Below mate scores but above all eval scores.
+- **Probing eligibility**: `tbCanProbeWDL(depth)` checks: SyzygyEnabled, no castling, piece count ≤ max (with depth gate at exactly max). `tbCanProbeRoot()` checks: SyzygyEnabled, piece count ≤ max.
+- **Bitboard mapping**: `tbGetBitboards()` extracts Fathom's required format from our Board: `white/black` from `Occupied[color]`, piece-type bitboards by OR-ing both colors (e.g. `kings = Pieces[WhiteKing] | Pieces[BlackKing]`).
+- **CGO wrapper** (`syzygy/syzygy.go`): Thin wrapper around Fathom's `tb_init`, `tb_free`, `tb_probe_wdl`, `tb_probe_root`. C macros (`TB_GET_WDL` etc.) are wrapped in inline functions in `tbwrappers.h` since CGO can't call macros. Stub file (`syzygy_stub.go`) provides no-op implementations when CGO is disabled.
+- **UCI options**: `SyzygyPath` (string, path to `.rtbw`/`.rtbz` files), `SyzygyProbeDepth` (spin, 1-100, minimum depth for WDL probes). CLI flag: `-syzygy <path>`.
+- **Statistics**: `SearchInfo.TBHits` counts probes. Reported as `tbhits` in UCI info strings.
+
 ### Transposition Table Thread Safety
 
 The TT uses a lockless scheme for concurrent access by multiple search threads:
@@ -235,7 +258,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### UCI Protocol
 
-`uci.go` implements the Universal Chess Interface. Supports: `position` (startpos/FEN + moves), `go` (time controls, depth, movetime, infinite, ponder), `stop`, `setoption` (Hash, Threads, Ponder, OwnBook, BookFile), `ponderhit`. Search runs in a goroutine using `SearchParallel` with the configured thread count; `stop` signals all threads via `SearchInfo.Stopped`. Opening book consulted before search when enabled.
+`uci.go` implements the Universal Chess Interface. Supports: `position` (startpos/FEN + moves), `go` (time controls, depth, movetime, infinite, ponder), `stop`, `setoption` (Hash, Threads, Ponder, OwnBook, BookFile, UseNNUE, NNUEFile, SyzygyPath, SyzygyProbeDepth), `ponderhit`. Search runs in a goroutine using `SearchParallel` with the configured thread count; `stop` signals all threads via `SearchInfo.Stopped`. Opening book consulted before search when enabled. Syzygy tablebases probed at root (DTZ) and during search (WDL) when enabled.
 
 ### EPD / Test Suites
 
@@ -282,7 +305,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - **Interactive CLI**: Default when stdin is a terminal and no flags given. Provides commands: `set`, `fen`, `board`, `reset`, `moves`, `search`, `eval`, `epd`, `perft`, `uci`. Implemented in `cli.go` (`CLIEngine`).
 - **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output), `-threads` (Lazy SMP thread count)
 - **Benchmark**: `-benchmark` runs WAC, ECM, SBD, Arasan suites with continuous time-to-solve scoring. `-save FILE` writes JSON results, `-compare FILE` shows delta against a baseline. Reuses `-t`, `-hash`, `-d`, `-threads`.
-- **UCI mode**: `-uci`, with optional `-book` (opening book path)
+- **UCI mode**: `-uci`, with optional `-book` (opening book path), `-nnue` (NNUE network file), `-syzygy` (tablebase path)
 - **Book building**: `-buildbook`, `-pgn`, `-eco`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
 
 ## Key Gotchas
@@ -305,6 +328,9 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - NNUE `putPiece`/`removePiece`/`movePiece` hooks use `b.Pieces[WhiteKing].LSB()` and `b.Pieces[BlackKing].LSB()` to get king squares for feature indexing. These must be called when king bitboards are valid (kings on the board).
 - NNUE incremental updates skip king pieces. King moves trigger `RecomputeAccumulator` at the end of `MakeMove`. Castling moves the king first then the rook — the rook move goes through `movePiece` but the accumulator is not computed yet (will be recomputed at end).
 - `.nnbin` binary cache must be rebuilt when the training data format changes or feature indexing changes.
+- Syzygy `tbchess.inc` is `#include`d by `tbprobe.c` — it must NOT be compiled as a separate C file (hence the `.inc` extension, which CGO ignores). If adding new C files to `syzygy/`, ensure they don't get compiled twice.
+- Syzygy WDL probes require `HalfmoveClock == 0` (Fathom rejects non-zero rule50 for WDL). DTZ probes accept any rule50 value.
+- Fathom's `ProbeRoot` is NOT thread-safe. It is only called in `SearchWithInfo` on the main thread before iterative deepening begins. The WDL probe (`tb_probe_wdl`) IS thread-safe.
 
 ## Maintenance Reminders
 
