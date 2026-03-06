@@ -718,9 +718,6 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 		numTrain = cfg.MaxPositions
 	}
 	numWorkers := runtime.NumCPU()
-	if numWorkers > 8 {
-		numWorkers = 8
-	}
 
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		// Check for early stop signal
@@ -985,7 +982,7 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 // TuneNNUEK finds the optimal sigmoid scaling constant K by minimizing MSE
 // between sigmoid(score/K) and game results over the training data.
 // This uses the search scores from selfplay, NOT the network output.
-// Uses golden section search over [50, 800].
+// Uses golden section search over [50, 1600].
 func TuneNNUEK(bf *NNBinFile, lambda float64) float64 {
 	// Sample up to 50K positions (data is pre-shuffled in .nnbin)
 	numTrain := int(bf.NumTrain)
@@ -1016,7 +1013,7 @@ func TuneNNUEK(bf *NNBinFile, lambda float64) float64 {
 		return totalErr / float64(count)
 	}
 
-	lo, hi := 50.0, 800.0
+	lo, hi := 50.0, 1600.0
 	gr := (math.Sqrt(5) + 1) / 2
 	iter := 0
 	for hi-lo > 0.1 {
