@@ -547,9 +547,7 @@ func (e *UCIEngine) cmdDebug() {
 
 // computeSearchTime calculates soft and hard time allocations in milliseconds.
 // Soft limit is the base allocation where dynamic time management may stop early.
-// Hard limit is never exceeded: ~3x soft for sudden death, ~2x for tournament TC
-// (movestogo > 0), capped at 75% remaining or 1/3 remaining respectively.
-// For movetime mode, soft == hard (no dynamic scaling).
+// Hard limit is never exceeded. For movetime mode, soft == hard (no dynamic scaling).
 func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infinite bool, side Color, moveOverhead int) (int, int) {
 	if infinite {
 		return 0, 0
@@ -579,15 +577,32 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 
 	movesLeft := movestogo
 	if movesLeft <= 0 {
-		movesLeft = 30 // sudden death default
+		movesLeft = 25 // sudden death default: slightly more aggressive than 30
 	}
 
-	softAlloc := timeLeft/movesLeft + inc*3/4
+	// Base allocation: time / movesLeft + most of the increment
+	// The increment is guaranteed time back, so use 80% of it
+	softAlloc := timeLeft/movesLeft + inc*4/5
 
-	// Cap at half remaining time
+	// Cap at half remaining time (before increment consideration)
 	maxAlloc := timeLeft / 2
 	if softAlloc > maxAlloc {
 		softAlloc = maxAlloc
+	}
+
+	// Emergency time: when very low on time, be conservative
+	// Below 1 second (minus overhead), limit soft to min(timeLeft/10, inc)
+	if timeLeft < 1000 {
+		emergency := timeLeft / 10
+		if inc > 0 && inc < emergency {
+			emergency = inc
+		}
+		if emergency < 10 {
+			emergency = 10
+		}
+		if softAlloc > emergency {
+			softAlloc = emergency
+		}
 	}
 
 	// Floor at 10ms
@@ -595,34 +610,36 @@ func computeSearchTime(movetime, wtime, btime, winc, binc, movestogo int, infini
 		softAlloc = 10
 	}
 
-	// Hard limit: 3x soft for sudden death, 2x for tournament TC
-	hardAlloc := softAlloc * 3
-	// Cap hard limit: use the lesser of timeLeft/4+inc (conservative with
-	// increment) and timeLeft*3/4 (absolute safety). The /4+inc formula
-	// ensures we never blow the bank when time is low but increment provides
-	// a steady stream.
-	maxHard := timeLeft/4 + inc
-	absMax := timeLeft * 3 / 4
-	if maxHard > absMax {
-		maxHard = absMax
-	}
+	// Hard limit: allows extending on unstable positions
+	var hardAlloc int
 	if movestogo > 0 {
-		// Tournament TC: tighter limits to avoid time trouble in later moves
+		// Tournament TC: tighter hard limits
 		hardAlloc = softAlloc * 2
-		// Scale cap by moves remaining: generous early, tight late
-		// movestogo 40 → timeLeft*40%, movestogo 5 → timeLeft*22%
+		// Cap by moves remaining: generous early, tight late
 		capPct := 20 + movestogo/2
 		if capPct > 40 {
 			capPct = 40
 		}
 		mtgCap := timeLeft * capPct / 100
-		if mtgCap < maxHard {
-			maxHard = mtgCap
+		if hardAlloc > mtgCap {
+			hardAlloc = mtgCap
 		}
+	} else {
+		// Sudden death: allow up to 3x soft
+		hardAlloc = softAlloc * 3
+	}
+
+	// Absolute hard cap: never use more than timeLeft/5 + inc
+	// This ensures we always keep a buffer of ~80% remaining time
+	maxHard := timeLeft/5 + inc
+	if maxHard > timeLeft*3/4 {
+		maxHard = timeLeft * 3 / 4
 	}
 	if hardAlloc > maxHard {
 		hardAlloc = maxHard
 	}
+
+	// Hard must be >= soft
 	if hardAlloc < softAlloc {
 		hardAlloc = softAlloc
 	}

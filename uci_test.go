@@ -210,15 +210,19 @@ func TestComputeSearchTime(t *testing.T) {
 		{"movetime", 5000, 0, 0, 0, 0, 0, false, White, 5000, 5000},
 		{"infinite", 0, 0, 0, 0, 0, 0, true, White, 0, 0},
 		{"no clock", 0, 0, 0, 0, 0, 0, false, White, 0, 0},
-		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 998, 2994},             // soft=29950/30=998, hard=3*998=2994 (50ms overhead)
-		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 998, 2994},             // soft=29950/30=998, hard=2994
-		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2498, 7494},           // soft=998+1500=2498, hard=7494
+		{"white clock 30s", 0, 30000, 0, 0, 0, 0, false, White, 1198, 3594},             // soft=29950/25=1198, hard=3*1198=3594
+		{"black clock 30s", 0, 0, 30000, 0, 0, 0, false, Black, 1198, 3594},             // soft=29950/25=1198, hard=3594
+		{"with increment", 0, 30000, 0, 2000, 0, 0, false, White, 2798, 7990},           // soft=1198+1600=2798, hard=min(3*2798,29950/5+2000)=min(8394,7990)=7990
 		{"movestogo 10", 0, 30000, 0, 0, 0, 10, false, White, 2995, 5990},               // soft=29950/10=2995, hard=2*2995=5990 (tournament TC)
-		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 65, 195},                     // soft=1950/30=65, hard=195
-		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 12},                     // soft=floor(10), hard=12 (capped at timeLeft/4)
+		{"cap at half", 0, 2000, 0, 0, 0, 0, false, White, 78, 234},                     // soft=1950/25=78, hard=min(234,390)=234
+		{"floor at 10ms", 0, 100, 0, 0, 0, 0, false, White, 10, 10},                     // soft=floor(10), hard=floor(10) (emergency: <1s)
 		{"movetime overrides clock", 3000, 60000, 60000, 0, 0, 0, false, White, 3000, 3000},
-		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 31, 93},               // soft=950/30=31, hard=min(93,712)=93 (50ms overhead)
-		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 275, 275},          // soft=min(550/1,275)=275, hard capped by mtgCap, then floored to soft
+		{"hard capped at 75%", 0, 1000, 0, 0, 0, 0, false, White, 38, 114},              // soft=950/25=38, hard=min(114,190)=114 (emergency: <1s, soft capped to 95)
+		{"hard capped by maxHard", 0, 600, 0, 0, 0, 1, false, White, 55, 110},           // soft=emergency(550/10=55), hard=2*55=110 (movestogo=1, <1s)
+		{"emergency low time", 0, 200, 0, 0, 0, 0, false, White, 10, 30},                  // 200ms-50oh=150, 150/25=6→floor10, emergency 150/10=15>10 no cap, hard=min(30,30+0)=30
+		{"low time with increment", 0, 500, 0, 100, 0, 0, false, White, 45, 135},         // 500ms-50oh=450, 450/25+80=98, emergency min(45,100)=45, hard=min(135,190)=135
+		{"10s+0.1 typical", 0, 10000, 0, 100, 0, 0, false, White, 478, 1434},            // soft=9950/25+80=478, hard=min(1434,9950/5+100)=min(1434,2090)=1434
+		{"30s+0 sudden death", 0, 30000, 0, 0, 0, 0, false, White, 1198, 3594},          // same as white_clock_30s
 	}
 
 	for _, tt := range tests {
