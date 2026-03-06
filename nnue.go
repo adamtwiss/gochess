@@ -18,6 +18,7 @@ const (
 	NNUEInputSize   = 40960 // 64 * 10 * 64
 	NNUEHiddenSize  = 256   // per perspective
 	NNUEHidden2Size = 32    // second hidden layer
+	NNUEHidden3Size = 32    // third hidden layer
 	NNUEOutputSize  = 1
 
 	// HalfKP piece indexing: 10 piece types (excluding kings)
@@ -36,7 +37,7 @@ const (
 
 	// File magic and version
 	nnueMagic   = uint32(0x4E4E5545) // "NNUE"
-	nnueVersion = uint32(1)
+	nnueVersion = uint32(2)         // v2: added Hidden2 layer (32→32)
 )
 
 // NNUENet holds all network weights (shared read-only across threads).
@@ -45,12 +46,16 @@ type NNUENet struct {
 	InputWeights [NNUEInputSize][NNUEHiddenSize]int16
 	InputBiases  [NNUEHiddenSize]int16
 
-	// Hidden layer: [concat_input][hidden2_neuron]
+	// Hidden layer 1: [concat_input][hidden2_neuron]
 	HiddenWeights [NNUEHiddenSize * 2][NNUEHidden2Size]int16
 	HiddenBiases  [NNUEHidden2Size]int32
 
-	// Output layer: [hidden2_neuron]
-	OutputWeights [NNUEHidden2Size]int16
+	// Hidden layer 2: [hidden2_neuron][hidden3_neuron]
+	Hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]int16
+	Hidden2Biases  [NNUEHidden3Size]int32
+
+	// Output layer: [hidden3_neuron]
+	OutputWeights [NNUEHidden3Size]int16
 	OutputBias    int32
 
 	// Transposed hidden weights for SIMD forward pass: [output][input]
@@ -397,9 +402,9 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 		}
 	}
 
-	// Output layer: ClippedReLU(hidden2) -> output
-	// output = bias + sum_j(weight[j] * clipped_relu(hidden2[j] / hiddenScale))
-	output := int32(net.OutputBias)
+	// Hidden layer 2: ClippedReLU(hidden2) -> hidden3
+	var hidden3 [NNUEHidden3Size]int32
+	hidden3 = net.Hidden2Biases
 	for j := 0; j < NNUEHidden2Size; j++ {
 		scaled := hidden2[j] >> 6 // / 64 (nnueHiddenScale)
 		if scaled <= 0 {
@@ -408,7 +413,22 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 		if scaled > 127 {
 			scaled = 127
 		}
-		output += scaled * int32(net.OutputWeights[j])
+		for k := 0; k < NNUEHidden3Size; k++ {
+			hidden3[k] += scaled * int32(net.Hidden2Weights[j][k])
+		}
+	}
+
+	// Output layer: ClippedReLU(hidden3) -> output
+	output := int32(net.OutputBias)
+	for k := 0; k < NNUEHidden3Size; k++ {
+		scaled := hidden3[k] >> 6 // / 64 (nnueHiddenScale)
+		if scaled <= 0 {
+			continue
+		}
+		if scaled > 127 {
+			scaled = 127
+		}
+		output += scaled * int32(net.OutputWeights[k])
 	}
 
 	// Scale output to centipawns
@@ -451,8 +471,9 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 	var hidden2 [NNUEHidden2Size]int32
 	nnueMatMul32x512(&input[0], &net.HWT[0], &net.HiddenBiases[0], &hidden2[0])
 
-	// Output layer (scalar — only 32 elements, not worth SIMD)
-	output := int32(net.OutputBias)
+	// Hidden layer 2 (scalar — only 32×32, not worth SIMD)
+	var hidden3 [NNUEHidden3Size]int32
+	hidden3 = net.Hidden2Biases
 	for j := 0; j < NNUEHidden2Size; j++ {
 		scaled := hidden2[j] >> 6
 		if scaled <= 0 {
@@ -461,7 +482,22 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 		if scaled > 127 {
 			scaled = 127
 		}
-		output += scaled * int32(net.OutputWeights[j])
+		for k := 0; k < NNUEHidden3Size; k++ {
+			hidden3[k] += scaled * int32(net.Hidden2Weights[j][k])
+		}
+	}
+
+	// Output layer (scalar — only 32 elements, not worth SIMD)
+	output := int32(net.OutputBias)
+	for k := 0; k < NNUEHidden3Size; k++ {
+		scaled := hidden3[k] >> 6
+		if scaled <= 0 {
+			continue
+		}
+		if scaled > 127 {
+			scaled = 127
+		}
+		output += scaled * int32(net.OutputWeights[k])
 	}
 
 	return int(output) / nnueOutputScale
@@ -494,12 +530,20 @@ func writeNNUE(w io.Writer, net *NNUENet) error {
 		return fmt.Errorf("writing input biases: %w", err)
 	}
 
-	// Hidden weights and biases
+	// Hidden layer 1 weights and biases
 	if err := binary.Write(w, binary.LittleEndian, &net.HiddenWeights); err != nil {
 		return fmt.Errorf("writing hidden weights: %w", err)
 	}
 	if err := binary.Write(w, binary.LittleEndian, &net.HiddenBiases); err != nil {
 		return fmt.Errorf("writing hidden biases: %w", err)
+	}
+
+	// Hidden layer 2 weights and biases
+	if err := binary.Write(w, binary.LittleEndian, &net.Hidden2Weights); err != nil {
+		return fmt.Errorf("writing hidden2 weights: %w", err)
+	}
+	if err := binary.Write(w, binary.LittleEndian, &net.Hidden2Biases); err != nil {
+		return fmt.Errorf("writing hidden2 biases: %w", err)
 	}
 
 	// Output weights and bias
@@ -541,7 +585,7 @@ func readNNUE(r io.Reader) (*NNUENet, error) {
 		return nil, fmt.Errorf("reading version: %w", err)
 	}
 	if version != nnueVersion {
-		return nil, fmt.Errorf("unsupported NNUE version: %d (expected %d)", version, nnueVersion)
+		return nil, fmt.Errorf("unsupported NNUE version: %d (expected %d; old v1 nets must be retrained)", version, nnueVersion)
 	}
 
 	net := &NNUENet{}
@@ -554,12 +598,20 @@ func readNNUE(r io.Reader) (*NNUENet, error) {
 		return nil, fmt.Errorf("reading input biases: %w", err)
 	}
 
-	// Hidden weights and biases
+	// Hidden layer 1 weights and biases
 	if err := binary.Read(r, binary.LittleEndian, &net.HiddenWeights); err != nil {
 		return nil, fmt.Errorf("reading hidden weights: %w", err)
 	}
 	if err := binary.Read(r, binary.LittleEndian, &net.HiddenBiases); err != nil {
 		return nil, fmt.Errorf("reading hidden biases: %w", err)
+	}
+
+	// Hidden layer 2 weights and biases
+	if err := binary.Read(r, binary.LittleEndian, &net.Hidden2Weights); err != nil {
+		return nil, fmt.Errorf("reading hidden2 weights: %w", err)
+	}
+	if err := binary.Read(r, binary.LittleEndian, &net.Hidden2Biases); err != nil {
+		return nil, fmt.Errorf("reading hidden2 biases: %w", err)
 	}
 
 	// Output weights and bias

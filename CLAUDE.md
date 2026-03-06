@@ -194,7 +194,7 @@ The TT uses a lockless scheme for concurrent access by multiple search threads:
 
 Optional neural network evaluation behind `UseNNUE` toggle. Both classical and NNUE evals coexist; `EvaluateRelative()` dispatches automatically.
 
-- **Architecture**: HalfKP input (40960) -> 2x256 accumulators -> concat (512) -> 32 -> 1
+- **Architecture**: HalfKP input (40960) -> 2x256 accumulators -> concat (512) -> 32 -> 32 -> 1
 - **Feature indexing**: `HalfKPIndex(perspective, kingSq, piece, pieceSq)`. 64 king squares x 10 piece types (excluding kings) x 64 piece squares = 40960. Black perspective mirrors squares (^56) and swaps piece colors.
 - **Incremental updates**: `putPiece`, `removePiece`, `movePiece` call `AddFeature`/`RemoveFeature` on the accumulator. King pieces are skipped (king moves trigger full `RecomputeAccumulator`).
 - **SIMD forward pass**: Platform-specific assembly for AVX2 (x86-64) and NEON (ARM64). `nnueUseSIMD` flag controls dispatch. Five SIMD functions: `nnueCReLU256` (activation), `nnueMatMul32x512` (hidden layer), `nnueAccAdd256`/`nnueAccSubAdd256`/`nnueAccSubSubAdd256` (accumulator updates). `PrepareWeights()` transposes hidden weights for SIMD matmul. AVX2 uses runtime detection (`cpu.X86.HasAVX2`); NEON is always available on ARM64.

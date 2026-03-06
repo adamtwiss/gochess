@@ -233,7 +233,7 @@ func runNNUETrain(args []string) {
 	lr := fs.Float64("lr", 0.01, "learning rate")
 	batchSize := fs.Int("batch", 16384, "batch size")
 	lambda := fs.Float64("lambda", 0.5, "result vs score weight (0=score only, 1=result only)")
-	kValue := fs.Float64("K", 400, "sigmoid scaling constant (default 400)")
+	kValue := fs.Float64("K", 0, "sigmoid scaling constant (0=auto-tune from data)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
@@ -300,16 +300,25 @@ func runNNUETrain(args []string) {
 		fmt.Printf("Resumed weights from %s\n", *resumeFile)
 	}
 
+	// Auto-tune K if not specified
+	actualK := *kValue
+	if actualK <= 0 {
+		fmt.Printf("\nTuning K (sigmoid scaling constant)...\n")
+		actualK = chess.TuneNNUEK(bf, *lambda)
+		fmt.Printf("Optimal K = %.2f\n", actualK)
+	} else {
+		fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n", actualK)
+	}
+
 	cfg := chess.NNUETrainConfig{
 		Epochs:       *epochs,
 		LR:           *lr,
 		BatchSize:    *batchSize,
 		Lambda:       *lambda,
-		K:            *kValue,
+		K:            actualK,
 		MaxPositions: *positions,
 	}
-
-	fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n\n", cfg.K)
+	fmt.Println()
 
 	// Set up SIGINT handler for graceful early stop
 	stopCh := make(chan struct{})

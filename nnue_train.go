@@ -16,12 +16,14 @@ import (
 
 // NNUETrainNet holds float32 weights for training (higher precision than int16 inference).
 type NNUETrainNet struct {
-	InputWeights  [NNUEInputSize][NNUEHiddenSize]float32
-	InputBiases   [NNUEHiddenSize]float32
-	HiddenWeights [NNUEHiddenSize * 2][NNUEHidden2Size]float32
-	HiddenBiases  [NNUEHidden2Size]float32
-	OutputWeights [NNUEHidden2Size]float32
-	OutputBias    float32
+	InputWeights   [NNUEInputSize][NNUEHiddenSize]float32
+	InputBiases    [NNUEHiddenSize]float32
+	HiddenWeights  [NNUEHiddenSize * 2][NNUEHidden2Size]float32
+	HiddenBiases   [NNUEHidden2Size]float32
+	Hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]float32
+	Hidden2Biases  [NNUEHidden3Size]float32
+	OutputWeights  [NNUEHidden3Size]float32
+	OutputBias     float32
 }
 
 // NNUETrainConfig holds training hyperparameters.
@@ -100,7 +102,7 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 		net.InputBiases[i] = 0
 	}
 
-	// Hidden layer: fan_in = 512 (concatenated accumulators)
+	// Hidden layer 1: fan_in = 512 (concatenated accumulators)
 	hiddenScale := float32(math.Sqrt(2.0 / 512.0))
 	for i := range net.HiddenWeights {
 		for j := range net.HiddenWeights[i] {
@@ -109,6 +111,17 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 	}
 	for i := range net.HiddenBiases {
 		net.HiddenBiases[i] = 0
+	}
+
+	// Hidden layer 2: fan_in = 32
+	hidden2Scale := float32(math.Sqrt(2.0 / 32.0))
+	for i := range net.Hidden2Weights {
+		for j := range net.Hidden2Weights[i] {
+			net.Hidden2Weights[i][j] = float32(rng.NormFloat64()) * hidden2Scale
+		}
+	}
+	for i := range net.Hidden2Biases {
+		net.Hidden2Biases[i] = 0
 	}
 
 	// Output layer: fan_in = 32
@@ -123,7 +136,7 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 
 // Forward computes the network output and stores intermediates for backprop.
 // Returns the raw output (before sigmoid) in centipawns, side-to-move relative.
-func (net *NNUETrainNet) Forward(sample *NNUETrainSample) (output float32, hidden1 [NNUEHiddenSize * 2]float32, hidden2 [NNUEHidden2Size]float32) {
+func (net *NNUETrainNet) Forward(sample *NNUETrainSample) (output float32, hidden1 [NNUEHiddenSize * 2]float32, hidden2 [NNUEHidden2Size]float32, hidden3 [NNUEHidden3Size]float32) {
 	// Accumulator: bias + sum of active feature weights
 	var stmAcc, oppAcc [NNUEHiddenSize]float32
 
@@ -169,13 +182,22 @@ func (net *NNUETrainNet) Forward(sample *NNUETrainSample) (output float32, hidde
 		hidden2[j] = sum
 	}
 
-	// Output layer with ClippedReLU on hidden2
-	output = net.OutputBias
-	for j := 0; j < NNUEHidden2Size; j++ {
-		output += clippedReLUf(hidden2[j]) * net.OutputWeights[j]
+	// Hidden layer 2 with ClippedReLU on hidden2
+	for k := 0; k < NNUEHidden3Size; k++ {
+		sum := net.Hidden2Biases[k]
+		for j := 0; j < NNUEHidden2Size; j++ {
+			sum += clippedReLUf(hidden2[j]) * net.Hidden2Weights[j][k]
+		}
+		hidden3[k] = sum
 	}
 
-	return output, hidden1, hidden2
+	// Output layer with ClippedReLU on hidden3
+	output = net.OutputBias
+	for k := 0; k < NNUEHidden3Size; k++ {
+		output += clippedReLUf(hidden3[k]) * net.OutputWeights[k]
+	}
+
+	return output, hidden1, hidden2, hidden3
 }
 
 // nnueFloatClipMax is the CReLU upper bound in float training space.
@@ -206,17 +228,19 @@ func nnueSigmoid(x float64, K float64) float64 {
 
 // NNUETrainGradients accumulates gradients for all network weights.
 type NNUETrainGradients struct {
-	InputWeights  [NNUEInputSize][NNUEHiddenSize]float32
-	InputBiases   [NNUEHiddenSize]float32
-	HiddenWeights [NNUEHiddenSize * 2][NNUEHidden2Size]float32
-	HiddenBiases  [NNUEHidden2Size]float32
-	OutputWeights [NNUEHidden2Size]float32
-	OutputBias    float32
+	InputWeights   [NNUEInputSize][NNUEHiddenSize]float32
+	InputBiases    [NNUEHiddenSize]float32
+	HiddenWeights  [NNUEHiddenSize * 2][NNUEHidden2Size]float32
+	HiddenBiases   [NNUEHidden2Size]float32
+	Hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]float32
+	Hidden2Biases  [NNUEHidden3Size]float32
+	OutputWeights  [NNUEHidden3Size]float32
+	OutputBias     float32
 }
 
 // Backward computes gradients for a single sample and accumulates into grads.
 func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradients,
-	output float32, hidden1 [NNUEHiddenSize * 2]float32, hidden2 [NNUEHidden2Size]float32,
+	output float32, hidden1 [NNUEHiddenSize * 2]float32, hidden2 [NNUEHidden2Size]float32, hidden3 [NNUEHidden3Size]float32,
 	cfg NNUETrainConfig) {
 
 	// Compute loss gradient: d(loss)/d(output)
@@ -224,22 +248,17 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 
 	var target float64
 	if sample.HasScore {
-		// Blended target: lambda * result + (1-lambda) * nnueSigmoid(score/K)
-		// Score is White-relative but network output is side-to-move relative,
-		// so negate for Black positions before sigmoid.
 		score := float64(sample.Score)
 		if sample.SideToMove == Black {
 			score = -score
 		}
 		scoreTarget := nnueSigmoid(score, cfg.K)
-		// Convert result to side-to-move relative
 		result := float64(sample.Result)
 		if sample.SideToMove == Black {
 			result = 1.0 - result
 		}
 		target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
 	} else {
-		// Result only
 		target = float64(sample.Result)
 		if sample.SideToMove == Black {
 			target = 1.0 - target
@@ -249,16 +268,34 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 	// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
 	dOutput := float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
 
-	// Output layer gradients
+	// Output layer gradients: output = bias + sum(CReLU(hidden3) * weights)
 	grads.OutputBias += dOutput
-	var dHidden2 [NNUEHidden2Size]float32
-	for j := 0; j < NNUEHidden2Size; j++ {
-		h2 := clippedReLUf(hidden2[j])
-		grads.OutputWeights[j] += dOutput * h2
-		dHidden2[j] = dOutput * net.OutputWeights[j] * clippedReLUGrad(hidden2[j])
+	var dHidden3 [NNUEHidden3Size]float32
+	for k := 0; k < NNUEHidden3Size; k++ {
+		h3 := clippedReLUf(hidden3[k])
+		grads.OutputWeights[k] += dOutput * h3
+		dHidden3[k] = dOutput * net.OutputWeights[k] * clippedReLUGrad(hidden3[k])
 	}
 
-	// Hidden layer gradients
+	// Hidden layer 2 gradients: hidden3 = bias + sum(CReLU(hidden2) * weights)
+	var dHidden2 [NNUEHidden2Size]float32
+	for k := 0; k < NNUEHidden3Size; k++ {
+		grads.Hidden2Biases[k] += dHidden3[k]
+	}
+	for j := 0; j < NNUEHidden2Size; j++ {
+		h2 := clippedReLUf(hidden2[j])
+		for k := 0; k < NNUEHidden3Size; k++ {
+			grads.Hidden2Weights[j][k] += dHidden3[k] * h2
+		}
+		// Backprop through CReLU to hidden2
+		var sum float32
+		for k := 0; k < NNUEHidden3Size; k++ {
+			sum += dHidden3[k] * net.Hidden2Weights[j][k]
+		}
+		dHidden2[j] = sum * clippedReLUGrad(hidden2[j])
+	}
+
+	// Hidden layer 1 gradients: hidden2 = bias + sum(hidden1 * weights)
 	for j := 0; j < NNUEHidden2Size; j++ {
 		grads.HiddenBiases[j] += dHidden2[j]
 		for i := 0; i < NNUEHiddenSize*2; i++ {
@@ -635,12 +672,14 @@ type nnueAdamState struct {
 type NNUETrainer struct {
 	Net  *NNUETrainNet
 	adam struct {
-		inputWeights  [NNUEInputSize][NNUEHiddenSize]nnueAdamState
-		inputBiases   [NNUEHiddenSize]nnueAdamState
-		hiddenWeights [NNUEHiddenSize * 2][NNUEHidden2Size]nnueAdamState
-		hiddenBiases  [NNUEHidden2Size]nnueAdamState
-		outputWeights [NNUEHidden2Size]nnueAdamState
-		outputBias    nnueAdamState
+		inputWeights   [NNUEInputSize][NNUEHiddenSize]nnueAdamState
+		inputBiases    [NNUEHiddenSize]nnueAdamState
+		hiddenWeights  [NNUEHiddenSize * 2][NNUEHidden2Size]nnueAdamState
+		hiddenBiases   [NNUEHidden2Size]nnueAdamState
+		hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]nnueAdamState
+		hidden2Biases  [NNUEHidden3Size]nnueAdamState
+		outputWeights  [NNUEHidden3Size]nnueAdamState
+		outputBias     nnueAdamState
 	}
 	step int
 }
@@ -744,9 +783,9 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 						if samples[i] == nil {
 							continue
 						}
-						output, hidden1, hidden2 := trainer.Net.Forward(samples[i])
+						output, hidden1, hidden2, hidden3 := trainer.Net.Forward(samples[i])
 						trainer.Net.Backward(samples[i], &workerGrads[workerIdx],
-							output, hidden1, hidden2, cfg)
+							output, hidden1, hidden2, hidden3, cfg)
 
 						// Compute loss
 						pred := nnueSigmoid(float64(output), cfg.K)
@@ -808,9 +847,15 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 
 func addGradients(dst, src *NNUETrainGradients) {
 	dst.OutputBias += src.OutputBias
+	for k := 0; k < NNUEHidden3Size; k++ {
+		dst.OutputWeights[k] += src.OutputWeights[k]
+		dst.Hidden2Biases[k] += src.Hidden2Biases[k]
+	}
 	for j := 0; j < NNUEHidden2Size; j++ {
-		dst.OutputWeights[j] += src.OutputWeights[j]
 		dst.HiddenBiases[j] += src.HiddenBiases[j]
+		for k := 0; k < NNUEHidden3Size; k++ {
+			dst.Hidden2Weights[j][k] += src.Hidden2Weights[j][k]
+		}
 	}
 	for i := 0; i < NNUEHiddenSize*2; i++ {
 		for j := 0; j < NNUEHidden2Size; j++ {
@@ -833,17 +878,31 @@ func addGradients(dst, src *NNUETrainGradients) {
 func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
 	step := trainer.step
 
-	// Output layer
+	// Output layer (hidden3 -> output)
 	adamUpdate(&trainer.Net.OutputBias, float64(grads.OutputBias)*scale,
 		&trainer.adam.outputBias, lr, step)
-	for j := 0; j < NNUEHidden2Size; j++ {
+	for j := 0; j < NNUEHidden3Size; j++ {
 		adamUpdate(&trainer.Net.OutputWeights[j], float64(grads.OutputWeights[j])*scale,
 			&trainer.adam.outputWeights[j], lr, step)
+	}
+
+	// Hidden2 layer (hidden2 -> hidden3)
+	for j := 0; j < NNUEHidden3Size; j++ {
+		adamUpdate(&trainer.Net.Hidden2Biases[j], float64(grads.Hidden2Biases[j])*scale,
+			&trainer.adam.hidden2Biases[j], lr, step)
+	}
+	for i := 0; i < NNUEHidden2Size; i++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			adamUpdate(&trainer.Net.Hidden2Weights[i][j], float64(grads.Hidden2Weights[i][j])*scale,
+				&trainer.adam.hidden2Weights[i][j], lr, step)
+		}
+	}
+
+	// Hidden layer (concat accum -> hidden2)
+	for j := 0; j < NNUEHidden2Size; j++ {
 		adamUpdate(&trainer.Net.HiddenBiases[j], float64(grads.HiddenBiases[j])*scale,
 			&trainer.adam.hiddenBiases[j], lr, step)
 	}
-
-	// Hidden layer
 	for i := 0; i < NNUEHiddenSize*2; i++ {
 		for j := 0; j < NNUEHidden2Size; j++ {
 			adamUpdate(&trainer.Net.HiddenWeights[i][j], float64(grads.HiddenWeights[i][j])*scale,
@@ -890,7 +949,7 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 		if err != nil {
 			continue
 		}
-		output, _, _ := trainer.Net.Forward(s)
+		output, _, _, _ := trainer.Net.Forward(s)
 		pred := nnueSigmoid(float64(output), cfg.K)
 
 		var target float64
@@ -923,6 +982,48 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 	return totalLoss / float64(count)
 }
 
+// TuneNNUEK finds the optimal sigmoid scaling constant K by minimizing MSE
+// between sigmoid(score/K) and game results over the training data.
+// This uses the search scores from selfplay, NOT the network output.
+// Uses golden section search over [50, 800].
+func TuneNNUEK(bf *NNBinFile, lambda float64) float64 {
+	computeMSE := func(K float64) float64 {
+		numTrain := int(bf.NumTrain)
+		totalErr := 0.0
+		count := 0
+		for i := 0; i < numTrain; i++ {
+			s, err := bf.ReadRecord(i)
+			if err != nil || !s.HasScore {
+				continue
+			}
+			score := float64(s.Score)
+			result := float64(s.Result)
+			// Scores and results are White-relative in the data
+			pred := nnueSigmoid(score, K)
+			diff := result - pred
+			totalErr += diff * diff
+			count++
+		}
+		if count == 0 {
+			return 1.0
+		}
+		return totalErr / float64(count)
+	}
+
+	lo, hi := 50.0, 800.0
+	gr := (math.Sqrt(5) + 1) / 2
+	for hi-lo > 0.1 {
+		c := hi - (hi-lo)/gr
+		d := lo + (hi-lo)/gr
+		if computeMSE(c) < computeMSE(d) {
+			hi = d
+		} else {
+			lo = c
+		}
+	}
+	return (lo + hi) / 2
+}
+
 // QuantizeNetwork converts a float32 training network to int16 for inference.
 func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 	net := &NNUENet{}
@@ -948,9 +1049,21 @@ func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 		net.HiddenBiases[j] = int32(math.Round(float64(train.HiddenBiases[j]) * float64(nnueInputScale) * float64(nnueHiddenScale)))
 	}
 
+	// Hidden2 layer: same quantization as hidden layer.
+	// Input activation is at scale nnueInputScale (127) after CReLU >> 6.
+	// Weights scaled by nnueHiddenScale (64), biases by nnueInputScale * nnueHiddenScale (8128).
+	for i := range train.Hidden2Weights {
+		for j := range train.Hidden2Weights[i] {
+			net.Hidden2Weights[i][j] = int16(math.Round(float64(train.Hidden2Weights[i][j]) * float64(nnueHiddenScale)))
+		}
+	}
+	for j := range train.Hidden2Biases {
+		net.Hidden2Biases[j] = int32(math.Round(float64(train.Hidden2Biases[j]) * float64(nnueInputScale) * float64(nnueHiddenScale)))
+	}
+
 	// Output layer: bias is int32 at scale nnueOutputScale (8128).
 	// Weights are int16 at scale nnueHiddenScale (64), NOT nnueOutputScale,
-	// because the second CReLU activation (after >>6) is at scale nnueInputScale (127).
+	// because the CReLU activation (after >>6) is at scale nnueInputScale (127).
 	// Product: activation(127) * weight(64) = scale 8128 = nnueOutputScale, matching bias.
 	for j := range train.OutputWeights {
 		net.OutputWeights[j] = int16(math.Round(float64(train.OutputWeights[j]) * float64(nnueHiddenScale)))
@@ -988,6 +1101,17 @@ func DequantizeNetwork(net *NNUENet) *NNUETrainNet {
 		train.HiddenBiases[j] = float32(net.HiddenBiases[j]) / nnueOutputScale
 	}
 
+	// Hidden2 weights: divide by nnueHiddenScale (64)
+	for i := range net.Hidden2Weights {
+		for j := range net.Hidden2Weights[i] {
+			train.Hidden2Weights[i][j] = float32(net.Hidden2Weights[i][j]) / nnueHiddenScale
+		}
+	}
+	// Hidden2 biases: divide by nnueInputScale * nnueHiddenScale (8128)
+	for j := range net.Hidden2Biases {
+		train.Hidden2Biases[j] = float32(net.Hidden2Biases[j]) / nnueOutputScale
+	}
+
 	// Output weights: divide by nnueHiddenScale (64), matching QuantizeNetwork
 	for j := range net.OutputWeights {
 		train.OutputWeights[j] = float32(net.OutputWeights[j]) / nnueHiddenScale
@@ -1021,7 +1145,7 @@ func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
 			if err != nil {
 				continue
 			}
-			output, _, _ := trainer.Net.Forward(s)
+			output, _, _, _ := trainer.Net.Forward(s)
 			pred := nnueSigmoid(float64(output), K)
 
 			var target float64

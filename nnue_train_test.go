@@ -61,7 +61,7 @@ func TestNNUETrainNetForward(t *testing.T) {
 		Result:        0.5,
 	}
 
-	output, _, _ := net.Forward(sample)
+	output, _, _, _ := net.Forward(sample)
 
 	// Should produce a finite value
 	if math.IsNaN(float64(output)) || math.IsInf(float64(output), 0) {
@@ -225,7 +225,7 @@ func TestQuantizeRoundTrip(t *testing.T) {
 	sample := makeSampleFromBoard(&b, White)
 
 	// Evaluate with training net
-	trainOutput, _, _ := trainNet.Forward(sample)
+	trainOutput, _, _, _ := trainNet.Forward(sample)
 
 	// Evaluate with inference net
 	acc := &NNUEAccumulator{}
@@ -273,7 +273,7 @@ func TestQuantizeRoundTripLargeWeights(t *testing.T) {
 
 	sample := makeSampleFromBoard(&b, White)
 
-	trainOutput, _, _ := trainNet.Forward(sample)
+	trainOutput, _, _, _ := trainNet.Forward(sample)
 	t.Logf("Training forward output: %.1f", trainOutput)
 
 	infNet := QuantizeNetwork(trainNet)
