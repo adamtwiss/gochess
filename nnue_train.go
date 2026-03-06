@@ -31,7 +31,8 @@ type NNUETrainConfig struct {
 	BatchSize    int
 	Lambda       float64 // weight for result vs score: loss = lambda*MSE(result) + (1-lambda)*MSE(score)
 	K            float64 // sigmoid scaling constant
-	MaxPositions int     // limit training positions per epoch (0=use all)
+	MaxPositions int             // limit training positions per epoch (0=use all)
+	Stop         <-chan struct{} // if non-nil, checked each epoch; close to stop early
 }
 
 // DefaultNNUETrainConfig returns sensible defaults.
@@ -683,6 +684,15 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 	}
 
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
+		// Check for early stop signal
+		if cfg.Stop != nil {
+			select {
+			case <-cfg.Stop:
+				return
+			default:
+			}
+		}
+
 		// Shuffle training indices
 		indices := make([]int, numTrain)
 		for i := range indices {

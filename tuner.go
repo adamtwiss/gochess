@@ -1880,6 +1880,7 @@ type TuneConfig struct {
 	Epsilon    float64 // Adam epsilon (default 1e-8)
 	Lambda     float64 // L2 regularization toward initial values (default 0, disabled)
 	ScoreBlend float64 // blend search scores into loss (0=result-only, 1=score-only)
+	Stop       <-chan struct{} // if non-nil, checked each epoch; close to stop early
 }
 
 // DefaultTuneConfig returns sensible defaults.
@@ -1919,6 +1920,15 @@ func (t *Tuner) Tune(tf *TraceFile, K float64, cfg TuneConfig, onEpoch func(epoc
 	numCPU := runtime.NumCPU()
 
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
+		// Check for early stop signal
+		if cfg.Stop != nil {
+			select {
+			case <-cfg.Stop:
+				return
+			default:
+			}
+		}
+
 		// Accumulate gradient across all batches
 		grad := make([]float64, np)
 

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -188,6 +189,18 @@ func runTune(args []string) {
 	cfg.Lambda = *lambda
 	cfg.ScoreBlend = *scoreBlend
 
+	// Set up SIGINT handler for graceful early stop
+	stopCh := make(chan struct{})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		<-sigCh
+		fmt.Fprintf(os.Stderr, "\nInterrupted — finishing current epoch and printing parameters...\n")
+		close(stopCh)
+		signal.Stop(sigCh)
+	}()
+	cfg.Stop = stopCh
+
 	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f, lambda=%.1e\n", cfg.Epochs, cfg.LR, cfg.Lambda)
 	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Error", "Val Error")
 	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "-----------", "---------")
@@ -297,6 +310,18 @@ func runNNUETrain(args []string) {
 	}
 
 	fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n\n", cfg.K)
+
+	// Set up SIGINT handler for graceful early stop
+	stopCh := make(chan struct{})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		<-sigCh
+		fmt.Fprintf(os.Stderr, "\nInterrupted — finishing current epoch and saving network...\n")
+		close(stopCh)
+		signal.Stop(sigCh)
+	}()
+	cfg.Stop = stopCh
 
 	fmt.Printf("Training NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f\n",
 		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda)
