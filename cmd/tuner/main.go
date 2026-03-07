@@ -53,14 +53,29 @@ func runSelfPlay(args []string) {
 	openings := fs.String("openings", "testdata/noob_3moves.epd", "EPD file with opening positions")
 	output := fs.String("output", "training.dat", "output file for training data")
 	hashMB := fs.Int("hash", 16, "TT size in MB per game")
+	nnueFile := fs.String("nnue", "", "NNUE network file (enables NNUE eval for self-play)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner selfplay [options]\n\nOptions:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample:\n")
 		fmt.Fprintf(os.Stderr, "  tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat\n")
+		fmt.Fprintf(os.Stderr, "  tuner selfplay -games 20000 -time 200 -concurrency 6 -nnue net.nnue -output training.dat\n")
 	}
 	fs.Parse(args)
+
+	// Load NNUE network if specified
+	var nnueNet *chess.NNUENet
+	if *nnueFile != "" {
+		net, err := chess.LoadNNUE(*nnueFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
+			os.Exit(1)
+		}
+		net.PrepareWeights()
+		nnueNet = net
+		fmt.Printf("Using NNUE: %s\n", *nnueFile)
+	}
 
 	cfg := chess.SelfPlayConfig{
 		TimePerMove:  time.Duration(*timeMS) * time.Millisecond,
@@ -70,7 +85,8 @@ func runSelfPlay(args []string) {
 		Concurrency:  *concurrency,
 		OpeningsFile: *openings,
 		OutputFile:   *output,
-		HashMB: *hashMB,
+		HashMB:  *hashMB,
+		NNUENet: nnueNet,
 	}
 
 	fmt.Printf("Self-play configuration:\n")
@@ -82,6 +98,11 @@ func runSelfPlay(args []string) {
 	fmt.Printf("  Openings:    %s\n", cfg.OpeningsFile)
 	fmt.Printf("  Output:      %s\n", cfg.OutputFile)
 	fmt.Printf("  Hash:        %d MB (per game)\n", cfg.HashMB)
+	if cfg.NNUENet != nil {
+		fmt.Printf("  NNUE:        %s\n", *nnueFile)
+	} else {
+		fmt.Printf("  Eval:        classical\n")
+	}
 	if stat, err := os.Stat(cfg.OutputFile); err == nil {
 		fmt.Printf("  (appending to existing file, %d bytes)\n", stat.Size())
 	}

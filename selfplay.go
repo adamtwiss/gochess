@@ -20,7 +20,8 @@ type SelfPlayConfig struct {
 	Concurrency  int           // parallel games
 	OpeningsFile string        // EPD file with starting positions
 	OutputFile   string        // output file for training data
-	HashMB int // TT size in MB per game
+	HashMB  int       // TT size in MB per game
+	NNUENet *NNUENet  // optional NNUE network (shared read-only across games)
 }
 
 // SelfPlayGame holds the result of one self-play game.
@@ -121,6 +122,14 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	if err := b.SetFEN(startFEN); err != nil {
 		// Fallback to starting position
 		b.Reset()
+	}
+
+	// Set up NNUE if configured
+	if cfg.NNUENet != nil {
+		UseNNUE = true
+		b.NNUENet = cfg.NNUENet
+		b.NNUEAcc = NewNNUEAccumulatorStack(256)
+		cfg.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), &b)
 	}
 
 	tt := NewTranspositionTable(cfg.HashMB)
