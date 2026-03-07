@@ -1,5 +1,15 @@
-# Skip binary at repo root
+# Binaries
 /chess
-
-# GCC compiled version I was playign with
+/tuner
 chessgcc
+
+# NNUE network files
+*.nnue
+
+# PGN output files (not testdata/)
+/gauntlet.pgn
+/selfplay.pgn
+/sprt.pgn
+
+# Misc
+nohup.out
