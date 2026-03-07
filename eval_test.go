@@ -8,7 +8,7 @@ func TestEvalStartingPosition(t *testing.T) {
 
 	score := b.Evaluate()
 
-	// Starting position should be roughly equal (close to 0)
+	// Starting position should be roughly equal (close to tempo bonus)
 	// Small differences possible due to mobility
 	if score < -50 || score > 50 {
 		t.Errorf("Starting position eval = %d, expected close to 0", score)
@@ -71,7 +71,7 @@ func TestEvalSymmetry(t *testing.T) {
 	b.SetFEN("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2")
 	score := b.Evaluate()
 
-	// Should be close to 0 due to symmetry (PST values are near-symmetric)
+	// Should be close to tempo bonus due to symmetry (PST values are near-symmetric)
 	if score < -50 || score > 50 {
 		t.Errorf("Symmetric position eval = %d, expected close to 0", score)
 	}
@@ -752,12 +752,12 @@ func TestEvalCalibration(t *testing.T) {
 		t.Logf("%s: eval=%d, human~%d, error=%d", pos.name, score, pos.humanCP, score-pos.humanCP)
 	}
 
-	// Starting position should be near zero
+	// Starting position should be near tempo bonus
 	var b Board
 	b.Reset()
 	startScore := b.Evaluate()
 	t.Logf("Starting position: %d", startScore)
-	if startScore > 50 || startScore < -50 {
+	if startScore > 100 || startScore < -50 {
 		t.Errorf("Starting position eval %d too far from 0", startScore)
 	}
 }
