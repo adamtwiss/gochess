@@ -97,9 +97,10 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 			net.InputWeights[i][j] = float32(rng.NormFloat64()) * inputScale
 		}
 	}
-	// Biases start at zero
+	// Input biases start slightly positive so accumulator neurons begin in the
+	// active CReLU region and must be pushed out, preventing early neuron death.
 	for i := range net.InputBiases {
-		net.InputBiases[i] = 0
+		net.InputBiases[i] = 0.1
 	}
 
 	// Hidden layer 1: fan_in = 512 (concatenated accumulators)
@@ -110,7 +111,7 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 		}
 	}
 	for i := range net.HiddenBiases {
-		net.HiddenBiases[i] = 0
+		net.HiddenBiases[i] = 0.1
 	}
 
 	// Hidden layer 2: fan_in = 32
@@ -121,7 +122,7 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 		}
 	}
 	for i := range net.Hidden2Biases {
-		net.Hidden2Biases[i] = 0
+		net.Hidden2Biases[i] = 0.1
 	}
 
 	// Output layer: fan_in = 32
