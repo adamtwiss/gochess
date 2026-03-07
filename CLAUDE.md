@@ -76,7 +76,7 @@ Chess engine in Go using bitboard representation. Core library is `package chess
 ```
 cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder, interactive CLI)
 cmd/tuner/main.go    Texel tuner CLI (selfplay data generation, parameter optimization)
-testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, noob_3moves.epd, 2600.pgn, eco.pgn)
+testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, noob_3moves.epd, 2600.pgn)
 book.bin             Opening book (Polyglot .bin format)
 board.go             Board struct, piece types, FEN parsing, pieceOf() helper
 move.go              Move encoding (16-bit), flags, NoMove sentinel
@@ -208,11 +208,12 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Reverse Futility Pruning**: At shallow depths (depth <= 6), prune whole node if static eval minus margin (depth * 120) exceeds beta.
 - **Futility pruning**: At depth <= 6, skip quiet non-checking moves when static eval plus margin (depth * 200) cannot raise alpha.
 - **Late Move Reductions (LMR)**: Logarithmic reduction table. Quiet moves searched late in the move list are reduced. Re-search at full depth if score exceeds alpha. Disabled for captures, promotions, killers, and check-giving moves. Continuous history adjustment: good history reduces less, bad history reduces more (histScore / 5000). Reduced less at PV nodes and when position is improving. **Cut-node adjustment**: +1 reduction at expected cut nodes (zero window search, not first move).
-- **Late Move Pruning (LMP)**: Skip quiet moves at shallow depths (depth 1-8) after searching enough moves (threshold from `lmpThreshold[depth]` table). When the position is improving and depth >= 3, thresholds are increased by 50% to search more moves. Disabled when in check or giving check.
+- **Late Move Pruning (LMP)**: Skip quiet moves at shallow depths (depth 1-8) after searching enough moves (threshold: `3 + depth*depth`). When the position is improving and depth >= 3, thresholds are increased by 50% to search more moves. Disabled when in check or giving check.
 - **SEE quiet pruning**: At depth <= 8, prune quiet moves where `SEEAfterQuiet` indicates the piece lands on a square where it would be captured for material loss exceeding `depth * 80` centipawns. Computed before MakeMove, applied after (to exempt check-giving moves). Exempts TT move, killers, counter-move, captures, promotions. Controlled by `SEEQuietPruneEnabled` toggle.
 - **SEE capture pruning**: At depth <= 6, prune captures where SEE < -depth*100 (losing too much material). Exempts TT move and positions where we might be in a mating attack. Applied before MakeMove.
 - **ProbCut**: At depth >= 5, if static eval + 100 >= beta + 200, search good captures (SEE >= 0) at reduced depth (depth-4) with raised beta (beta+200). If any capture scores above the raised beta, prune the node. Leverages accurate shallow searches to cut deep subtrees.
 - **History-based pruning**: At depth <= 3, prune quiet moves with deeply negative combined history + continuation history scores (threshold: -2000*depth). Only when position is NOT improving (protecting tactical lines). Exempts TT move, killers, counter-move, captures, promotions.
+- **Internal Iterative Reduction (IIR)**: At depth >= 6, when no TT move exists and not in check, reduce depth by 1. Searching without a good move to try first is less efficient, so we save time by searching shallower. Gated on `IIREnabled`.
 - **Singular extensions**: At depth >= 10, if the TT move is significantly better than alternatives (verified by a reduced-depth search excluding the TT move), extend the TT move by 1 ply.
 - **Principal Variation Search (PVS)**: After first move, search with zero window (alpha, alpha+1). Re-search with full window if it fails high.
 - **Aspiration windows**: Starting at depth 4, iterative deepening uses a narrow window (delta=25) around previous score. Widens progressively on fail high/low.
@@ -308,7 +309,7 @@ Standard Polyglot `.bin` format. Any Polyglot book (downloaded or self-built) wo
 
 ### Texel Tuner
 
-`cmd/tuner/main.go` — Two-phase system for optimizing ~1172 evaluation parameters.
+`cmd/tuner/main.go` — Two-phase system for optimizing ~1268 evaluation parameters.
 
 **Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;score;result` lines (score is White-relative centipawns). Games run concurrently with independent Board+TT per game.
 
@@ -322,7 +323,7 @@ Standard Polyglot `.bin` format. Any Polyglot book (downloaded or self-built) wo
 
 **Parameter optimization** (`tuner.go`): Texel tuning via Adam optimizer. The `Tuner` holds the parameter catalog (no in-memory training data):
 
-- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (24), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), pawn storm (32), same-side storm (8), misc (14).
+- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (24), passed pawn enhancements (64), pawn structure (90), king attack weights (8), safe check bonuses (4), king safety table (100), pawn shield (5), pawn storm (32), same-side storm (8), endgame king (3), misc (20).
 - `computeTrace()` mirrors `Evaluate()` but records sparse MG/EG coefficients per parameter instead of computing a score. Each position produces a `TunerTrace` with `[]SparseEntry` for MG and EG contributions.
 - `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
 - `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
