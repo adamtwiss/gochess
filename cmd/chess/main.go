@@ -26,7 +26,6 @@ func main() {
 	// Book building flags
 	buildBook := flag.Bool("buildbook", false, "build opening book from PGN files")
 	bookPGN := flag.String("pgn", "", "PGN file with GM games for book building")
-	bookECO := flag.String("eco", "", "ECO PGN file for opening names")
 	bookOut := flag.String("bookout", "book.bin", "output file for built book")
 	bookDepth := flag.Int("bookdepth", 30, "max full moves to include in book")
 	bookMinFreq := flag.Int("bookminfreq", 3, "min frequency to include a move")
@@ -59,7 +58,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200                            # run benchmark\n")
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200 -save base.json            # save results\n")
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200 -compare base.json         # compare\n")
-		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -eco eco.pgn -bookout book.bin\n")
+		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -bookout book.bin\n")
 		fmt.Fprintf(os.Stderr, "  chess -book book.bin\n")
 	}
 	flag.Parse()
@@ -74,7 +73,7 @@ func main() {
 			MinFreq: *bookMinFreq,
 			TopN:    *bookTopN,
 		}
-		if err := chess.BuildOpeningBook(*bookPGN, *bookECO, *bookOut, opts); err != nil {
+		if err := chess.BuildOpeningBook(*bookPGN, *bookOut, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error building book: %v\n", err)
 			os.Exit(1)
 		}

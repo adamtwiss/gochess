@@ -19,7 +19,7 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -benchmark -t 200                               # Run multi-suite benchmark (quick)
 ./chess -benchmark -t 200 -save base.json               # Save benchmark results to JSON
 ./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
-./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin  # Build opening book
+./chess -buildbook -pgn testdata/2600.pgn -bookout book.bin  # Build Polyglot opening book
 
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data (FEN;score;result)
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
@@ -77,7 +77,7 @@ Chess engine in Go using bitboard representation. Core library is `package chess
 cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder, interactive CLI)
 cmd/tuner/main.go    Texel tuner CLI (selfplay data generation, parameter optimization)
 testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, noob_3moves.epd, 2600.pgn, eco.pgn)
-book.bin             Compiled opening book (binary format)
+book.bin             Opening book (Polyglot .bin format)
 board.go             Board struct, piece types, FEN parsing, pieceOf() helper
 move.go              Move encoding (16-bit), flags, NoMove sentinel
 bitboard.go          Bitboard type, bit manipulation, file/rank masks
@@ -96,7 +96,8 @@ san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
 epd.go               EPD file loading and test suite runner
 pgn.go               PGN game parsing (tags, moves)
 benchmark.go         Multi-suite benchmark: continuous scoring (time-to-solve), JSON save/load, comparison
-book.go              Opening book: build from PGN, binary format, weighted move selection
+book.go              Opening book: build Polyglot .bin from PGN
+polyglot.go          Polyglot book format: load, hash, move encoding/matching, weighted selection
 uci.go               UCI protocol (position, go, setoption, ponder)
 cli.go               Interactive CLI engine (set, fen, board, eval, moves, search, epd, perft)
 selfplay.go          Self-play game generation for tuning data
@@ -291,7 +292,7 @@ Simulates alternating captures on a single square. Builds gain array, then negam
 
 ### Opening Book
 
-Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifications (`testdata/eco.pgn`). `BuildOpeningBook()` processes games up to a configurable depth, tracking move frequency. `PickMove()` selects from book entries using weighted random selection. Integrated into UCI engine via `OwnBook` and `BookFile` options.
+Standard Polyglot `.bin` format. Any Polyglot book (downloaded or self-built) works. `LoadOpeningBook()` reads the binary file. `PickMove()` computes a Polyglot Zobrist hash (separate from the engine's internal hash), looks up book moves, and matches them against legal moves to handle castling encoding differences and en passant detection. `BuildOpeningBook()` can generate a Polyglot book from PGN games. Integrated into UCI engine via `OwnBook` and `BookFile` options. The Polyglot hash uses 781 fixed random numbers from the specification; the engine's internal Zobrist hash is unchanged.
 
 ### UCI Protocol
 
@@ -343,7 +344,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output), `-threads` (Lazy SMP thread count)
 - **Benchmark**: `-benchmark` runs WAC, ECM, SBD, Arasan suites with continuous time-to-solve scoring. `-save FILE` writes JSON results, `-compare FILE` shows delta against a baseline. Reuses `-t`, `-hash`, `-d`, `-threads`.
 - **UCI mode**: `-uci`, with optional `-book` (opening book path), `-nnue` (NNUE network file), `-syzygy` (tablebase path)
-- **Book building**: `-buildbook`, `-pgn`, `-eco`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
+- **Book building**: `-buildbook`, `-pgn`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
 
 ## Key Gotchas
 

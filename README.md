@@ -12,7 +12,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Optional NNUE evaluation (HalfKP architecture, SIMD-accelerated on x86-64 and ARM64)
 - Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
 - Syzygy endgame tablebase support (3-4-5-6 piece, via bundled Fathom C library)
-- Opening book support (built from PGN databases)
+- Polyglot opening book support (standard .bin format, compatible with any Polyglot book)
 - Full UCI protocol support for use with chess GUIs
 - EPD test suite runner (WAC, ECM)
 
@@ -72,7 +72,7 @@ To add the engine to your GUI:
 3. Add a new engine and point it to the `chess` binary
 4. The GUI will communicate with the engine over UCI automatically
 
-To use the opening book with a GUI, either set the `OwnBook` and `BookFile` UCI options through the GUI's engine configuration, or start the engine with the `-book` flag:
+To use an opening book with a GUI, either set the `OwnBook` and `BookFile` UCI options through the GUI's engine configuration, or start the engine with the `-book` flag. Any standard Polyglot `.bin` book file will work:
 
 ```bash
 ./chess -book book.bin
@@ -108,20 +108,21 @@ Run standard test suites (e.g., WAC, ECM) to evaluate engine strength:
 
 ### Building an Opening Book
 
-Build an opening book from a PGN database of games:
+Build a Polyglot `.bin` opening book from a PGN database of games:
 
 ```bash
-./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin
+./chess -buildbook -pgn testdata/2600.pgn -bookout book.bin
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-pgn` | | PGN file with games (required) |
-| `-eco` | | ECO PGN file for opening names |
 | `-bookout` | book.bin | Output file path |
 | `-bookdepth` | 30 | Max full moves to include |
 | `-bookminfreq` | 3 | Minimum frequency to include a move |
 | `-booktop` | 8 | Maximum moves per position |
+
+You can also use any pre-built Polyglot `.bin` book downloaded from the internet.
 
 ### Texel Tuner
 
