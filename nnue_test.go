@@ -794,30 +794,30 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("PromotionQueen", func(t *testing.T) {
-		// White pawn on e7, promote to queen
+		// White pawn on e7, promote to queen (king on d8 out of the way)
 		testSequence(t,
-			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			"3k4/4P3/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{"e7e8q"},
 		)
 	})
 
 	t.Run("PromotionKnight", func(t *testing.T) {
 		testSequence(t,
-			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			"3k4/4P3/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{"e7e8n"},
 		)
 	})
 
 	t.Run("PromotionRook", func(t *testing.T) {
 		testSequence(t,
-			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			"3k4/4P3/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{"e7e8r"},
 		)
 	})
 
 	t.Run("PromotionBishop", func(t *testing.T) {
 		testSequence(t,
-			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			"3k4/4P3/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{"e7e8b"},
 		)
 	})
@@ -838,8 +838,9 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("BlackPromotion", func(t *testing.T) {
+		// Black pawn on e2, promote to queen (white king on d1 out of the way)
 		testSequence(t,
-			"4k3/8/8/8/8/8/4p3/4K3 b - - 0 1",
+			"4k3/8/8/8/8/8/4p3/3K4 b - - 0 1",
 			[]string{"e2e1q"},
 		)
 	})
@@ -955,8 +956,9 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 
 	t.Run("RookCapturedOnHomeSquare", func(t *testing.T) {
 		// Test capturing a rook on its home square (castling rights change)
+		// Open a-file so white rook can reach a8
 		testSequence(t,
-			"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+			"r3k2r/1ppppppp/8/8/8/8/1PPPPPPP/R3K2R w KQkq - 0 1",
 			[]string{
 				"a1a8", // Rook captures rook on a8 (removes both castling rights)
 			},
@@ -965,24 +967,25 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 
 	t.Run("DoubleKingMovesAlternating", func(t *testing.T) {
 		// Both kings moving alternately — each triggers full recompute
+		// Kings stay far apart to avoid illegal proximity
 		testSequence(t,
 			"4k3/8/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{
-				"e1d2", "e8d7",
-				"d2c3", "d7c6",
-				"c3b4", "c6b5",
-				"b4a5", "b5a6",
+				"e1d1", "e8d8",
+				"d1c1", "d8c8",
+				"c1b1", "c8b8",
+				"b1a1", "b8a8",
 			},
 		)
 	})
 
 	t.Run("PromotionSequenceMultiple", func(t *testing.T) {
-		// Both sides promote
+		// Both sides promote — pawns on a-file, kings far away
 		testSequence(t,
-			"4k3/1P6/8/8/8/8/1p6/4K3 w - - 0 1",
+			"8/P3k3/8/8/8/8/p3K3/8 w - - 0 1",
 			[]string{
-				"b7b8q", // White promotes queen
-				"b2b1q", // Black promotes queen
+				"a7a8q", // White promotes queen
+				"a2a1q", // Black promotes queen
 			},
 		)
 	})
