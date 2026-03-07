@@ -19,7 +19,7 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -benchmark -t 200                               # Run multi-suite benchmark (quick)
 ./chess -benchmark -t 200 -save base.json               # Save benchmark results to JSON
 ./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
-./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin  # Build opening book
+./chess -buildbook -pgn testdata/2600.pgn -bookout book.bin  # Build Polyglot opening book
 
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data (FEN;score;result)
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
@@ -76,8 +76,8 @@ Chess engine in Go using bitboard representation. Core library is `package chess
 ```
 cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder, interactive CLI)
 cmd/tuner/main.go    Texel tuner CLI (selfplay data generation, parameter optimization)
-testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, noob_3moves.epd, 2600.pgn, eco.pgn)
-book.bin             Compiled opening book (binary format)
+testdata/            Test data (wac.epd, ecm.epd, arasan.epd, lct.epd, sbd.epd, wac300.epd, wac2018.epd, zugzwang.epd, noob_3moves.epd, 2600.pgn)
+book.bin             Opening book (Polyglot .bin format)
 board.go             Board struct, piece types, FEN parsing, pieceOf() helper
 move.go              Move encoding (16-bit), flags, NoMove sentinel
 bitboard.go          Bitboard type, bit manipulation, file/rank masks
@@ -96,7 +96,8 @@ san.go               SAN parsing (ParseSAN) and formatting (ToSAN)
 epd.go               EPD file loading and test suite runner
 pgn.go               PGN game parsing (tags, moves)
 benchmark.go         Multi-suite benchmark: continuous scoring (time-to-solve), JSON save/load, comparison
-book.go              Opening book: build from PGN, binary format, weighted move selection
+book.go              Opening book: build Polyglot .bin from PGN
+polyglot.go          Polyglot book format: load, hash, move encoding/matching, weighted selection
 uci.go               UCI protocol (position, go, setoption, ponder)
 cli.go               Interactive CLI engine (set, fen, board, eval, moves, search, epd, perft)
 selfplay.go          Self-play game generation for tuning data
@@ -207,11 +208,12 @@ Negamax with alpha-beta pruning, iterative deepening with time control.
 - **Reverse Futility Pruning**: At shallow depths (depth <= 6), prune whole node if static eval minus margin (depth * 120) exceeds beta.
 - **Futility pruning**: At depth <= 6, skip quiet non-checking moves when static eval plus margin (depth * 200) cannot raise alpha.
 - **Late Move Reductions (LMR)**: Logarithmic reduction table. Quiet moves searched late in the move list are reduced. Re-search at full depth if score exceeds alpha. Disabled for captures, promotions, killers, and check-giving moves. Continuous history adjustment: good history reduces less, bad history reduces more (histScore / 5000). Reduced less at PV nodes and when position is improving. **Cut-node adjustment**: +1 reduction at expected cut nodes (zero window search, not first move).
-- **Late Move Pruning (LMP)**: Skip quiet moves at shallow depths (depth 1-8) after searching enough moves (threshold from `lmpThreshold[depth]` table). When the position is improving and depth >= 3, thresholds are increased by 50% to search more moves. Disabled when in check or giving check.
+- **Late Move Pruning (LMP)**: Skip quiet moves at shallow depths (depth 1-8) after searching enough moves (threshold: `3 + depth*depth`). When the position is improving and depth >= 3, thresholds are increased by 50% to search more moves. Disabled when in check or giving check.
 - **SEE quiet pruning**: At depth <= 8, prune quiet moves where `SEEAfterQuiet` indicates the piece lands on a square where it would be captured for material loss exceeding `depth * 80` centipawns. Computed before MakeMove, applied after (to exempt check-giving moves). Exempts TT move, killers, counter-move, captures, promotions. Controlled by `SEEQuietPruneEnabled` toggle.
 - **SEE capture pruning**: At depth <= 6, prune captures where SEE < -depth*100 (losing too much material). Exempts TT move and positions where we might be in a mating attack. Applied before MakeMove.
 - **ProbCut**: At depth >= 5, if static eval + 100 >= beta + 200, search good captures (SEE >= 0) at reduced depth (depth-4) with raised beta (beta+200). If any capture scores above the raised beta, prune the node. Leverages accurate shallow searches to cut deep subtrees.
 - **History-based pruning**: At depth <= 3, prune quiet moves with deeply negative combined history + continuation history scores (threshold: -2000*depth). Only when position is NOT improving (protecting tactical lines). Exempts TT move, killers, counter-move, captures, promotions.
+- **Internal Iterative Reduction (IIR)**: At depth >= 6, when no TT move exists and not in check, reduce depth by 1. Searching without a good move to try first is less efficient, so we save time by searching shallower. Gated on `IIREnabled`.
 - **Singular extensions**: At depth >= 10, if the TT move is significantly better than alternatives (verified by a reduced-depth search excluding the TT move), extend the TT move by 1 ply.
 - **Principal Variation Search (PVS)**: After first move, search with zero window (alpha, alpha+1). Re-search with full window if it fails high.
 - **Aspiration windows**: Starting at depth 4, iterative deepening uses a narrow window (delta=25) around previous score. Widens progressively on fail high/low.
@@ -291,7 +293,7 @@ Simulates alternating captures on a single square. Builds gain array, then negam
 
 ### Opening Book
 
-Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifications (`testdata/eco.pgn`). `BuildOpeningBook()` processes games up to a configurable depth, tracking move frequency. `PickMove()` selects from book entries using weighted random selection. Integrated into UCI engine via `OwnBook` and `BookFile` options.
+Standard Polyglot `.bin` format. Any Polyglot book (downloaded or self-built) works. `LoadOpeningBook()` reads the binary file. `PickMove()` computes a Polyglot Zobrist hash (separate from the engine's internal hash), looks up book moves, and matches them against legal moves to handle castling encoding differences and en passant detection. `BuildOpeningBook()` can generate a Polyglot book from PGN games. Integrated into UCI engine via `OwnBook` and `BookFile` options. The Polyglot hash uses 781 fixed random numbers from the specification; the engine's internal Zobrist hash is unchanged.
 
 ### UCI Protocol
 
@@ -307,7 +309,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 ### Texel Tuner
 
-`cmd/tuner/main.go` — Two-phase system for optimizing ~1172 evaluation parameters.
+`cmd/tuner/main.go` — Two-phase system for optimizing ~1268 evaluation parameters.
 
 **Self-play data generation** (`selfplay.go`): Plays engine-vs-engine games to produce training data. Each game uses `SearchParallel()` with configurable time/depth per move. Opening diversity from `testdata/noob_3moves.epd` (150K positions). Game termination: checkmate, stalemate, 50-move rule, threefold repetition, insufficient material, or adjudication (eval exceeds ±1000cp for 5 consecutive moves). Positions are filtered (skip first 8 plies, skip checks, skip mate scores) and written as `FEN;score;result` lines (score is White-relative centipawns). Games run concurrently with independent Board+TT per game.
 
@@ -321,7 +323,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 
 **Parameter optimization** (`tuner.go`): Texel tuning via Adam optimizer. The `Tuner` holds the parameter catalog (no in-memory training data):
 
-- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (24), passed pawn enhancements (48), pawn structure (40), king attack weights (8), king safety table (100), pawn shield (5), pawn storm (32), same-side storm (8), misc (14).
+- `initTunerParams()` builds a flat parameter vector from engine globals: material (10), PST (768, pre-scaled by PST scale factors), mobility (132), piece bonuses (24), passed pawn enhancements (64), pawn structure (90), king attack weights (8), safe check bonuses (4), king safety table (100), pawn shield (5), pawn storm (32), same-side storm (8), endgame king (3), misc (20).
 - `computeTrace()` mirrors `Evaluate()` but records sparse MG/EG coefficients per parameter instead of computing a score. Each position produces a `TunerTrace` with `[]SparseEntry` for MG and EG contributions.
 - `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
 - `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
@@ -343,7 +345,7 @@ Binary format built from PGN games (e.g. `testdata/2600.pgn`) and ECO classifica
 - **EPD testing**: `-e` (EPD file), `-t` (ms per position), `-n` (max positions), `-d` (max depth), `-hash` (TT size MB), `-v` (verbose per-position output), `-threads` (Lazy SMP thread count)
 - **Benchmark**: `-benchmark` runs WAC, ECM, SBD, Arasan suites with continuous time-to-solve scoring. `-save FILE` writes JSON results, `-compare FILE` shows delta against a baseline. Reuses `-t`, `-hash`, `-d`, `-threads`.
 - **UCI mode**: `-uci`, with optional `-book` (opening book path), `-nnue` (NNUE network file), `-syzygy` (tablebase path)
-- **Book building**: `-buildbook`, `-pgn`, `-eco`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
+- **Book building**: `-buildbook`, `-pgn`, `-bookout`, `-bookdepth`, `-bookminfreq`, `-booktop`
 
 ## Key Gotchas
 

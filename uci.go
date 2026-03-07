@@ -246,17 +246,15 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 
 	// Probe opening book before search (skip when pondering)
 	if !params.ponder && e.book != nil {
-		if move, name, ok := e.book.PickMove(e.board.HashKey); ok {
-			if name != "" {
-				e.send("info string book: %s", name)
-			}
+		if move, ok := e.book.PickMove(&e.board); ok {
+			e.send("info string book move")
 			result := move.String()
 			if e.ponderOpt {
 				var tmpBoard Board
 				tmpBoard = e.board
 				tmpBoard.UndoStack = make([]UndoInfo, 0, 8)
 				tmpBoard.MakeMove(move)
-				if pm, _, pok := e.book.PickMove(tmpBoard.HashKey); pok {
+				if pm, pok := e.book.PickMove(&tmpBoard); pok {
 					result += " ponder " + pm.String()
 				}
 			}
@@ -405,17 +403,15 @@ func (e *UCIEngine) cmdPonderhit() {
 
 	// Check book now that the ponder position is confirmed real
 	if e.book != nil {
-		if move, name, ok := e.book.PickMove(e.board.HashKey); ok {
-			if name != "" {
-				e.send("info string book: %s", name)
-			}
+		if move, ok := e.book.PickMove(&e.board); ok {
+			e.send("info string book move")
 			result := move.String()
 			if e.ponderOpt {
 				var tmpBoard Board
 				tmpBoard = e.board
 				tmpBoard.UndoStack = make([]UndoInfo, 0, 8)
 				tmpBoard.MakeMove(move)
-				if pm, _, pok := e.book.PickMove(tmpBoard.HashKey); pok {
+				if pm, pok := e.book.PickMove(&tmpBoard); pok {
 					result += " ponder " + pm.String()
 				}
 			}

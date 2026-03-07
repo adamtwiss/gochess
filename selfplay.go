@@ -12,9 +12,10 @@ import (
 )
 
 // SelfPlayConfig controls self-play game generation for tuning data.
+// TimePerMove and FixedDepth are mutually exclusive: set one, leave the other zero.
 type SelfPlayConfig struct {
-	TimePerMove  time.Duration // search time per move (e.g. 200ms-1s)
-	MaxDepth     int           // depth cap per move (default 64)
+	TimePerMove  time.Duration // time-limited: search time per move (e.g. 200ms-1s)
+	FixedDepth   int           // depth-limited: search to exactly this depth per move
 	NumGames     int           // total games to generate
 	Threads      int           // search threads per game (Lazy SMP)
 	Concurrency  int           // parallel games
@@ -133,9 +134,12 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	}
 
 	tt := NewTranspositionTable(cfg.HashMB)
-	maxDepth := cfg.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = 64
+
+	// Determine search mode
+	depthLimited := cfg.FixedDepth > 0 && cfg.TimePerMove == 0
+	maxDepth := 64
+	if depthLimited {
+		maxDepth = cfg.FixedDepth
 	}
 
 	hashCounts := make(map[uint64]int)
@@ -144,7 +148,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	var positions []string
 	var scores []int
 	adjEvalCount := 0
-	lastAbsEval := 0
+	lastEval := 0
 	totalPlies := 0
 
 	// Count initial ply offset from the FEN (openings may start after 3 moves = 6 plies)
@@ -155,7 +159,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 
 	for totalPlies < 600 { // safety cap
 		// Check game termination
-		reason, result := gameOverResult(&b, hashCounts, adjEvalCount, lastAbsEval)
+		reason, result := gameOverResult(&b, hashCounts, adjEvalCount, lastEval)
 		if reason != GameNotOver {
 			return SelfPlayGame{
 				Positions: positions,
@@ -169,11 +173,16 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		// Search for best move
 		info := &SearchInfo{
 			StartTime: time.Now(),
-			MaxTime:   cfg.TimePerMove,
 			TT:        tt,
 		}
-		deadline := time.Now().Add(cfg.TimePerMove)
-		atomic.StoreInt64(&info.Deadline, deadline.UnixNano())
+		if depthLimited {
+			// No time limit — search to exact depth
+			info.MaxTime = 0
+		} else {
+			info.MaxTime = cfg.TimePerMove
+			deadline := time.Now().Add(cfg.TimePerMove)
+			atomic.StoreInt64(&info.Deadline, deadline.UnixNano())
+		}
 
 		bestMove, searchResult := b.SearchParallel(maxDepth, info, cfg.Threads)
 		if bestMove == NoMove {
@@ -194,10 +203,10 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		}
 		if absEval > 1000 {
 			adjEvalCount++
-			lastAbsEval = eval
+			lastEval = eval
 		} else {
 			adjEvalCount = 0
-			lastAbsEval = 0
+			lastEval = 0
 		}
 
 		// Record position for training data (with filtering)
@@ -378,7 +387,8 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 
 			game := PlaySelfPlayGame(cfg, opening, rng)
 
-			// Write positions to file
+			// Write positions to file and invoke callback under lock
+			// (callback must be serialized to avoid data races in caller)
 			mu.Lock()
 			for i, fen := range game.Positions {
 				score := 0
@@ -390,11 +400,10 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 			writer.Flush()
 			atomic.AddInt64(&totalPositions, int64(len(game.Positions)))
 			done := atomic.AddInt64(&gamesDone, 1)
-			mu.Unlock()
-
 			if onGameDone != nil {
 				onGameDone(int(done), game)
 			}
+			mu.Unlock()
 		}(i)
 	}
 

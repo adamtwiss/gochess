@@ -345,15 +345,14 @@ func TestUCISetOption(t *testing.T) {
 }
 
 func TestUCIBookMove(t *testing.T) {
-	// Build a book with a single entry at startpos
+	// Build a book with a single entry at startpos using Polyglot hash
 	var b Board
 	b.Reset()
-	hash := b.HashKey
-	moves := b.GenerateLegalMoves()
+	hash := PolyglotHash(&b)
 
-	// Find e2e4
+	// Find e2e4 and encode it as Polyglot
 	var e4 Move
-	for _, m := range moves {
+	for _, m := range b.GenerateLegalMoves() {
 		if m.String() == "e2e4" {
 			e4 = m
 			break
@@ -362,22 +361,11 @@ func TestUCIBookMove(t *testing.T) {
 	if e4 == NoMove {
 		t.Fatal("e2e4 not found in legal moves")
 	}
+	pm := moveToPolyglot(e4, &b)
 
-	entries := map[uint64]*BookEntry{
-		hash: {
-			Hash:  hash,
-			Name:  "Starting Position",
-			Moves: []BookMove{{Move: e4, Weight: 100}},
-		},
-	}
-	data, err := serializeBookEntries(entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	book, err := parseBookData(data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	book := buildPolyglotBook(map[uint64][]BookMove{
+		hash: {{RawMove: pm, Weight: 100}},
+	})
 
 	input := "position startpos\ngo depth 10\nquit\n"
 	var out bytes.Buffer
@@ -389,7 +377,7 @@ func TestUCIBookMove(t *testing.T) {
 	if !strings.Contains(output, "bestmove e2e4") {
 		t.Errorf("expected book move e2e4, output:\n%s", output)
 	}
-	if !strings.Contains(output, "info string book: Starting Position") {
+	if !strings.Contains(output, "info string book move") {
 		t.Errorf("expected book info string, output:\n%s", output)
 	}
 	// Should NOT contain "info depth" since book move skips search
@@ -401,23 +389,13 @@ func TestUCIBookMove(t *testing.T) {
 func TestUCIOwnBookOption(t *testing.T) {
 	var b Board
 	b.Reset()
-	hash := b.HashKey
+	hash := PolyglotHash(&b)
 	moves := b.GenerateLegalMoves()
+	pm := moveToPolyglot(moves[0], &b)
 
-	entries := map[uint64]*BookEntry{
-		hash: {
-			Hash:  hash,
-			Moves: []BookMove{{Move: moves[0], Weight: 100}},
-		},
-	}
-	data, err := serializeBookEntries(entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	book, err := parseBookData(data)
-	if err != nil {
-		t.Fatal(err)
-	}
+	book := buildPolyglotBook(map[uint64][]BookMove{
+		hash: {{RawMove: pm, Weight: 100}},
+	})
 
 	// Disable OwnBook, then search — should do a real search (no instant book move)
 	inR, inW := io.Pipe()
@@ -800,7 +778,7 @@ func TestUCIBookFileOption(t *testing.T) {
 	// Build a book file on disk
 	opts := BookBuildOptions{MaxPly: 10, MinFreq: 1, TopN: 4}
 	bookPath := t.TempDir() + "/test.bin"
-	if err := BuildOpeningBook("testdata/2600.pgn", "testdata/eco.pgn", bookPath, opts); err != nil {
+	if err := BuildOpeningBook("testdata/2600.pgn", bookPath, opts); err != nil {
 		t.Fatal(err)
 	}
 

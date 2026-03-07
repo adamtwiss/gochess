@@ -46,8 +46,8 @@ Run 'tuner <command> -h' for command-specific options.
 func runSelfPlay(args []string) {
 	fs := flag.NewFlagSet("selfplay", flag.ExitOnError)
 	games := fs.Int("games", 1000, "number of games to play")
-	timeMS := fs.Int("time", 200, "time per move in milliseconds")
-	depth := fs.Int("depth", 64, "max search depth per move")
+	timeMS := fs.Int("time", 0, "time per move in milliseconds (mutually exclusive with -depth)")
+	depth := fs.Int("depth", 0, "fixed search depth per move (mutually exclusive with -time)")
 	threads := fs.Int("threads", 1, "search threads per game (Lazy SMP)")
 	concurrency := fs.Int("concurrency", 1, "number of games to play concurrently")
 	openings := fs.String("openings", "testdata/noob_3moves.epd", "EPD file with opening positions")
@@ -58,11 +58,22 @@ func runSelfPlay(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner selfplay [options]\n\nOptions:\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "\nUse -time OR -depth (mutually exclusive). Default is -time 200.\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat\n")
+		fmt.Fprintf(os.Stderr, "  tuner selfplay -games 20000 -depth 8 -concurrency 6 -output training.dat\n")
 		fmt.Fprintf(os.Stderr, "  tuner selfplay -games 20000 -time 200 -concurrency 6 -nnue net.nnue -output training.dat\n")
 	}
 	fs.Parse(args)
+
+	// Validate mutual exclusivity; default to -time 200 if neither specified
+	if *timeMS > 0 && *depth > 0 {
+		fmt.Fprintf(os.Stderr, "Error: -time and -depth are mutually exclusive. Use one or the other.\n")
+		os.Exit(1)
+	}
+	if *timeMS == 0 && *depth == 0 {
+		*timeMS = 200 // default: time-limited at 200ms
+	}
 
 	// Load NNUE network if specified
 	var nnueNet *chess.NNUENet
@@ -79,7 +90,7 @@ func runSelfPlay(args []string) {
 
 	cfg := chess.SelfPlayConfig{
 		TimePerMove:  time.Duration(*timeMS) * time.Millisecond,
-		MaxDepth:     *depth,
+		FixedDepth:   *depth,
 		NumGames:     *games,
 		Threads:      *threads,
 		Concurrency:  *concurrency,
@@ -91,8 +102,11 @@ func runSelfPlay(args []string) {
 
 	fmt.Printf("Self-play configuration:\n")
 	fmt.Printf("  Games:       %d\n", cfg.NumGames)
-	fmt.Printf("  Time/move:   %v\n", cfg.TimePerMove)
-	fmt.Printf("  Max depth:   %d\n", cfg.MaxDepth)
+	if cfg.FixedDepth > 0 {
+		fmt.Printf("  Mode:        depth-limited (depth %d)\n", cfg.FixedDepth)
+	} else {
+		fmt.Printf("  Mode:        time-limited (%v/move)\n", cfg.TimePerMove)
+	}
 	fmt.Printf("  Threads:     %d (per game)\n", cfg.Threads)
 	fmt.Printf("  Concurrency: %d (parallel games)\n", cfg.Concurrency)
 	fmt.Printf("  Openings:    %s\n", cfg.OpeningsFile)

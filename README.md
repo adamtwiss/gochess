@@ -12,7 +12,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Optional NNUE evaluation (HalfKP architecture, SIMD-accelerated on x86-64 and ARM64)
 - Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
 - Syzygy endgame tablebase support (3-4-5-6 piece, via bundled Fathom C library)
-- Opening book support (built from PGN databases)
+- Polyglot opening book support (standard .bin format, compatible with any Polyglot book)
 - Full UCI protocol support for use with chess GUIs
 - EPD test suite runner (WAC, ECM)
 
@@ -29,7 +29,7 @@ The engine bundles the [Fathom](https://github.com/jdart1/Fathom) C library for 
 
 ## Usage
 
-The engine has three modes of operation: UCI mode, EPD test suite runner, and opening book builder.
+The engine has five modes of operation: interactive CLI (default), UCI mode, EPD test suite runner, benchmark, and opening book builder.
 
 ### UCI Mode
 
@@ -72,7 +72,7 @@ To add the engine to your GUI:
 3. Add a new engine and point it to the `chess` binary
 4. The GUI will communicate with the engine over UCI automatically
 
-To use the opening book with a GUI, either set the `OwnBook` and `BookFile` UCI options through the GUI's engine configuration, or start the engine with the `-book` flag:
+To use an opening book with a GUI, either set the `OwnBook` and `BookFile` UCI options through the GUI's engine configuration, or start the engine with the `-book` flag. Any standard Polyglot `.bin` book file will work:
 
 ```bash
 ./chess -book book.bin
@@ -108,44 +108,49 @@ Run standard test suites (e.g., WAC, ECM) to evaluate engine strength:
 
 ### Building an Opening Book
 
-Build an opening book from a PGN database of games:
+Build a Polyglot `.bin` opening book from a PGN database of games:
 
 ```bash
-./chess -buildbook -pgn testdata/2600.pgn -eco testdata/eco.pgn -bookout book.bin
+./chess -buildbook -pgn testdata/2600.pgn -bookout book.bin
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-pgn` | | PGN file with games (required) |
-| `-eco` | | ECO PGN file for opening names |
 | `-bookout` | book.bin | Output file path |
 | `-bookdepth` | 30 | Max full moves to include |
 | `-bookminfreq` | 3 | Minimum frequency to include a move |
 | `-booktop` | 8 | Maximum moves per position |
 
+You can also use any pre-built Polyglot `.bin` book downloaded from the internet.
+
 ### Texel Tuner
 
-The tuner optimizes ~1147 evaluation parameters (material values, piece-square tables, mobility, positional bonuses, pawn structure, king safety table, pawn shield, king attack weights, trade bonuses) by minimizing prediction error against game outcomes. Training data is preprocessed into a compact binary cache (`.tbin`) and streamed from disk during optimization, keeping memory usage constant regardless of dataset size. The workflow has two steps: generate training data via self-play, then run gradient-descent optimization.
+The tuner optimizes ~1268 evaluation parameters (material values, piece-square tables, mobility, positional bonuses, pawn structure, king safety table, pawn shield, king attack weights, trade bonuses) by minimizing prediction error against game outcomes. Training data is preprocessed into a compact binary cache (`.tbin`) and streamed from disk during optimization, keeping memory usage constant regardless of dataset size. The workflow has two steps: generate training data via self-play, then run gradient-descent optimization.
 
 #### Step 1: Generate training data
 
 ```bash
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat
+./tuner selfplay -games 20000 -depth 8 -concurrency 6 -output training.dat
 ```
 
 This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the search score and game result in `FEN;score;result` format (score is White-relative centipawns, result is 1.0/0.5/0.0 from White's perspective). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
 
+Use `-time` for time-limited or `-depth` for depth-limited search (mutually exclusive). Depth-limited mode ensures consistent data quality across different machines.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-games` | 1000 | Number of games to play |
-| `-time` | 200 | Time per move in milliseconds |
+| `-time` | 0 | Time per move in ms (mutually exclusive with `-depth`) |
+| `-depth` | 0 | Fixed search depth per move (mutually exclusive with `-time`) |
 | `-concurrency` | 1 | Parallel games (set to ~CPU core count) |
 | `-threads` | 1 | Search threads per game (Lazy SMP) |
 | `-hash` | 16 | TT size in MB per game |
 | `-openings` | `testdata/noob_3moves.epd` | EPD file with starting positions |
 | `-output` | `training.dat` | Output file for training data |
 
-With `-time 200 -concurrency 6`, expect roughly 1-2 games/second. 20K games produces ~1-2M training positions.
+If neither `-time` nor `-depth` is specified, defaults to `-time 200`. With `-time 200 -concurrency 6`, expect roughly 1-2 games/second. 20K games produces ~1-2M training positions.
 
 #### Step 2: Tune parameters
 
@@ -190,7 +195,7 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 
 ### NNUE Evaluation
 
-The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKP architecture: 40960 inputs (king-square × piece-type × piece-square), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→1 output. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
+The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKP architecture: 40960 inputs (king-square × piece-type × piece-square), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→1 output. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
 
 #### Training an NNUE network
 
