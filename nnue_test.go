@@ -1,6 +1,8 @@
 package chess
 
 import (
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -657,5 +659,410 @@ func BenchmarkNNUEForwardSIMD(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		net.Evaluate(acc, White)
+	}
+}
+
+// compareAccumulators checks that two accumulators match and reports
+// mismatches via t.Fatalf with the given context message.
+func compareAccumulators(t *testing.T, inc, full *NNUEAccumulator, context string) {
+	t.Helper()
+	for i := 0; i < NNUEHiddenSize; i++ {
+		if inc.White[i] != full.White[i] {
+			t.Fatalf("%s: White[%d] inc=%d full=%d", context, i, inc.White[i], full.White[i])
+		}
+		if inc.Black[i] != full.Black[i] {
+			t.Fatalf("%s: Black[%d] inc=%d full=%d", context, i, inc.Black[i], full.Black[i])
+		}
+	}
+}
+
+// TestNNUEIncrementalEdgeCases tests NNUE accumulator consistency across
+// castling, en passant, promotions, captures, null moves, and long
+// move sequences. Uses the real net.nnue for maximum fidelity.
+func TestNNUEIncrementalEdgeCases(t *testing.T) {
+	// Try to load the real network; fall back to synthetic if unavailable.
+	net, err := LoadNNUE("/home/adam/code/gochess/net.nnue")
+	if err != nil {
+		t.Logf("net.nnue not available (%v), using synthetic weights", err)
+		net = &NNUENet{}
+		for i := range net.InputBiases {
+			net.InputBiases[i] = 5
+		}
+		for i := 0; i < NNUEInputSize; i++ {
+			for j := 0; j < NNUEHiddenSize; j++ {
+				net.InputWeights[i][j] = int16((i*7 + j*13) % 100)
+			}
+		}
+	}
+
+	// Helper: set up board with NNUE from a FEN, play a sequence of UCI
+	// moves, checking incremental vs full recompute after each move, then
+	// unmake all and verify restoration.
+	testSequence := func(t *testing.T, fen string, uciMoves []string) {
+		t.Helper()
+		var b Board
+		b.NNUENet = net
+		b.NNUEAcc = NewNNUEAccumulatorStack(256)
+		b.SetFEN(fen)
+
+		// Verify initial state
+		initAcc := &NNUEAccumulator{}
+		net.RecomputeAccumulator(initAcc, &b)
+		compareAccumulators(t, b.NNUEAcc.Current(), initAcc, "initial position")
+
+		// Play each move
+		played := make([]Move, 0, len(uciMoves))
+		for i, uci := range uciMoves {
+			m, err := b.ParseUCIMove(uci)
+			if err != nil {
+				t.Fatalf("move %d (%s): parse error: %v", i, uci, err)
+			}
+			b.MakeMove(m)
+			played = append(played, m)
+
+			fullAcc := &NNUEAccumulator{}
+			net.RecomputeAccumulator(fullAcc, &b)
+			compareAccumulators(t, b.NNUEAcc.Current(), fullAcc,
+				fmt.Sprintf("after move %d (%s)", i, uci))
+		}
+
+		// Unmake all moves in reverse and verify at each step
+		for i := len(played) - 1; i >= 0; i-- {
+			b.UnmakeMove(played[i])
+			fullAcc := &NNUEAccumulator{}
+			net.RecomputeAccumulator(fullAcc, &b)
+			compareAccumulators(t, b.NNUEAcc.Current(), fullAcc,
+				fmt.Sprintf("after unmake move %d (%s)", i, uciMoves[i]))
+		}
+
+		// Final state should match initial
+		compareAccumulators(t, b.NNUEAcc.Current(), initAcc, "back to initial position")
+	}
+
+	t.Run("WhiteKingsideCastle", func(t *testing.T) {
+		// 1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.O-O
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+			[]string{"e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5", "e1g1"},
+		)
+	})
+
+	t.Run("WhiteQueensideCastle", func(t *testing.T) {
+		// 1.d4 d5 2.Nc3 Nc6 3.Bf4 Bf5 4.Qd2 Qd7 5.O-O-O
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+			[]string{"d2d4", "d7d5", "b1c3", "b8c6", "c1f4", "c8f5", "d1d2", "d8d7", "e1c1"},
+		)
+	})
+
+	t.Run("BlackKingsideCastle", func(t *testing.T) {
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+			[]string{"e2e4", "e7e5", "g1f3", "g8f6", "f1c4", "f8c5", "d2d3", "e8g8"},
+		)
+	})
+
+	t.Run("BlackQueensideCastle", func(t *testing.T) {
+		testSequence(t,
+			"r3kbnr/pppqpppp/2n1b3/3p4/3P4/2N1B3/PPPQPPPP/R3KBNR b KQkq - 6 4",
+			[]string{"e8c8"},
+		)
+	})
+
+	t.Run("EnPassantWhite", func(t *testing.T) {
+		// White pawn on e5, Black plays d7d5, White captures en passant e5d6
+		testSequence(t,
+			"rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+			[]string{"e5d6"},
+		)
+	})
+
+	t.Run("EnPassantBlack", func(t *testing.T) {
+		// Black pawn on d4, White plays e2e4, Black captures en passant d4e3
+		testSequence(t,
+			"rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 3",
+			[]string{"d4e3"},
+		)
+	})
+
+	t.Run("EnPassantSequence", func(t *testing.T) {
+		// Full game leading to en passant
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+			[]string{"e2e4", "d7d5", "e4e5", "f7f5", "e5f6"}, // en passant on f6
+		)
+	})
+
+	t.Run("PromotionQueen", func(t *testing.T) {
+		// White pawn on e7, promote to queen
+		testSequence(t,
+			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e7e8q"},
+		)
+	})
+
+	t.Run("PromotionKnight", func(t *testing.T) {
+		testSequence(t,
+			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e7e8n"},
+		)
+	})
+
+	t.Run("PromotionRook", func(t *testing.T) {
+		testSequence(t,
+			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e7e8r"},
+		)
+	})
+
+	t.Run("PromotionBishop", func(t *testing.T) {
+		testSequence(t,
+			"4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e7e8b"},
+		)
+	})
+
+	t.Run("CapturePromotion", func(t *testing.T) {
+		// White pawn on e7 captures on d8 and promotes
+		testSequence(t,
+			"3rk3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e7d8q"},
+		)
+	})
+
+	t.Run("CapturePromotionKnight", func(t *testing.T) {
+		testSequence(t,
+			"3rk3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e7d8n"},
+		)
+	})
+
+	t.Run("BlackPromotion", func(t *testing.T) {
+		testSequence(t,
+			"4k3/8/8/8/8/8/4p3/4K3 b - - 0 1",
+			[]string{"e2e1q"},
+		)
+	})
+
+	t.Run("BlackCapturePromotion", func(t *testing.T) {
+		testSequence(t,
+			"4k3/8/8/8/8/8/4p3/3RK3 b - - 0 1",
+			[]string{"e2d1q"},
+		)
+	})
+
+	t.Run("SimpleCaptures", func(t *testing.T) {
+		// Italian Game with captures
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+			[]string{
+				"e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6",
+				"f3g5", // Ng5 threatening f7
+				"d7d5", // d5 counter
+				"e4d5", // exd5 capture
+				"c6d4", // Nxd4 capture
+			},
+		)
+	})
+
+	t.Run("ManyCaptures", func(t *testing.T) {
+		// Position with lots of captures available
+		testSequence(t,
+			"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+			[]string{
+				"f3e5", // Nxe5 capture
+				"c6e5", // Nxe5 capture back
+				"d2d4", // d4
+				"e5c4", // Nxc4 capture bishop
+			},
+		)
+	})
+
+	t.Run("NullMoveDoesNotCorrupt", func(t *testing.T) {
+		var b Board
+		b.NNUENet = net
+		b.NNUEAcc = NewNNUEAccumulatorStack(256)
+		b.SetFEN("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
+
+		beforeAcc := &NNUEAccumulator{}
+		net.RecomputeAccumulator(beforeAcc, &b)
+		compareAccumulators(t, b.NNUEAcc.Current(), beforeAcc, "before null move")
+
+		b.MakeNullMove()
+
+		// After null move, accumulator should still be valid
+		// (same position, just side flipped)
+		nullAcc := &NNUEAccumulator{}
+		net.RecomputeAccumulator(nullAcc, &b)
+		compareAccumulators(t, b.NNUEAcc.Current(), nullAcc, "during null move")
+
+		// Make a move inside null move, verify
+		m, _ := b.ParseUCIMove("g1f3")
+		b.MakeMove(m)
+		fullAcc := &NNUEAccumulator{}
+		net.RecomputeAccumulator(fullAcc, &b)
+		compareAccumulators(t, b.NNUEAcc.Current(), fullAcc, "move after null move")
+
+		b.UnmakeMove(m)
+		compareAccumulators(t, b.NNUEAcc.Current(), nullAcc, "unmake after null move")
+
+		b.UnmakeNullMove()
+		compareAccumulators(t, b.NNUEAcc.Current(), beforeAcc, "after unmake null move")
+	})
+
+	t.Run("LongGameSequence", func(t *testing.T) {
+		// Scholar's mate + extra moves to stress test
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+			[]string{
+				"e2e4", "e7e5",
+				"d1h5", "b8c6",
+				"f1c4", "g8f6",
+				"h5f7", // Qxf7 capture, check
+			},
+		)
+	})
+
+	t.Run("KingMovesThenCapture", func(t *testing.T) {
+		// Test that king moves (full recompute) followed by non-king
+		// incremental updates work correctly in sequence.
+		testSequence(t,
+			"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+			[]string{
+				"e7e5",
+				"e1e2", // White king move (full recompute)
+				"d7d5", // Black pawn push
+				"e2e3", // White king move again
+				"d5e4", // Black captures pawn
+				"e3e4", // White king captures pawn (king move + capture)
+			},
+		)
+	})
+
+	t.Run("CastleThenCaptures", func(t *testing.T) {
+		// Castle early then play captures — tests that castle's
+		// king-move recompute properly sets up for subsequent incremental.
+		testSequence(t,
+			"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+			[]string{
+				"e1g1",  // White castles kingside (king move -> recompute)
+				"c6d4",  // Nxd4
+				"f3d4",  // Nxd4 capture
+				"e5d4",  // exd4 capture
+			},
+		)
+	})
+
+	t.Run("RookCapturedOnHomeSquare", func(t *testing.T) {
+		// Test capturing a rook on its home square (castling rights change)
+		testSequence(t,
+			"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1",
+			[]string{
+				"a1a8", // Rook captures rook on a8 (removes both castling rights)
+			},
+		)
+	})
+
+	t.Run("DoubleKingMovesAlternating", func(t *testing.T) {
+		// Both kings moving alternately — each triggers full recompute
+		testSequence(t,
+			"4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{
+				"e1d2", "e8d7",
+				"d2c3", "d7c6",
+				"c3b4", "c6b5",
+				"b4a5", "b5a6",
+			},
+		)
+	})
+
+	t.Run("PromotionSequenceMultiple", func(t *testing.T) {
+		// Both sides promote
+		testSequence(t,
+			"4k3/1P6/8/8/8/8/1p6/4K3 w - - 0 1",
+			[]string{
+				"b7b8q", // White promotes queen
+				"b2b1q", // Black promotes queen
+			},
+		)
+	})
+}
+
+// TestNNUEIncrementalRandomGames plays random games with NNUE attached,
+// checking incremental vs full recompute at every ply. This is a
+// fuzz-style coverage test.
+func TestNNUEIncrementalRandomGames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping random game test in short mode")
+	}
+
+	// Use synthetic net (real net not required for correctness check)
+	net := &NNUENet{}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(i % 50)
+	}
+	for i := 0; i < NNUEInputSize; i++ {
+		for j := 0; j < NNUEHiddenSize; j++ {
+			net.InputWeights[i][j] = int16((i*7 + j*13 + 3) % 127)
+		}
+	}
+
+	rng := rand.New(rand.NewSource(42))
+	numGames := 20
+	maxPly := 200
+
+	for g := 0; g < numGames; g++ {
+		var b Board
+		b.NNUENet = net
+		b.NNUEAcc = NewNNUEAccumulatorStack(512)
+		b.Reset()
+
+		played := make([]Move, 0, maxPly)
+
+		for ply := 0; ply < maxPly; ply++ {
+			moves := b.GenerateLegalMoves()
+			if len(moves) == 0 {
+				break // checkmate or stalemate
+			}
+
+			m := moves[rng.Intn(len(moves))]
+			b.MakeMove(m)
+			played = append(played, m)
+
+			fullAcc := &NNUEAccumulator{}
+			net.RecomputeAccumulator(fullAcc, &b)
+			incAcc := b.NNUEAcc.Current()
+			for i := 0; i < NNUEHiddenSize; i++ {
+				if incAcc.White[i] != fullAcc.White[i] || incAcc.Black[i] != fullAcc.Black[i] {
+					t.Fatalf("game %d, ply %d, move %s: accumulator mismatch at [%d] "+
+						"inc W=%d/B=%d full W=%d/B=%d",
+						g, ply, m.String(), i,
+						incAcc.White[i], incAcc.Black[i],
+						fullAcc.White[i], fullAcc.Black[i])
+				}
+			}
+
+			// 50-move rule or threefold would make games too long
+			if b.HalfmoveClock >= 100 {
+				break
+			}
+		}
+
+		// Unmake all moves and verify final state
+		for i := len(played) - 1; i >= 0; i-- {
+			b.UnmakeMove(played[i])
+		}
+		fullAcc := &NNUEAccumulator{}
+		net.RecomputeAccumulator(fullAcc, &b)
+		incAcc := b.NNUEAcc.Current()
+		for i := 0; i < NNUEHiddenSize; i++ {
+			if incAcc.White[i] != fullAcc.White[i] || incAcc.Black[i] != fullAcc.Black[i] {
+				t.Fatalf("game %d, after full unmake: accumulator mismatch at [%d] "+
+					"inc W=%d/B=%d full W=%d/B=%d",
+					g, i,
+					incAcc.White[i], incAcc.Black[i],
+					fullAcc.White[i], fullAcc.Black[i])
+			}
+		}
 	}
 }
