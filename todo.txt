@@ -1,6 +1,433 @@
+# NextUp
+
+* Swtich our zobrist state to be the Polyglot standard, so we can use standard opening books.
+* scoreblend (Texel) and lambda (NNUE) are the same thing but inverted. Bit confusing 
 
 
 
+NNUE 7th March
+
+  Model topology changes (wider accumulator, king buckets) are relatively easy to implement — we change some constants and retrain. The code
+  infrastructure is already there. Going to 512 accumulators doubles the feature transformer capacity and typically gives +50-100 Elo in other
+  engines. King buckets (e.g., mirroring the board so king is always on files a-d, giving 32 buckets instead of 64 king squares) reduce the
+  feature space while making the features more meaningful.
+
+  Input feature changes are a different beast. Our current HalfKP uses:
+  king_square × piece_type × piece_square = 64 × 10 × 64 = 40960 features
+
+  What ChatGPT is describing — threat features, pawn structure motifs, attack maps — is essentially trying to hand-engineer what the accumulator
+  already learns automatically. The whole point of the NNUE accumulator is that it discovers these patterns from data. Adding explicit threat
+  features would be like telling the network "here's a hint about what to look for."
+
+  The evidence from Stockfish's evolution is telling:
+  - They went from HalfKP → HalfKA (added king-king info) — modest gain
+  - Then to HalfKAv2 with king buckets — bigger gain
+  - Then wider accumulators (256→512→1024) — consistent gains
+  - They never added explicit threat/mobility/pawn-structure input features
+
+  The reason is that the accumulator naturally learns these patterns, and adding explicit features adds complexity without giving the network
+  information it couldn't discover on its own. The accumulator neurons we discussed earlier — the ones that specialize into "knight outpost
+  detector" or "king attack pattern" — those are the threat and pawn structure features, just learned rather than engineered.
+
+  My ranking for our engine:
+
+  1. More/better training data — free Elo, no code changes
+  2. Wider accumulator (512) — straightforward, proven gains
+  3. King buckets — reduces feature space, helps the network generalize across mirrored positions
+  4. HalfKA — adds king-to-king relationship
+  5. Explicit tactical features — probably not worth it given the above
+
+  The topology changes (2-4) are where the real architectural gains are. The explicit features approach is more of a "classical eval thinking
+  applied to neural nets" — it works but it's swimming against the current of what makes NNUE powerful in the first place.
+
+  ---
+  Regarding your point about search tuning — you're absolutely right. The search parameters were tuned ~200 Elo ago against classical eval,
+  largely using benchmark scores as the signal. Now that:
+
+  1. NNUE changes the search landscape — different eval characteristics (more continuous, potentially less extreme in some positions) mean the
+  optimal pruning thresholds, reduction formulas, and extension criteria may be different
+  2. Self-play is a better signal — benchmark scores test if you find the right move, but self-play tests if you actually win more games. A
+  parameter change could find fewer "correct" moves on benchmarks but play stronger overall
+
+  The right order is:
+  1. Get NNUE as strong as possible first — more data, potentially architectural improvements (HalfKA, king buckets), self-play training loop
+  2. Then re-tune search parameters with NNUE active — using self-play Elo as the fitness function
+
+  Some search parameters that are likely to shift with NNUE:
+  - Futility/RFP margins — NNUE scores may have different centipawn calibration than classical eval
+  - LMR reductions — if NNUE eval is more accurate, you can prune more aggressively (or less, if it's smoother)
+  - Null move verification depth — NNUE may handle zugzwang differently
+  - Passed pawn extensions — as we discussed, NNUE may need more search depth to resolve endgame patterns that classical eval handles statically
+  - SEE thresholds — if NNUE piece values differ from the hardcoded SEE values
+
+  The self-play approach for search tuning would be something like SPRT testing individual parameter changes — pick a parameter, try a few values,
+   run 1000+ game matches to get statistically significant Elo differences. Slower than benchmark comparison but much more reliable.
+
+Claude March 6th
+
+  1. Time management fixes (high impact, low effort)
+
+  You're still losing games on time in gauntlets — that's free Elo thrown
+   away. The engine already has soft/hard deadlines and stability
+  scaling, but the MoveOverhead handling and time allocation for short
+  time controls seems off. Fixing this is pure Elo with no search/eval
+  risk.
+
+  2. Syzygy tablebases (high impact, moderate effort)
+
+  Your endgame is the weakest area by far (8% on Eigenmann endgame
+  positions). Tablebases give perfect play with 6-7 pieces and eliminate
+  entire classes of drawn/lost endgames the engine currently misplays. Go
+   libraries exist for probing. This also fixes the "exchanging down to
+  fortress positions" problem you noted.
+
+  3. NPS / speed (moderate impact, moderate effort)
+
+  You're 50-100% slower than comparable engines. The biggest single win
+  identified was precomputed check squares — replacing the full InCheck()
+   call after every MakeMove with a single bitboard AND. Estimated 5-10%
+  NPS gain. The pawn/eval table bucket-associativity improvements (2-way
+  pawn, 4-way eval cache) are also low-hanging fruit for hit rate.
+
+  4. Remaining search pruning gaps (small-moderate impact, low effort)
+
+  From the todo.txt "minor gaps" not yet done:
+  - History-based pruning — already partially implemented but could be
+  more aggressive
+  - Razoring depth extension (2→3)
+  - IIR stale TT entry handling
+
+  These are small individually but compound.
+
+  My recommendation
+
+  Time management → Syzygy → NPS in that order. Time management is the
+  most urgent since you're literally losing won games. Syzygy is the
+  biggest structural weakness. NPS compounds with everything else.
+
+
+Claude's latest ideas (March 3rd)
+
+ Search Review: Findings & Recommendations
+
+  Based on a detailed comparison of our implementation against Stockfish (SF18 era), Ethereal, Weiss, and Berserk.
+  Organized by estimated impact.
+
+  ---
+  HIGH IMPACT
+
+  1. History Gravity Formula (missing)
+
+  Current: We use depth * depth for both bonus and malus, clamped to ±32000. Values accumulate without natural decay — a
+   move that gets a big bonus early stays high even as it becomes stale.
+
+  Best practice: All top engines use the "gravity" formula:
+  newValue = oldValue + bonus - oldValue * abs(bonus) / D
+  This naturally decays old values when new evidence arrives. Stockfish uses different D constants per table type (7183
+  for butterfly, 10692 for capture history, 30000 for continuation). Ethereal uses 16384 uniformly. Weiss uses per-type
+  divisors (4373-16384).
+
+  Also: Stockfish uses asymmetric bonus/malus — the penalty for moves tried before cutoff is ~1.5x larger than the bonus
+   for the cutoff move itself (stat_malus > stat_bonus). We use the same depth*depth for both.
+
+  Recommendation: Implement gravity formula. Start with a uniform D=16384. Then consider asymmetric bonus (linear
+  min(251*depth-267, 2418)) / malus (linear min(532*depth-163, 693)). This affects move ordering quality everywhere —
+  LMR accuracy, killer relevance, quiet scoring.
+
+  2. Continuation History Depth (1-ply → 2+ plies)
+
+  Current: We track only 1-ply-back continuation history (ContHistory[prevPiece][prevTo][curPiece][curTo]).
+
+  Best practice: Ethereal tracks 2 plies (1+2). Weiss tracks 3 (1+2+4). Berserk tracks 4 (1+2+4+6). Stockfish tracks 6
+  with tuned per-ply weights (1106, 705, 316, 572, 126, 427).
+
+  The 2-ply-back "follow-up history" captures "after I played move X, two plies later move Y tends to be good" — this is
+   the natural response pattern (my move, opponent's reply, my follow-up). It's consistently the second-highest-weighted
+   table across all engines.
+
+  Recommendation: Add 2-ply-back continuation history first. This is the highest-value addition. Then consider 4-ply if
+  testing shows gains.
+
+  3. Singular Extensions: Depth Gate Too High (10 → 6-8)
+
+  Current: depth >= 10, margin ttScore - depth*3.
+
+  Best practice: Stockfish uses depth >= 6, Berserk depth >= 6, Weiss depth > 4, Ethereal depth >= 8. Our gate of 10
+  means we miss singular extensions at depths 6-9, which is a significant portion of the search tree.
+
+  Also: Our negative extensions are only -1. Stockfish does -2 to -3. Berserk does -2 at cut nodes. More aggressive
+  negative extensions (multicut) prune large subtrees when alternatives are strong.
+
+  Recommendation: Lower to depth >= 7 or depth >= 8 and test. Consider increasing negative extension to -2 at cut nodes.
+
+  4. Reverse Futility Pruning: Depth Limit Too Low (6 → 8-10)
+
+  Current: depth <= 6, margin depth * 120.
+
+  Best practice: Stockfish goes up to depth < 16. Berserk uses depth <= 10. Ethereal uses depth <= 8. Our margin of
+  depth * 120 is reasonable for shallow depths, but we're leaving pruning on the table at depths 7-10.
+
+  Also: Stockfish scales the margin by improving (reduces margin when improving, making it more conservative). Weiss
+  adjusts by opponent's history score. Berserk adds opponentDeclining bonus.
+
+  Recommendation: Raise to depth <= 8 first, test. Consider making margin improving-aware: e.g., depth * 120 - 60 *
+  improving.
+
+  5. Aspiration Windows: Too Wide (25 → 8-12)
+
+  Current: Initial delta of 25. Widening: 25→100→500→Infinity (discrete jumps).
+
+  Best practice: Stockfish starts at 5 (+ thread diversification). Berserk uses 8. Ethereal uses 10. Weiss uses 9 +
+  prevScore²/16384. All use multiplicative widening (1.25x-1.5x per fail) rather than discrete jumps.
+
+  Smaller initial windows mean more positions resolve exactly on the first try, saving the overhead of re-searches.
+  Gradual widening avoids the cost of jumping straight to a wide window.
+
+  Recommendation: Reduce to delta=12, widen with delta += delta/2 (1.5x per fail, like Ethereal). This is low-risk,
+  high-frequency improvement.
+
+  ---
+  MEDIUM IMPACT
+
+  6. LMR: Captures Not Reduced
+
+  Current: We skip LMR entirely for captures. Only quiet moves are reduced.
+
+  Best practice: All four reference engines reduce captures. Ethereal uses a separate formula (R = 3 - captHist/4952).
+  Weiss has a separate, gentler LMR table for captures. Berserk reduces non-PV captures. Stockfish runs captures through
+   the same unified LMR pipeline.
+
+  Bad captures (low capture history) searched late in the move list are wasting full-depth effort.
+
+  Recommendation: Add capture LMR with a conservative approach: only reduce captures with bad capture history, at non-PV
+   nodes, with a smaller base reduction than quiets.
+
+  7. LMR: Missing Adjustment Terms
+
+  Current: We adjust for: PV (-1), cut node (+1), improving (-1), history (histScore/5000). That's 4 terms.
+
+  Best practice additions worth considering:
+  - TT move present (-1): When we have a TT move, the position is better understood, so reduce other moves more
+  cautiously. Stockfish weights this heavily (-2069 in fractional).
+  - ALL-node detection (+1): At expected all-nodes (not PV, not cut), moves are likely to fail low — reduce more
+  aggressively.
+  - Killer/counter exemption: We already exempt killers from LMR entirely. Some engines instead reduce them less
+  (Berserk: -2 for killers/counters). Our current approach (full exemption) may be too generous.
+
+  Also: Our history divisor of 5000 is in the right ballpark (Ethereal uses 6167, Weiss 8870, Berserk ~8192). Could be
+  worth tuning.
+
+  8. Null Move: Only at Cut Nodes
+
+  Current: We try null move at any non-root, non-check node with non-pawn material.
+
+  Best practice: Stockfish only does null move at cut nodes. The reasoning: null move is testing "is my position so good
+   that even passing gives me a beta cutoff?" This is the definition of a cut node. At ALL-nodes, null move wastes time
+  because the position is likely failing low anyway.
+
+  Also: Our reduction R = 3 + depth/3 + min(3, (eval-beta)/200) is less aggressive than Stockfish's R = 7 + depth/3. We
+  could increase the base.
+
+  Recommendation: Gate null move on cut nodes (or at least test it). Increase base R to 4 or 5.
+
+  9. IIR: Depth Gate Too Low (5 → 6)
+
+  Current: depth >= 5 when no TT move and not in check.
+
+  Best practice: Stockfish uses depth >= 6 with an additional guard on ALL-node status. Applying IIR too aggressively at
+   shallow depths can hurt because you're reducing already-short searches.
+
+  Recommendation: Raise to depth >= 6. Minor but easy to test.
+
+  10. Futility Pruning: Margin Too Large
+
+  Current: staticEval + depth*200 <= alpha. At depth 6, that's a 1200cp margin — extremely wide. This means we almost
+  never prune.
+
+  Best practice: Stockfish uses lmrDepth * 120 (uses post-LMR depth, not raw depth). Ethereal uses 77 + lmrDepth * 52.
+  Berserk uses 66 + 44 * lmrDepth.
+
+  The key insight is using lmrDepth (depth after LMR reduction) rather than raw depth. Most moves at depth 6 will be
+  reduced to depth 2-3 by LMR, so the effective futility margin should be based on that reduced depth.
+
+  Recommendation: Switch to lmrDepth-based margin. Start with 100 + lmrDepth * 100 or similar.
+
+  11. SEE Quiet Pruning: Linear → Quadratic Margin
+
+  Current: -depth * 80 (linear). At depth 8: -640cp.
+
+  Best practice: Stockfish uses -25 * lmrDepth² (quadratic). Berserk uses -13.8 * lmrDepth². Ethereal uses -64 * depth
+  (linear but tighter).
+
+  Quadratic scaling makes shallow pruning tighter (more aggressive) while keeping deep pruning conservative. At
+  lmrDepth=2: -100cp (Stockfish) vs -160cp (ours). At lmrDepth=5: -625cp vs -400cp.
+
+  Recommendation: Switch to quadratic: -20 * depth * depth or similar.
+
+  ---
+  LOWER IMPACT (but easy wins)
+
+  12. Node Check Frequency (4096 → 1024)
+
+  Current: Check clock every 4096 nodes.
+
+  Best practice: Stockfish checks every 512. At fast time controls, 4096 nodes can be several milliseconds — enough to
+  significantly overshoot time limits.
+
+  Recommendation: Reduce to 1024. Nearly free change.
+
+  13. LMP: Formula vs Table
+
+  Current: Hardcoded table {0, 5, 8, 12, 18, 25, 34, 44, 56}.
+
+  Best practice: Stockfish uses (3 + depth²) / (2 - improving). Cleaner, extends to any depth, and inherently scales by
+  improving status.
+
+  Recommendation: Replace table with formula. Our table values are close to Stockfish's not-improving column already.
+
+  14. Time Management: More Factors
+
+  Current: Best-move stability (0.5x-1.0x) and score delta (up to 1.4x).
+
+  Best practice: Stockfish uses 4 multiplicative factors: falling eval, move stability (sigmoid curve), best-move
+  instability (change frequency), and effort concentration (one dominant move → reduce time).
+
+  The "effort concentration" factor is interesting and easy to add: if >90% of nodes are spent on the best move, we're
+  very confident and can stop early.
+
+  Recommendation: Add effort-based time saving. Track nodes spent on best root move vs total.
+
+  ---
+  FUTURE / LARGER PROJECTS
+
+  15. Correction History (not yet, but on the radar)
+
+  This is the biggest technique we're missing from the 2024-2025 era. Stockfish has 5 types (pawn, minor, non-pawn per
+  color, continuation). Weiss has extensive correction history. Berserk has pawn + continuation.
+
+  The concept: when search reveals the true value differs from static eval, store the error indexed by position features
+   (pawn hash, piece config). Future positions with similar features get their eval adjusted.
+
+  This is a significant implementation effort (new data structures, update logic, integration into eval and pruning
+  margins). Worth doing but probably after the above items are addressed.
+
+  ---
+  Suggested Priority Order
+
+  For testing one at a time (easiest to verify, highest expected gain first):
+
+  1. Aspiration windows (delta 12, 1.5x widening) — trivial change, immediate test - Result +12.2 / merged
+  2. RFP depth raise (→ 8, improving-aware margin) — small change, broad impact - Result +19.1 / merged
+  3. Singular ext depth (→ 7-8) — small change, broad impact - Result -56; benchmark down; on branch
+  4. History gravity formula — moderate change, affects all move ordering. Result +7; merged.
+  5. Node check frequency (→ 1024) — trivial - already done.
+  6. 2-ply continuation history — moderate implementation, good gain - Result: +250 benchmark, but only +3.5 elo. on branch
+  7. Capture LMR — moderate, needs tuning - Result +26 Elo. Merged
+  8. Aspiration + LMR + futility margin refinements — iterative tuning - Results + 28 Elo
+  9. Null move cut-node gate — easy change, needs careful testing - Results +10 ELo.
+  10. Correction history — larger project
+  Others implemented
+  IIR Depth raise -> 6   +36 Elo
+  TM effort factor: +19 ELO
+  LMP formula changes + 13 ELO  
+
+  Want to start implementing any of these?
+
+  Gains - additive value is about +171 Elo. Which may not be strictly additive to each other, but is most likely significant.
+  
+  Not yet tried:  #10
+   futility margin (lmrDepth-based), #11 SEE quiet quadratic margin, #13 LMP formula, #14 time management effort factor
+
+
+  High priority (likely 20-50+ Elo each):
+
+  1. More Texel tuning with larger datasets — You're already generating more data. The 1.9% error reduction at 200
+  epochs with 6.8M positions still had room to go. With 15-20M+ positions and 300+ epochs, you could see another
+  meaningful jump. This  is the easiest win.
+  2. NNUE — Once you have enough data (50M+ positions), this replaces the classical eval entirely and is typically worth
+   100-200 Elo over a well-tuned classical eval. Your architecture and training pipeline are already built. This is the
+  biggest single improvement available, just needs data volume.
+  3. Fix the qsearch TT interaction — The bisect showed qsearch TT probing was -24 Elo even with the ply fix. There may
+  still be issues: depth-0 entries flooding the TT, or the stand-pat cutoff storing TTLower with NoMove causing problems
+   downstream. Worth investigating whether restricting what qsearch stores (e.g., only store on cutoffs, or use a
+  minimum depth of -1 to distinguish from main search depth 0) recovers that Elo.
+
+  Medium priority (likely 10-30 Elo each):
+
+  4. Continuation history improvements — You have 1-ply continuation history. Adding 2-ply (grandparent move context) is
+   worth ~10-15 Elo in most engines and is straightforward.
+  5. Improving LMR — Your LMR doesn't use the TT score to adjust reductions. If the TT suggests the position scores
+  well, reducing less can help. Also, reducing captures with bad history (not just quiets) is standard now.
+  6. Counter-move history — Similar to continuation history but indexed by the counter-move pair. Relatively easy to add
+   alongside the existing counter-move table.
+
+  Lower priority but sound ideas:
+
+  7. Singular extension tuning — The bisect showed your current params are neutral. The feature itself is sound but the
+  thresholds need work. Rather than the depth-scaled margins we tried, you could try smaller fixed margins with more
+  game testing.
+  8. Evaluation terms — King safety could be more nuanced (virtual mobility, pawn shelter patterns). Piece coordination
+  terms (bishop+knight vs bishop+rook). These are harder to get right without extensive tuning data.
+
+  I'd focus on (1) and (3) in the short term since they're actionable now, and let the NNUE data generation run in the
+  background for the big payoff later.
+
+
+Recent changes
+  ┌─────┬────────────────────────────────────────────────┬──────────┬───────┬───────┬───────────────────────────────┐
+  │  #  │               Match (new vs old)               │  W-L-D   │  Elo  │  LOS  │            Verdict            │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 1   │ 88cdaa7 (zero-alloc movegen) vs 69c821a        │ 71-56-73 │ +26.1 │ 90.8% │ Likely gain                   │
+  │     │ (baseline)                                     │          │       │       │                               │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 2   │ a5f3da2 (filter tried moves) vs 88cdaa7        │ 73-55-72 │ +31.4 │ 94.4% │ Likely gain                   │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 3   │ 83807e2 (singular extensions) vs a5f3da2       │ 63-64-73 │ -1.7  │ 46.5% │ Neutral                       │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 4   │ singtune (tuned singular params) vs 83807e2    │ 67-72-61 │ -8.7  │ 33.6% │ Slight negative               │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 5   │ 29d6871 (12-byte TT) vs singtune               │ 72-69-59 │ +5.2  │ 60.0% │ Neutral                       │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 5b  │ 29d6871 (12-byte TT) vs 83807e2 (original)     │ 70-68-62 │ +3.5  │ 56.8% │ Neutral                       │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 6   │ 4a65c02 (qsearch TT) vs 29d6871                │ 58-72-70 │ -24.4 │ 11.0% │ Regression                    │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 7   │ 0a5fda6 (eval cache removal) vs 4a65c02        │ 69-66-65 │ +5.2  │ 60.2% │ Neutral                       │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 8   │ 0ec9aa2 (NoMove PV fix) vs 0a5fda6             │ 53-85-62 │ -56.1 │ 0.3%  │ Suspect noise (rematch        │
+  │     │                                                │          │       │       │ pending)                      │
+  ├─────┼────────────────────────────────────────────────┼──────────┼───────┼───────┼───────────────────────────────┤
+  │ 9   │ ba8afd7 (texel-tuned eval) vs 0ec9aa2          │ 82-50-68 │ +56.1 │ 99.7% │ Strong gain                   │
+  └─────┴────────────────────────────────────────────────┴──────────┴───────┴───────┴───────────────────────────────┘
+
+  1. 4a65c02 (qsearch TT probing) is the clear regression — -24 Elo, 11% LOS. The benchmark showed +19% more nodes, but
+  searching more nodes doesn't help if the TT entries from qsearch are polluting move ordering or causing incorrect
+  cutoffs.
+  2. Singular extension tuning made things slightly worse (-8.7 Elo, 33.6% LOS). The original depth*3 margins may
+  actually be better for your engine, or the parameters need different values. Either way, we should revert that change.
+  3. The two movegen commits stacked nicely — 88cdaa7 (+26) and a5f3da2 (+31) are both gains, roughly +57 Elo combined
+  from the baseline.
+  4. ba8afd7 (texel tuning) is a strong gain (+56 Elo), but it was measured against 0ec9aa2 which may have had CPU
+  contention issues. The rematch should clarify the 0ec9aa2 result.
+  5. The 12-byte TT change is neutral regardless of whether compared to original or tuned singular params.
+
+  The main actionable finding: investigate/revert the qsearch TT probing (4a65c02). That's where the real Elo is being
+  lost. Want me to dig into that next?
+
+
+Qsearch is a bug.
+
+
+# elo
+
+  Rules of thumb I find handy:
+
+  - 100 Elo ≈ 2:1 odds — the most useful anchor point
+  - 400 Elo ≈ 10:1 odds — a full piece advantage in "engine class"
+  - 200 Elo ≈ 3:1 — a clearly dominant engine but the weaker one still wins occasionally
+  - Every 70-80 Elo roughly doubles the win:loss ratio (ignoring draws)
+  - Doubling time control is worth roughly 50-70 Elo for most engines
+  - Doubling hash size is worth roughly 5-15 Elo (diminishing returns)
 
 # Bugs
 
@@ -361,21 +788,102 @@ SPRT: llr 0 (0.0%), lbound -inf, ubound inf
 
 
 
-  # Gauntlet Tests
+# Gauntlet Tests - all engines 
 
-    For your engine specifically:
+## Gauntlett mode. Us versus everybody else
 
   cutechess-cli \
     -tournament gauntlet \
-    -engine name=GoChess cmd=./chess arg=-uci proto=uci option.MoveOverhead=100 \
+    -engine name=GoChess cmd=./chess arg=-uci proto=uci arg=-syzygy arg=/tablebases \
     -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
     -engine name=Rodent3 cmd=rodentIII  proto=uci \
+    -engine name=Crafty cmd=./crafty dir=/home/adam/chess/engines/crafty proto=xboard \
+    -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
+    -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 4 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \ 
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+## Round Robin
+
+cutechess-cli \
+    -engine name=GoChess cmd=./chess arg=-uci proto=uci arg=-syzygy arg=/tablebases \
+    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
+    -engine name=Rodent3 cmd=rodentIII  proto=uci \
+    -engine name=Crafty cmd=./crafty dir=/home/adam/chess/engines/crafty proto=xboard \
+    -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
     -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
     -each tc=0/10+0.1  \
     -rounds 200 -concurrency 4 \
     -openings file=testdata/noob_3moves.epd format=epd order=random \
     -pgnout gauntlet.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+
+## Other Engines (ecluded as too strong/good)
+
+Wasp (too strong):
+    -engine name=Wasp cmd=./wasp dir=/home/adam/chess/engines/wasp proto=uci \
+
+Osprey (too weak)
+    -engine name=Osprey cmd=./osprey dir=/home/adam/code/osprey proto=xboard \
+
+
+vs just Gnuchess
+
+cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess cmd=./chess arg=-uci proto=uci arg=-syzygy arg=/tablebases arg=-uci proto=uci \
+    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 8 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess cmd=./chess arg=-uci proto=uci arg=-syzygy arg=/tablebases arg=-uci proto=uci \
+    -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci     
+    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 8 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+
+cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess cmd=./chess arg=-uci proto=uci arg=-syzygy arg=/tablebases arg=-uci proto=uci \
+    -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 4 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
+
+
+
+
+vs NNUE
+ cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess-NNUE cmd=./chess arg=-nnue arg=/home/adam/code/gochess/net-new.nnue \
+    arg=-syzygy arg=/tablebases arg=-uci proto=uci \
+    arg=-uci proto=uci \
+    -engine name=GoChess-Classical cmd=./chess \
+     arg=-syzygy arg=/tablebases arg=-uci proto=uci \
+    -each tc=0/10+0.1 option.Hash=64 option.MoveOverhead=100 \
+    -rounds 200 -concurrency 4 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout nnue-vs-classical.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 \
+    -resign movecount=3 score=500 twosided=true
+
 
 
   SPRT testing (stop early when statistically significant):
@@ -412,7 +920,7 @@ Self play vs old
     -pgnout gauntlet.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
 
-28 Feb - 20:45   10/0.1
+28 Feb - 20:45   10+0.1
 
 Finished game 371 (Rodent3 vs GoChess): * {No result}
 Rank Name                          Elo     +/-   Games   Score    Draw
@@ -421,3 +929,105 @@ Rank Name                          Elo     +/-   Games   Score    Draw
    2 Greko                         275      77     123   82.9%    9.8%
    3 GnuChess                      116      62     124   66.1%    9.7%
 This included 10 losses on time (and same with other engines)
+
+
+
+
+3rd March - 20:26 10+0.1 - we now crush GNU Chess (100 rating points higher)
+
+Score of GoChess vs GnuChess: 106 - 50 - 44  [0.640] 200
+...      GoChess playing White: 53 - 21 - 26  [0.660] 100
+...      GoChess playing Black: 53 - 29 - 18  [0.620] 100
+...      White vs Black: 82 - 74 - 44  [0.520] 200
+Elo difference: 100.0 +/- 44.0, LOS: 100.0 %, DrawRatio: 22.0 %
+
+5th March 8:30am - now +150 points 
+
+Score of GoChess vs GnuChess: 126 - 46 - 28  [0.700] 200
+...      GoChess playing White: 62 - 25 - 13  [0.685] 100
+...      GoChess playing Black: 64 - 21 - 15  [0.715] 100
+...      White vs Black: 83 - 89 - 28  [0.485] 200
+Elo difference: 147.2 +/- 48.3, LOS: 100.0 %, DrawRatio: 14.0 %
+
+And follow up longer (500 game) match:
+Score of GoChess vs GnuChess: 293 - 113 - 94  [0.680] 500
+...      GoChess playing White: 147 - 57 - 46  [0.680] 250
+...      GoChess playing Black: 146 - 56 - 48  [0.680] 250
+...      White vs Black: 203 - 203 - 94  [0.500] 500
+Elo difference: 130.9 +/- 29.0, LOS: 100.0 %, DrawRatio: 18.8 %
+
+
+6 March 12:30 - 500 games
+
+Possibly a very small regression after adding a some new eval improvements.
+
+Score of GoChess vs GnuChess: 293 - 122 - 85  [0.671] 500
+...      GoChess playing White: 147 - 59 - 44  [0.676] 250
+...      GoChess playing Black: 146 - 63 - 41  [0.666] 250
+...      White vs Black: 210 - 205 - 85  [0.505] 500
+Elo difference: 123.8 +/- 29.2, LOS: 100.0 %, DrawRatio: 17.0 %
+SPRT: llr 0 (0.0%), lbound -inf, ubound inf
+
+
+6th March 21:30 200 games  10/+0.1 we had tablebases
+
+Score of GoChess vs GnuChess: 137 - 32 - 31  [0.762] 200
+...      GoChess playing White: 66 - 16 - 18  [0.750] 100
+...      GoChess playing Black: 71 - 16 - 13  [0.775] 100
+...      White vs Black: 82 - 87 - 31  [0.487] 200
+Elo difference: 202.6 +/- 50.7, LOS: 100.0 %, DrawRatio: 15.5 %
+
+Finished game 400 (Greko vs GoChess): 1/2-1/2 {Draw by adjudication}
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                       129      33     400   67.8%   17.5%
+   1 Greko                         -65      44     200   40.8%   19.5%
+   2 GnuChess                     -203      51     200   23.8%   15.5%
+
+Head to head with Greko, we're ahead, but delte is much lower (computer had a lot of other stuff going on,
+so effective time controls may be lower)
+
+
+Score of GoChess vs Greko: 85 - 67 - 48  [0.545] 200
+...      GoChess playing White: 34 - 40 - 26  [0.470] 100
+...      GoChess playing Black: 51 - 27 - 22  [0.620] 100
+...      White vs Black: 61 - 91 - 48  [0.425] 200
+Elo difference: 31.4 +/- 42.2, LOS: 92.8 %, DrawRatio: 24.0 %
+
+* In this sequence we seem to do weirdly worse playing white then black. Redoing to confirm that result.
+* games were noisy (running against a big NNUE train)
+
+
+Finished game 103 (GoChess vs Crafty): * {No result}
+Score of GoChess vs Crafty: 28 - 59 - 14  [0.347] 101
+...      GoChess playing White: 16 - 26 - 9  [0.402] 51
+...      GoChess playing Black: 12 - 33 - 5  [0.290] 50
+...      White vs Black: 49 - 38 - 14  [0.554] 101
+Elo difference: -110.2 +/- 66.5, LOS: 0.0 %, DrawRatio: 13.9 %
+
+
+Round Robin 7th March
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   1 Wasp                          inf     nan      55  100.0%    0.0%
+   2 Rodent3                        77      85      55   60.9%   20.0%
+   3 Crafty                         45      89      54   56.5%   13.0%
+   4 Greko                         -85      91      54   38.0%   13.0%
+   5 GoChess                      -125      90      55   32.7%   18.2%
+   6 GnuChess                     -349     135      55   11.8%   12.7%
+
+
+## H2H comparisons versus other engines 
+
+Ratings of other engines are based on CCRL (40 moves in 15 mins). Ponder off
+
+Wasp 3460)         We get hammered!
+Rodent 3107        # H2H we score about -130  ->  2970
+Crafty 3040        # H2H we score about -110  ->  2930
+ExChess 2994       # H2H we score about -150  ->  2850
+GoChess ~2850
+Greko  2787        # H2H we score about +30    -> 2800  (but we maybe score below in RR)
+GNU chess  2824    # H2H we score about +200   -> 3024
+Osprey XXXX        # H2H we were about +800, but Claude found some nasty bugs.
+
+Potential rivals from the past to download
+ExChess  (2994)
