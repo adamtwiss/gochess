@@ -176,8 +176,11 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 			TT:        tt,
 		}
 		if depthLimited {
-			// No time limit — search to exact depth
-			info.MaxTime = 0
+			// Safety timeout: cap any single move at 60s to prevent
+			// pathological positions (check/recapture extensions) from stalling
+			safetyTimeout := 60 * time.Second
+			info.MaxTime = safetyTimeout
+			atomic.StoreInt64(&info.Deadline, time.Now().Add(safetyTimeout).UnixNano())
 		} else {
 			info.MaxTime = cfg.TimePerMove
 			deadline := time.Now().Add(cfg.TimePerMove)
