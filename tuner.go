@@ -416,13 +416,27 @@ func (t *Tuner) initTunerParams() {
 		t.sections[len(t.sections)-1].endIndex = len(t.Params)
 	}
 
-	// Freeze material values — well-established and prone to coupling with PSTs
+	// Freeze parameters that are well-established or can't be learned from search scores
 	t.Frozen = make([]bool, len(t.Params))
+	// Material values: well-established and prone to coupling with PSTs
 	for i := idxMaterialMG; i < idxMaterialMG+5; i++ {
 		t.Frozen[i] = true
 	}
 	for i := idxMaterialEG; i < idxMaterialEG+5; i++ {
 		t.Frozen[i] = true
+	}
+	// Tempo and trade bonuses: long-term strategic concepts that search at
+	// practical time controls cannot evaluate (simplify-when-ahead, tempo value
+	// in quiet positions). Confirmed by lambda=0 and lambda=0.1 tuning runs
+	// both producing anti-textbook values that lost ~37 Elo in gauntlets.
+	frozenNames := map[string]bool{
+		"TempoMG": true, "TempoEG": true,
+		"TradePieceBonus": true, "TradePawnBonus": true,
+	}
+	for i, p := range t.Params {
+		if frozenNames[p.Name] {
+			t.Frozen[i] = true
+		}
 	}
 }
 
