@@ -97,9 +97,10 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 			net.InputWeights[i][j] = float32(rng.NormFloat64()) * inputScale
 		}
 	}
-	// Biases start at zero
+	// Input biases start slightly positive so accumulator neurons begin in the
+	// active CReLU region and must be pushed out, preventing early neuron death.
 	for i := range net.InputBiases {
-		net.InputBiases[i] = 0
+		net.InputBiases[i] = 0.1
 	}
 
 	// Hidden layer 1: fan_in = 512 (concatenated accumulators)
@@ -110,7 +111,7 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 		}
 	}
 	for i := range net.HiddenBiases {
-		net.HiddenBiases[i] = 0
+		net.HiddenBiases[i] = 0.1
 	}
 
 	// Hidden layer 2: fan_in = 32
@@ -121,7 +122,7 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 		}
 	}
 	for i := range net.Hidden2Biases {
-		net.Hidden2Biases[i] = 0
+		net.Hidden2Biases[i] = 0.1
 	}
 
 	// Output layer: fan_in = 32
@@ -182,19 +183,19 @@ func (net *NNUETrainNet) Forward(sample *NNUETrainSample) (output float32, hidde
 		hidden2[j] = sum
 	}
 
-	// Hidden layer 2 with ClippedReLU on hidden2
+	// Hidden layer 2 with ReLU on hidden2 (no upper clamp)
 	for k := 0; k < NNUEHidden3Size; k++ {
 		sum := net.Hidden2Biases[k]
 		for j := 0; j < NNUEHidden2Size; j++ {
-			sum += clippedReLUf(hidden2[j]) * net.Hidden2Weights[j][k]
+			sum += reluF(hidden2[j]) * net.Hidden2Weights[j][k]
 		}
 		hidden3[k] = sum
 	}
 
-	// Output layer with ClippedReLU on hidden3
+	// Output layer with ReLU on hidden3 (no upper clamp)
 	output = net.OutputBias
 	for k := 0; k < NNUEHidden3Size; k++ {
-		output += clippedReLUf(hidden3[k]) * net.OutputWeights[k]
+		output += reluF(hidden3[k]) * net.OutputWeights[k]
 	}
 
 	return output, hidden1, hidden2, hidden3
@@ -217,6 +218,22 @@ func clippedReLUf(x float32) float32 {
 
 func clippedReLUGrad(x float32) float32 {
 	if x > 0 && x < nnueFloatClipMax {
+		return 1
+	}
+	return 0
+}
+
+// reluF is plain ReLU without upper clamp — used for hidden2/hidden3 layers
+// which need unconstrained positive range to express large eval magnitudes.
+func reluF(x float32) float32 {
+	if x < 0 {
+		return 0
+	}
+	return x
+}
+
+func reluGrad(x float32) float32 {
+	if x > 0 {
 		return 1
 	}
 	return 0
@@ -272,31 +289,31 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 	// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
 	dOutput := float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
 
-	// Output layer gradients: output = bias + sum(CReLU(hidden3) * weights)
+	// Output layer gradients: output = bias + sum(ReLU(hidden3) * weights)
 	grads.OutputBias += dOutput
 	var dHidden3 [NNUEHidden3Size]float32
 	for k := 0; k < NNUEHidden3Size; k++ {
-		h3 := clippedReLUf(hidden3[k])
+		h3 := reluF(hidden3[k])
 		grads.OutputWeights[k] += dOutput * h3
-		dHidden3[k] = dOutput * net.OutputWeights[k] * clippedReLUGrad(hidden3[k])
+		dHidden3[k] = dOutput * net.OutputWeights[k] * reluGrad(hidden3[k])
 	}
 
-	// Hidden layer 2 gradients: hidden3 = bias + sum(CReLU(hidden2) * weights)
+	// Hidden layer 2 gradients: hidden3 = bias + sum(ReLU(hidden2) * weights)
 	var dHidden2 [NNUEHidden2Size]float32
 	for k := 0; k < NNUEHidden3Size; k++ {
 		grads.Hidden2Biases[k] += dHidden3[k]
 	}
 	for j := 0; j < NNUEHidden2Size; j++ {
-		h2 := clippedReLUf(hidden2[j])
+		h2 := reluF(hidden2[j])
 		for k := 0; k < NNUEHidden3Size; k++ {
 			grads.Hidden2Weights[j][k] += dHidden3[k] * h2
 		}
-		// Backprop through CReLU to hidden2
+		// Backprop through ReLU to hidden2
 		var sum float32
 		for k := 0; k < NNUEHidden3Size; k++ {
 			sum += dHidden3[k] * net.Hidden2Weights[j][k]
 		}
-		dHidden2[j] = sum * clippedReLUGrad(hidden2[j])
+		dHidden2[j] = sum * reluGrad(hidden2[j])
 	}
 
 	// Hidden layer 1 gradients: hidden2 = bias + sum(hidden1 * weights)

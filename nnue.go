@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-// NNUE architecture: HalfKP (40960 inputs) -> 2x256 -> 32 -> 1
+// NNUE architecture: HalfKP (40960 inputs) -> 2x256 -> 32 -> 32 -> 1
 // Input features: king_square (64) * piece_type (10: 5 piece types x 2 colors) * piece_square (64) = 40960
 // Two accumulators: White perspective, Black perspective
 // Concatenated (512) -> 32 hidden neurons -> 1 output
@@ -30,6 +30,7 @@ const (
 	nnueInputScale  = 127 // input layer weight scale
 	nnueHiddenScale = 64  // hidden layer weight scale
 	nnueOutputScale = nnueInputScale * nnueHiddenScale
+	NNUEEvalScale   = 1 // post-inference scale factor (1 = no scaling)
 
 	// ClippedReLU bounds (after quantization)
 	nnueClipMin = 0
@@ -402,7 +403,7 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 		}
 	}
 
-	// Hidden layer 2: ClippedReLU(hidden2) -> hidden3
+	// Hidden layer 2: ReLU(hidden2) -> hidden3 (no upper clamp)
 	var hidden3 [NNUEHidden3Size]int32
 	hidden3 = net.Hidden2Biases
 	for j := 0; j < NNUEHidden2Size; j++ {
@@ -410,29 +411,23 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 		if scaled <= 0 {
 			continue
 		}
-		if scaled > 127 {
-			scaled = 127
-		}
 		for k := 0; k < NNUEHidden3Size; k++ {
 			hidden3[k] += scaled * int32(net.Hidden2Weights[j][k])
 		}
 	}
 
-	// Output layer: ClippedReLU(hidden3) -> output
+	// Output layer: ReLU(hidden3) -> output (no upper clamp)
 	output := int32(net.OutputBias)
 	for k := 0; k < NNUEHidden3Size; k++ {
 		scaled := hidden3[k] >> 6 // / 64 (nnueHiddenScale)
 		if scaled <= 0 {
 			continue
 		}
-		if scaled > 127 {
-			scaled = 127
-		}
 		output += scaled * int32(net.OutputWeights[k])
 	}
 
 	// Scale output to centipawns
-	return int(output) / nnueOutputScale
+	return int(output) / nnueOutputScale * NNUEEvalScale
 }
 
 // PrepareWeights transposes hidden weights for SIMD forward pass.
@@ -479,28 +474,22 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 		if scaled <= 0 {
 			continue
 		}
-		if scaled > 127 {
-			scaled = 127
-		}
 		for k := 0; k < NNUEHidden3Size; k++ {
 			hidden3[k] += scaled * int32(net.Hidden2Weights[j][k])
 		}
 	}
 
-	// Output layer (scalar — only 32 elements, not worth SIMD)
+	// Output layer: ReLU(hidden3) (no upper clamp)
 	output := int32(net.OutputBias)
 	for k := 0; k < NNUEHidden3Size; k++ {
 		scaled := hidden3[k] >> 6
 		if scaled <= 0 {
 			continue
 		}
-		if scaled > 127 {
-			scaled = 127
-		}
 		output += scaled * int32(net.OutputWeights[k])
 	}
 
-	return int(output) / nnueOutputScale
+	return int(output) / nnueOutputScale * NNUEEvalScale
 }
 
 // SaveNNUE writes the network weights to a binary file.

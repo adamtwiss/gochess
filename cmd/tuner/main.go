@@ -300,12 +300,14 @@ func runNNUETrain(args []string) {
 		fmt.Printf("Resumed weights from %s\n", *resumeFile)
 	}
 
-	// Auto-tune K if not specified
+	// Use K=400 by default (matches classical eval centipawn scale).
+	// Auto-tuning K on search scores gives K≈1400 which produces flat
+	// gradients and compressed network outputs. K=400 forces the network
+	// to learn centipawn-scale values matching search thresholds.
 	actualK := *kValue
 	if actualK <= 0 {
-		fmt.Printf("\nTuning K (sigmoid scaling constant)...\n")
-		actualK = chess.TuneNNUEK(bf, *lambda)
-		fmt.Printf("Optimal K = %.2f\n", actualK)
+		actualK = 400.0
+		fmt.Printf("\nUsing default K = %.2f (centipawn scale)\n", actualK)
 	} else {
 		fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n", actualK)
 	}
