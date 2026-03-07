@@ -150,8 +150,8 @@ func runTune(args []string) {
 	dataFile := fs.String("data", "training.dat", "training data file")
 	epochs := fs.Int("epochs", 500, "number of optimization epochs")
 	lr := fs.Float64("lr", 1.0, "learning rate")
-	lambda := fs.Float64("lambda", 0, "L2 regularization strength toward initial values (0=disabled)")
-	scoreBlend := fs.Float64("score-blend", 0, "blend search scores into loss: 0=result-only (default), 1=score-only")
+	l2 := fs.Float64("l2", 0, "L2 regularization strength toward initial values (0=disabled)")
+	lambda := fs.Float64("lambda", 1.0, "result vs score weight: 1=result-only (default), 0=score-only")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
@@ -212,17 +212,18 @@ func runTune(args []string) {
 
 	// Tune K
 	fmt.Printf("\nTuning K (scaling constant)...\n")
-	K := tuner.TuneK(tf, *scoreBlend)
-	initialError := tuner.ComputeTrainError(tf, K, *scoreBlend)
-	initialValError := tuner.ComputeValidationError(tf, K, *scoreBlend)
+	scoreBlend := 1.0 - *lambda
+	K := tuner.TuneK(tf, scoreBlend)
+	initialError := tuner.ComputeTrainError(tf, K, scoreBlend)
+	initialValError := tuner.ComputeValidationError(tf, K, scoreBlend)
 	fmt.Printf("Optimal K = %.2f, initial train error = %.8f, val error = %.8f\n\n", K, initialError, initialValError)
 
 	// Run optimizer
 	cfg := chess.DefaultTuneConfig()
 	cfg.Epochs = *epochs
 	cfg.LR = *lr
-	cfg.Lambda = *lambda
-	cfg.ScoreBlend = *scoreBlend
+	cfg.Lambda = *l2
+	cfg.ScoreBlend = scoreBlend
 
 	// Set up SIGINT handler for graceful early stop
 	stopCh := make(chan struct{})
@@ -236,7 +237,7 @@ func runTune(args []string) {
 	}()
 	cfg.Stop = stopCh
 
-	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f, lambda=%.1e\n", cfg.Epochs, cfg.LR, cfg.Lambda)
+	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f, lambda=%.2f, l2=%.1e\n", cfg.Epochs, cfg.LR, *lambda, cfg.Lambda)
 	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Error", "Val Error")
 	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "-----------", "---------")
 
@@ -252,8 +253,8 @@ func runTune(args []string) {
 	tuner.PrintParams(w)
 	w.Flush()
 
-	finalError := tuner.ComputeTrainError(tf, K, *scoreBlend)
-	finalValError := tuner.ComputeValidationError(tf, K, *scoreBlend)
+	finalError := tuner.ComputeTrainError(tf, K, scoreBlend)
+	finalValError := tuner.ComputeValidationError(tf, K, scoreBlend)
 	fmt.Printf("\nTrain:      initial=%.8f  final=%.8f  improvement=%.4f%%\n",
 		initialError, finalError, (initialError-finalError)/initialError*100)
 	fmt.Printf("Validation: initial=%.8f  final=%.8f  improvement=%.4f%%\n",

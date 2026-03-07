@@ -23,7 +23,7 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data (FEN;score;result)
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
-./tuner tune -data training.dat -epochs 500 -lr 1.0 -score-blend 0.5        # Tune with blended score+result loss
+./tuner tune -data training.dat -epochs 500 -lr 1.0 -lambda 0.5             # Tune with blended score+result loss
 ./tuner nnue-train -data training.dat -epochs 100 -lr 0.01 -output net.nnue          # Train NNUE network
 ./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -output net-v1.nnue # Train on subset
 ./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume training
@@ -328,7 +328,7 @@ Standard Polyglot `.bin` format. Any Polyglot book (downloaded or self-built) wo
 - `scoreFromTrace()` evaluates: `(mg * (24 - phase) + eg * phase) / 24`
 - `sigmoid(score, K)` maps score to win probability: `1 / (1 + 10^(-score/K))`
 - `TuneK(tf, scoreBlend)` finds optimal K via golden section search on MSE over streamed training data
-- `Tune(tf, K, cfg, onEpoch)` runs Adam optimizer: per epoch, streams training batches from disk, computes parallel gradients within each batch, aggregates across all batches, then applies Adam update. `cfg.ScoreBlend` (0-1) blends search scores into the loss target: `target = (1-blend)*result + blend*sigmoid(score/K)`.
+- `Tune(tf, K, cfg, onEpoch)` runs Adam optimizer: per epoch, streams training batches from disk, computes parallel gradients within each batch, aggregates across all batches, then applies Adam update. `cfg.ScoreBlend` (0-1, derived from CLI `-lambda` as `1-lambda`) blends search scores into the loss target: `target = lambda*result + (1-lambda)*sigmoid(score/K)`.
 - `ComputeTrainError(tf, K, scoreBlend)` / `ComputeValidationError(tf, K, scoreBlend)` compute MSE by streaming from the respective region of the `.tbin` file
 
 **What's tuned**: Material values, PST tables, mobility arrays, piece bonuses (bishop pair, outposts, rook file, trapped rook, rook-on-enemy-king-file, etc.), passed pawn enhancements (blocked penalty, not-blocked, free path, king proximity, connected, protected), pawn structure (passed base, doubled, isolated, backward, connected, advancement, pawn majority, queenside pawn advancement, candidate passed pawns, pawn lever), king attack unit weights, safe check bonuses (knight, bishop, rook, queen), king safety table (100-entry nonlinear lookup), pawn shield constants (shield rank bonuses, missing shield penalties, semi-open file penalty), pawn storm bonus (MG+EG, 32 params), same-side pawn storm bonus (MG, 8 params), endgame king activity (centralization, proximity, corner push), space/pawn threat/piece threat/castling bonuses, tempo, trade bonuses, OCB scale.

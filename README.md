@@ -167,7 +167,8 @@ During tuning, training data is streamed from the `.tbin` file in batches of 655
 | `-data` | `training.dat` | Training data file from step 1 |
 | `-epochs` | 500 | Number of optimization epochs |
 | `-lr` | 1.0 | Learning rate |
-| `-score-blend` | 0 | Blend search scores into loss (0=result-only, 1=score-only) |
+| `-lambda` | 1.0 | Result vs score weight: 1=result-only, 0=score-only |
+| `-l2` | 0 | L2 regularization strength toward initial values |
 
 #### Step 3: Apply tuned values
 
