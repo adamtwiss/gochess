@@ -59,7 +59,7 @@ func BuildOpeningBook(pgnFile, outFile string, opts BookBuildOptions) error {
 	}
 	fmt.Printf("Games: %d processed\n", gamesProcessed)
 
-	// Phase 3: Group by hash, trim by frequency and top-N
+	// Group by hash, trim by frequency and top-N
 	type entry struct {
 		key    uint64
 		move   uint16
@@ -100,7 +100,7 @@ func BuildOpeningBook(pgnFile, outFile string, opts BookBuildOptions) error {
 	fmt.Printf("Book: %d positions, %d entries after trimming (minFreq=%d, topN=%d)\n",
 		len(grouped), len(allEntries), opts.MinFreq, opts.TopN)
 
-	// Phase 4: Write Polyglot .bin format
+	// Write Polyglot .bin format
 	f, err := os.Create(outFile)
 	if err != nil {
 		return err

@@ -77,6 +77,9 @@ func (b *Board) tbCanProbeRoot() bool {
 	if !SyzygyEnabled {
 		return false
 	}
+	if b.Castling != NoCastling {
+		return false
+	}
 	return b.tbPieceCount() <= syzygy.MaxPieceCount
 }
 
@@ -125,15 +128,27 @@ func (b *Board) TBProbeWDL() (int, bool) {
 	return 0, false
 }
 
+// tbWDLToScore converts a raw WDL value to an engine score.
+func tbWDLToScore(wdl int) int {
+	switch wdl {
+	case syzygy.WDLWin:
+		return TBWinScore
+	case syzygy.WDLCursedWin:
+		return 1
+	case syzygy.WDLDraw:
+		return 0
+	case syzygy.WDLBlessedLoss:
+		return -1
+	case syzygy.WDLLoss:
+		return TBLossScore
+	}
+	return 0
+}
+
 // TBProbeRoot probes the DTZ table at the root to find the best move.
 // Returns (move, wdl, dtz, ok). The move is matched against legal moves.
 func (b *Board) TBProbeRoot() (Move, int, int, bool) {
 	if !b.tbCanProbeRoot() {
-		return NoMove, 0, 0, false
-	}
-
-	// Castling positions can't be in TBs, but DTZ probe doesn't check
-	if b.Castling != NoCastling {
 		return NoMove, 0, 0, false
 	}
 

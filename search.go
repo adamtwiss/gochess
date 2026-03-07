@@ -299,19 +299,7 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 	if b.tbCanProbeRoot() {
 		if tbMove, tbWDL, _, ok := b.TBProbeRoot(); ok {
 			info.TBHits++
-			var tbScore int
-			switch tbWDL {
-			case 4: // WDLWin
-				tbScore = TBWinScore
-			case 3: // WDLCursedWin
-				tbScore = 1
-			case 2: // WDLDraw
-				tbScore = 0
-			case 1: // WDLBlessedLoss
-				tbScore = -1
-			case 0: // WDLLoss
-				tbScore = TBLossScore
-			}
+			tbScore := tbWDLToScore(tbWDL)
 			info.Score = tbScore
 			info.PV = []Move{tbMove}
 			if info.OnDepth != nil {

@@ -139,7 +139,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	var positions []string
 	var scores []int
 	adjEvalCount := 0
-	lastAbsEval := 0
+	lastEval := 0
 	totalPlies := 0
 
 	// Count initial ply offset from the FEN (openings may start after 3 moves = 6 plies)
@@ -150,7 +150,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 
 	for totalPlies < 600 { // safety cap
 		// Check game termination
-		reason, result := gameOverResult(&b, hashCounts, adjEvalCount, lastAbsEval)
+		reason, result := gameOverResult(&b, hashCounts, adjEvalCount, lastEval)
 		if reason != GameNotOver {
 			return SelfPlayGame{
 				Positions: positions,
@@ -194,10 +194,10 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		}
 		if absEval > 1000 {
 			adjEvalCount++
-			lastAbsEval = eval
+			lastEval = eval
 		} else {
 			adjEvalCount = 0
-			lastAbsEval = 0
+			lastEval = 0
 		}
 
 		// Record position for training data (with filtering)
@@ -378,7 +378,8 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 
 			game := PlaySelfPlayGame(cfg, opening, rng)
 
-			// Write positions to file
+			// Write positions to file and invoke callback under lock
+			// (callback must be serialized to avoid data races in caller)
 			mu.Lock()
 			for i, fen := range game.Positions {
 				score := 0
@@ -390,11 +391,10 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 			writer.Flush()
 			atomic.AddInt64(&totalPositions, int64(len(game.Positions)))
 			done := atomic.AddInt64(&gamesDone, 1)
-			mu.Unlock()
-
 			if onGameDone != nil {
 				onGameDone(int(done), game)
 			}
+			mu.Unlock()
 		}(i)
 	}
 
