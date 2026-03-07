@@ -12,15 +12,16 @@ import (
 )
 
 // SelfPlayConfig controls self-play game generation for tuning data.
+// TimePerMove and FixedDepth are mutually exclusive: set one, leave the other zero.
 type SelfPlayConfig struct {
-	TimePerMove  time.Duration // search time per move (e.g. 200ms-1s)
-	MaxDepth     int           // depth cap per move (default 64)
+	TimePerMove  time.Duration // time-limited: search time per move (e.g. 200ms-1s)
+	FixedDepth   int           // depth-limited: search to exactly this depth per move
 	NumGames     int           // total games to generate
 	Threads      int           // search threads per game (Lazy SMP)
 	Concurrency  int           // parallel games
 	OpeningsFile string        // EPD file with starting positions
 	OutputFile   string        // output file for training data
-	HashMB int // TT size in MB per game
+	HashMB       int           // TT size in MB per game
 }
 
 // SelfPlayGame holds the result of one self-play game.
@@ -124,9 +125,12 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	}
 
 	tt := NewTranspositionTable(cfg.HashMB)
-	maxDepth := cfg.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = 64
+
+	// Determine search mode
+	depthLimited := cfg.FixedDepth > 0 && cfg.TimePerMove == 0
+	maxDepth := 64
+	if depthLimited {
+		maxDepth = cfg.FixedDepth
 	}
 
 	hashCounts := make(map[uint64]int)
@@ -160,11 +164,16 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		// Search for best move
 		info := &SearchInfo{
 			StartTime: time.Now(),
-			MaxTime:   cfg.TimePerMove,
 			TT:        tt,
 		}
-		deadline := time.Now().Add(cfg.TimePerMove)
-		atomic.StoreInt64(&info.Deadline, deadline.UnixNano())
+		if depthLimited {
+			// No time limit — search to exact depth
+			info.MaxTime = 0
+		} else {
+			info.MaxTime = cfg.TimePerMove
+			deadline := time.Now().Add(cfg.TimePerMove)
+			atomic.StoreInt64(&info.Deadline, deadline.UnixNano())
+		}
 
 		bestMove, searchResult := b.SearchParallel(maxDepth, info, cfg.Threads)
 		if bestMove == NoMove {
