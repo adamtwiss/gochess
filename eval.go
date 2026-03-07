@@ -367,10 +367,10 @@ func (b *Board) EvaluateRelative() int {
 // NNUEEvaluateRelative returns the NNUE evaluation from the perspective
 // of the side to move. Applies endgame scaling and 50-move rule scaling.
 func (b *Board) NNUEEvaluateRelative() int {
+	// Lazy materialization: copy parent + apply delta only when eval is needed.
+	// Pruned nodes never pay this cost.
+	b.NNUEAcc.Materialize(b.NNUENet, b)
 	acc := b.NNUEAcc.Current()
-	if !acc.Computed {
-		b.NNUENet.RecomputeAccumulator(acc, b)
-	}
 
 	score := b.NNUENet.Evaluate(acc, b.SideToMove)
 

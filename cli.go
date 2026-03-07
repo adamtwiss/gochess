@@ -573,10 +573,8 @@ func (c *CLIEngine) cmdNNUE(args []string) {
 			fmt.Println("No NNUE network loaded.")
 			return
 		}
+		c.board.NNUEAcc.Materialize(c.board.NNUENet, &c.board)
 		acc := c.board.NNUEAcc.Current()
-		if !acc.Computed {
-			c.board.NNUENet.RecomputeAccumulator(acc, &c.board)
-		}
 		scoreW := c.nnueNet.Evaluate(acc, White)
 		scoreB := c.nnueNet.Evaluate(acc, Black)
 		stmStr := "White"

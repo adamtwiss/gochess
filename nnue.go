@@ -65,11 +65,31 @@ type NNUENet struct {
 	HWT []int16
 }
 
+// DirtyPiece describes a pending accumulator update (deferred from MakeMove).
+// Up to 3 sub-features can be removed and 1 added in a single move.
+type DirtyPiece struct {
+	// Type encodes the move kind for lazy materialization.
+	//   0 = no pending update (already computed or king move)
+	//   1 = quiet move (SubAdd: remove piece@From, add piece@To)
+	//   2 = capture (SubSubAdd: remove piece@From, add piece@To, remove capPiece@CapSq)
+	//   3 = en passant (SubSubAdd with different capSq)
+	//   4 = promotion (Remove pawn@From, Add promoted@To)
+	//   5 = capture-promotion (Remove captured@To, Remove pawn@From, Add promoted@To)
+	Type     uint8
+	Piece    Piece  // moving piece (before promotion)
+	From     Square // origin square
+	To       Square // destination square
+	CapPiece Piece  // captured piece (for captures/EP)
+	CapSq    Square // capture square (same as To for normal captures, different for EP)
+	PromoPc  Piece  // promoted piece (for promotions)
+}
+
 // NNUEAccumulator holds per-position accumulator state.
 type NNUEAccumulator struct {
 	White    [NNUEHiddenSize]int16 // accumulator from White perspective
 	Black    [NNUEHiddenSize]int16 // accumulator from Black perspective
 	Computed bool
+	Dirty    DirtyPiece // pending update (lazy materialization)
 }
 
 // NNUEAccumulatorStack provides push/pop for MakeMove/UnmakeMove.
@@ -94,14 +114,17 @@ func (s *NNUEAccumulatorStack) Current() *NNUEAccumulator {
 	return &s.stack[s.top]
 }
 
-// Push copies the current accumulator and advances the stack pointer.
+// Push advances the stack pointer for a lazy update.
+// The accumulator is NOT copied — it will be materialized on demand
+// when Evaluate() needs it. This saves the 1KB copy for nodes that
+// get pruned before evaluation.
 func (s *NNUEAccumulatorStack) Push() {
 	if s.top+1 >= len(s.stack) {
-		// Grow the stack
 		s.stack = append(s.stack, NNUEAccumulator{})
 	}
-	s.stack[s.top+1] = s.stack[s.top]
 	s.top++
+	s.stack[s.top].Computed = false
+	s.stack[s.top].Dirty.Type = 0
 }
 
 // PushEmpty advances the stack pointer without copying (for king moves
@@ -112,6 +135,7 @@ func (s *NNUEAccumulatorStack) PushEmpty() {
 	}
 	s.top++
 	s.stack[s.top].Computed = false
+	s.stack[s.top].Dirty.Type = 0 // king move → full recompute on Materialize
 }
 
 // Pop restores the previous accumulator state.
@@ -119,6 +143,52 @@ func (s *NNUEAccumulatorStack) Pop() {
 	if s.top > 0 {
 		s.top--
 	}
+}
+
+// Materialize ensures the current accumulator is computed by copying from the
+// parent and applying the pending delta. This is the lazy evaluation core —
+// nodes that are pruned before eval never pay this cost.
+//
+// If the parent is not computed (multiple lazy levels stacked), falls back to
+// a full recompute from the board state. This keeps the implementation simple
+// while still capturing the main benefit: skipping work for pruned nodes.
+func (s *NNUEAccumulatorStack) Materialize(net *NNUENet, b *Board) {
+	acc := &s.stack[s.top]
+	if acc.Computed {
+		return
+	}
+
+	d := &acc.Dirty
+	if d.Type == 0 || s.top == 0 || !s.stack[s.top-1].Computed {
+		// King move, root position, or parent not materialized — full recompute
+		net.RecomputeAccumulator(acc, b)
+		return
+	}
+
+	// Copy parent state
+	parent := &s.stack[s.top-1]
+	acc.White = parent.White
+	acc.Black = parent.Black
+
+	// Apply the deferred delta
+	wKingSq := b.Pieces[WhiteKing].LSB()
+	bKingSq := b.Pieces[BlackKing].LSB()
+
+	switch d.Type {
+	case 1: // quiet move
+		net.SubAddFeature(acc, d.Piece, d.From, d.To, wKingSq, bKingSq)
+	case 2, 3: // capture or en passant
+		net.SubSubAddFeature(acc, d.Piece, d.From, d.To, d.CapPiece, d.CapSq, wKingSq, bKingSq)
+	case 4: // promotion (no capture)
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
+	case 5: // capture-promotion
+		net.RemoveFeature(acc, d.CapPiece, d.To, wKingSq, bKingSq)
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
+	}
+
+	acc.Computed = true
 }
 
 // DeepCopy creates a deep copy of the accumulator stack (for Lazy SMP thread copies).
@@ -137,33 +207,28 @@ func (s *NNUEAccumulatorStack) Reset() {
 	s.stack[0].Computed = false
 }
 
+// nnuePieceIndexTable maps Piece values (0-12) to HalfKP piece type indices.
+// -1 for Empty (0) and kings (6, 12).
+var nnuePieceIndexTable = [13]int{
+	-1, // Empty
+	0,  // WhitePawn
+	1,  // WhiteKnight
+	2,  // WhiteBishop
+	3,  // WhiteRook
+	4,  // WhiteQueen
+	-1, // WhiteKing
+	5,  // BlackPawn
+	6,  // BlackKnight
+	7,  // BlackBishop
+	8,  // BlackRook
+	9,  // BlackQueen
+	-1, // BlackKing
+}
+
 // nnuePieceIndex maps a Piece (1-12, excluding kings) to a HalfKP piece type index (0-9).
 // Returns -1 for Empty or kings.
 func nnuePieceIndex(p Piece) int {
-	switch p {
-	case WhitePawn:
-		return 0
-	case WhiteKnight:
-		return 1
-	case WhiteBishop:
-		return 2
-	case WhiteRook:
-		return 3
-	case WhiteQueen:
-		return 4
-	case BlackPawn:
-		return 5
-	case BlackKnight:
-		return 6
-	case BlackBishop:
-		return 7
-	case BlackRook:
-		return 8
-	case BlackQueen:
-		return 9
-	default:
-		return -1 // Empty or King
-	}
+	return nnuePieceIndexTable[p]
 }
 
 // HalfKPIndex computes the feature index for a given perspective.

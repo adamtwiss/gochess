@@ -85,22 +85,19 @@ func TestNNUEAccumulatorStack(t *testing.T) {
 	stack.Current().Computed = true
 	stack.Current().White[0] = 42
 
-	// Push and verify copy
+	// Push is now lazy — does NOT copy, marks as not computed
 	stack.Push()
-	if !stack.Current().Computed {
-		t.Error("pushed accumulator should be computed")
-	}
-	if stack.Current().White[0] != 42 {
-		t.Errorf("expected 42, got %d", stack.Current().White[0])
+	if stack.Current().Computed {
+		t.Error("lazy-pushed accumulator should not be computed")
 	}
 
-	// Modify top
-	stack.Current().White[0] = 99
-
-	// Pop should restore
+	// Pop should restore parent
 	stack.Pop()
 	if stack.Current().White[0] != 42 {
 		t.Errorf("after pop expected 42, got %d", stack.Current().White[0])
+	}
+	if !stack.Current().Computed {
+		t.Error("parent should still be computed after pop")
 	}
 }
 
@@ -110,6 +107,7 @@ func TestNNUEAccumulatorStackDeepCopy(t *testing.T) {
 	stack.Current().Computed = true
 	stack.Push()
 	stack.Current().White[0] = 200
+	stack.Current().Computed = true // manually set for this test
 
 	cp := stack.DeepCopy()
 	if cp.Current().White[0] != 200 {
@@ -428,6 +426,9 @@ func TestNNUEIncrementalMakeUnmake(t *testing.T) {
 		}
 		b.MakeMove(m)
 
+		// Materialize the lazy accumulator before comparing
+		b.NNUEAcc.Materialize(net, &b)
+
 		// Full recompute for comparison
 		fullAcc := &NNUEAccumulator{}
 		net.RecomputeAccumulator(fullAcc, &b)
@@ -482,7 +483,8 @@ func TestNNUEIncrementalKingMove(t *testing.T) {
 	m2, _ := b.ParseUCIMove("e1e2")
 	b.MakeMove(m2)
 
-	// King moved — accumulator should have been fully recomputed
+	// King moved — materialize and verify against full recompute
+	b.NNUEAcc.Materialize(net, &b)
 	fullAcc := &NNUEAccumulator{}
 	net.RecomputeAccumulator(fullAcc, &b)
 
@@ -720,6 +722,7 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 			b.MakeMove(m)
 			played = append(played, m)
 
+			b.NNUEAcc.Materialize(net, &b)
 			fullAcc := &NNUEAccumulator{}
 			net.RecomputeAccumulator(fullAcc, &b)
 			compareAccumulators(t, b.NNUEAcc.Current(), fullAcc,
@@ -900,6 +903,7 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 		// Make a move inside null move, verify
 		m, _ := b.ParseUCIMove("g1f3")
 		b.MakeMove(m)
+		b.NNUEAcc.Materialize(net, &b)
 		fullAcc := &NNUEAccumulator{}
 		net.RecomputeAccumulator(fullAcc, &b)
 		compareAccumulators(t, b.NNUEAcc.Current(), fullAcc, "move after null move")
@@ -1032,6 +1036,7 @@ func TestNNUEIncrementalRandomGames(t *testing.T) {
 			b.MakeMove(m)
 			played = append(played, m)
 
+			b.NNUEAcc.Materialize(net, &b)
 			fullAcc := &NNUEAccumulator{}
 			net.RecomputeAccumulator(fullAcc, &b)
 			incAcc := b.NNUEAcc.Current()
