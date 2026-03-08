@@ -73,10 +73,7 @@ type TranspositionTable struct {
 	buckets    []TTBucket
 	size       uint64 // number of buckets
 	mask       uint64 // size - 1, for fast modulo
-	generation uint8  // incremented each search for age-based replacement
-	probes     uint64 // Stats: total probes (atomic)
-	hits       uint64 // Stats: successful probes (atomic)
-	writes     uint64 // Stats: entries written (atomic)
+	generation uint8 // incremented each search for age-based replacement
 }
 
 // NewTranspositionTable creates a new TT with the given size in MB
@@ -110,9 +107,6 @@ func (tt *TranspositionTable) Clear() {
 		tt.buckets[i] = TTBucket{}
 	}
 	tt.generation = 0
-	atomic.StoreUint64(&tt.probes, 0)
-	atomic.StoreUint64(&tt.hits, 0)
-	atomic.StoreUint64(&tt.writes, 0)
 }
 
 // index returns the table index for a hash key
@@ -123,7 +117,6 @@ func (tt *TranspositionTable) index(key uint64) uint64 {
 // Probe looks up a position in the table.
 // Uses atomic loads and 32-bit XOR verification for lockless thread safety.
 func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
-	atomic.AddUint64(&tt.probes, 1)
 	bucket := &tt.buckets[tt.index(key)]
 	keyUpper := uint32(key >> 32)
 
@@ -142,7 +135,6 @@ func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {
 			continue
 		}
 
-		atomic.AddUint64(&tt.hits, 1)
 		return TTEntry{
 			Key:        key,
 			Depth:      depth,
@@ -184,7 +176,7 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 		if slotFlag == TTNone {
 			atomic.StoreUint64(&bucket.data[i], newData)
 			atomic.StoreUint32(&bucket.keys[i], newKey)
-			atomic.AddUint64(&tt.writes, 1)
+	
 			return
 		}
 
@@ -193,7 +185,7 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 			if d >= slotDepth || gen != slotGen {
 				atomic.StoreUint64(&bucket.data[i], newData)
 				atomic.StoreUint32(&bucket.keys[i], newKey)
-				atomic.AddUint64(&tt.writes, 1)
+		
 			}
 			return
 		}
@@ -211,12 +203,13 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 	// No key match and no empty slot: replace worst-scoring slot
 	atomic.StoreUint64(&bucket.data[replaceIdx], newData)
 	atomic.StoreUint32(&bucket.keys[replaceIdx], newKey)
-	atomic.AddUint64(&tt.writes, 1)
 }
 
-// Stats returns probe count, hit count and write count
+// Stats returns probe count, hit count and write count.
+// These counters were removed from the hot path for performance;
+// this now returns zeros. Use Hashfull() for TT utilization.
 func (tt *TranspositionTable) Stats() (probes, hits, writes uint64) {
-	return atomic.LoadUint64(&tt.probes), atomic.LoadUint64(&tt.hits), atomic.LoadUint64(&tt.writes)
+	return 0, 0, 0
 }
 
 // Hashfull returns permill of table entries used (for UCI info)

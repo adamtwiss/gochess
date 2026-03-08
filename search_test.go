@@ -1003,13 +1003,7 @@ func runTTDensityTest(t *testing.T, ttSizeMB int) {
 		move, result := b.SearchWithInfo(pos.depth, info)
 		elapsed := time.Since(info.StartTime)
 
-		probes, hits, writes := tt.Stats()
 		hashfull := tt.Hashfull()
-
-		hitRate := float64(0)
-		if probes > 0 {
-			hitRate = float64(hits) * 100 / float64(probes)
-		}
 
 		nps := uint64(0)
 		if elapsed.Milliseconds() > 0 {
@@ -1018,8 +1012,7 @@ func runTTDensityTest(t *testing.T, ttSizeMB int) {
 
 		t.Logf("[%s] depth=%d move=%s score=%d", pos.name, pos.depth, move.String(), result.Score)
 		t.Logf("  nodes=%d  time=%v  nps=%d", result.Nodes, elapsed.Round(time.Millisecond), nps)
-		t.Logf("  TT: probes=%d hits=%d (%.1f%%) writes=%d hashfull=%d‰",
-			probes, hits, hitRate, writes, hashfull)
+		t.Logf("  TT hashfull=%d‰", hashfull)
 
 		totalNodes += result.Nodes
 		totalTimeMs += elapsed.Milliseconds()

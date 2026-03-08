@@ -236,18 +236,8 @@ func TestTTClear(t *testing.T) {
 		t.Error("Entry should exist before Clear")
 	}
 
-	_, _, writes := tt.Stats()
-	if writes == 0 {
-		t.Error("Should have writes before Clear")
-	}
-
 	// Clear and verify everything is gone
 	tt.Clear()
-
-	probes, hits, writes := tt.Stats()
-	if probes != 0 || hits != 0 || writes != 0 {
-		t.Errorf("After Clear: probes=%d, hits=%d, writes=%d, all should be 0", probes, hits, writes)
-	}
 
 	// Probe should miss
 	_, found = tt.Probe(0)
@@ -268,21 +258,16 @@ func TestSearchWithTT(t *testing.T) {
 
 	// First search
 	move1, info1 := b.SearchWithTT(5, 0, tt)
+	t.Logf("First search: move=%s, nodes=%d", move1.String(), info1.Nodes)
 
-	_, hits1, writes1 := tt.Stats()
-	t.Logf("First search: move=%s, nodes=%d, TT writes=%d", move1.String(), info1.Nodes, writes1)
-
-	// Reset position and search again with same TT
+	// Reset position and search again with same TT (should benefit from cached entries)
 	b.Reset()
 	move2, info2 := b.SearchWithTT(5, 0, tt)
+	t.Logf("Second search: move=%s, nodes=%d", move2.String(), info2.Nodes)
 
-	_, hits2, writes2 := tt.Stats()
-	t.Logf("Second search: move=%s, nodes=%d, TT hits=%d, TT writes=%d",
-		move2.String(), info2.Nodes, hits2-hits1, writes2-writes1)
-
-	// Second search should have TT hits and potentially fewer nodes
-	if hits2 <= hits1 {
-		t.Error("Expected TT hits on second search")
+	// Second search should benefit from TT (fewer nodes)
+	if info2.Nodes >= info1.Nodes {
+		t.Errorf("Expected fewer nodes on second search (first=%d, second=%d)", info1.Nodes, info2.Nodes)
 	}
 
 	// Results should be the same
