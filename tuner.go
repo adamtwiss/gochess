@@ -696,12 +696,13 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 	numTrain := splitIdx
 	numValidation := len(lines) - splitIdx
 
-	// Write binary file
-	out, err := os.Create(outputBin)
+	// Write to a temp file first, then rename atomically.
+	// This prevents a truncated .tbin if preprocessing is interrupted.
+	tmpFile := outputBin + ".tmp"
+	out, err := os.Create(tmpFile)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 	bw := bufio.NewWriterSize(out, 256*1024)
 
 	// Write placeholder header (we'll patch trainBytes later)
@@ -713,6 +714,8 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 	binary.LittleEndian.PutUint32(headerBuf[12:16], uint32(numValidation))
 	// trainBytes at [16:24] will be patched
 	if _, err := bw.Write(headerBuf[:]); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
 		return err
 	}
 
@@ -721,6 +724,8 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 	for i, lr := range lines {
 		var b Board
 		if err := b.SetFEN(lr.fen); err != nil {
+			out.Close()
+			os.Remove(tmpFile)
 			return fmt.Errorf("invalid FEN at shuffled index %d: %v", i, err)
 		}
 		trace := t.computeTrace(&b)
@@ -728,6 +733,8 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 		trace.Score = lr.score
 		n, err := writeTraceRecord(bw, &trace)
 		if err != nil {
+			out.Close()
+			os.Remove(tmpFile)
 			return err
 		}
 		if i < numTrain {
@@ -736,15 +743,32 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 	}
 
 	if err := bw.Flush(); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
 		return err
 	}
 
 	// Patch trainBytes in header
 	binary.LittleEndian.PutUint64(headerBuf[16:24], trainBytesTotal)
 	if _, err := out.Seek(0, io.SeekStart); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
 		return err
 	}
 	if _, err := out.Write(headerBuf[:]); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+
+	if err := out.Close(); err != nil {
+		os.Remove(tmpFile)
+		return err
+	}
+
+	// Atomic rename — only creates the final file if everything succeeded.
+	if err := os.Rename(tmpFile, outputBin); err != nil {
+		os.Remove(tmpFile)
 		return err
 	}
 

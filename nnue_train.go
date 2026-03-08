@@ -492,12 +492,13 @@ func PreprocessNNUEToFile(dataFile, binFile string) (numTrain, numVal uint32, er
 	numTrain = uint32(total * 9 / 10)
 	numVal = uint32(total) - numTrain
 
-	// Write binary file
-	out, err := os.Create(binFile)
+	// Write to a temp file first, then rename atomically.
+	// This prevents a truncated .nnbin if preprocessing is interrupted.
+	tmpFile := binFile + ".tmp"
+	out, err := os.Create(tmpFile)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer out.Close()
 
 	w := bufio.NewWriter(out)
 
@@ -509,6 +510,8 @@ func PreprocessNNUEToFile(dataFile, binFile string) (numTrain, numVal uint32, er
 		NumValidation: numVal,
 	}
 	if err := binary.Write(w, binary.LittleEndian, &header); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
 		return 0, 0, fmt.Errorf("writing header: %w", err)
 	}
 
@@ -519,11 +522,25 @@ func PreprocessNNUEToFile(dataFile, binFile string) (numTrain, numVal uint32, er
 			continue // skip bad lines
 		}
 		if err := writeNNBinRecord(w, sample); err != nil {
+			out.Close()
+			os.Remove(tmpFile)
 			return 0, 0, err
 		}
 	}
 
 	if err := w.Flush(); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		return 0, 0, err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmpFile)
+		return 0, 0, err
+	}
+
+	// Atomic rename — only creates the final file if everything succeeded.
+	if err := os.Rename(tmpFile, binFile); err != nil {
+		os.Remove(tmpFile)
 		return 0, 0, err
 	}
 
