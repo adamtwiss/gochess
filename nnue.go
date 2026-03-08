@@ -104,6 +104,10 @@ type NNUENet struct {
 	// Layout: HWT[j*(HiddenSize*2)+i] = HiddenWeights[i][j]
 	// Populated by PrepareWeights(), nil when SIMD not available.
 	HWT []int16
+
+	// Transposed hidden2 weights for SIMD: [output_k][input_j]
+	// Layout: Hidden2WT[k*32+j] = Hidden2Weights[j][k]
+	Hidden2WT []int16
 }
 
 // DirtyPiece describes a pending accumulator update (deferred from MakeMove).
@@ -646,12 +650,20 @@ func (net *NNUENet) PrepareWeights() {
 	if !nnueUseSIMD {
 		return
 	}
+	// Transpose hidden1 weights: HWT[j][i] = HiddenWeights[i][j]
 	inputDim := NNUEHiddenSize * 2 // 512
 	outputDim := NNUEHidden2Size   // 32
 	net.HWT = make([]int16, outputDim*inputDim)
 	for i := 0; i < inputDim; i++ {
 		for j := 0; j < outputDim; j++ {
 			net.HWT[j*inputDim+i] = net.HiddenWeights[i][j]
+		}
+	}
+	// Transpose hidden2 weights: Hidden2WT[k][j] = Hidden2Weights[j][k]
+	net.Hidden2WT = make([]int16, NNUEHidden2Size*NNUEHidden3Size)
+	for j := 0; j < NNUEHidden2Size; j++ {
+		for k := 0; k < NNUEHidden3Size; k++ {
+			net.Hidden2WT[k*NNUEHidden2Size+j] = net.Hidden2Weights[j][k]
 		}
 	}
 }
@@ -676,28 +688,12 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 	var hidden2 [NNUEHidden2Size]int32
 	nnueMatMul32x512(&input[0], &net.HWT[0], &net.HiddenBiases[0], &hidden2[0])
 
-	// Hidden layer 2 (scalar — only 32×32, not worth SIMD)
+	// Hidden layer 2: SIMD 32×32 matmul with ReLU activation
 	var hidden3 [NNUEHidden3Size]int32
-	hidden3 = net.Hidden2Biases
-	for j := 0; j < NNUEHidden2Size; j++ {
-		scaled := hidden2[j] >> 6
-		if scaled <= 0 {
-			continue
-		}
-		for k := 0; k < NNUEHidden3Size; k++ {
-			hidden3[k] += scaled * int32(net.Hidden2Weights[j][k])
-		}
-	}
+	nnueMatMul32x32ReLU(&hidden2[0], &net.Hidden2WT[0], &net.Hidden2Biases[0], &hidden3[0])
 
-	// Output layer: ReLU(hidden3) (no upper clamp)
-	output := int32(net.OutputBias)
-	for k := 0; k < NNUEHidden3Size; k++ {
-		scaled := hidden3[k] >> 6
-		if scaled <= 0 {
-			continue
-		}
-		output += scaled * int32(net.OutputWeights[k])
-	}
+	// Output layer: SIMD dot product with ReLU activation
+	output := net.OutputBias + nnueDotReLU32(&hidden3[0], &net.OutputWeights[0])
 
 	return int(output) / nnueOutputScale * NNUEEvalScale
 }

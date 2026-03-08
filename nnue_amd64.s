@@ -292,6 +292,163 @@ copysubadd_loop:
 	RET
 
 // ============================================================================
+// nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *int32)
+//
+// Computes: output[k] = biases[k] + sum_j(max(0, input[j] >> 6) * weightsT[k*32+j])
+// for k = 0..31, j = 0..31.
+//
+// weightsT layout: [32][32] int16, row-major (each row = 64 bytes).
+// Applies ReLU(x >> 6) to input once, then reuses across all outputs.
+// Uses VPMOVSXWD to sign-extend int16 weights to int32, VPMULLD for multiply.
+//
+// Register allocation:
+//   AX  = input pointer (precompute only)
+//   BX  = weightsT pointer (advances by 64 per output)
+//   CX  = biases pointer (advances by 4 per output)
+//   DX  = output pointer (advances by 4 per output)
+//   R8  = loop counter (32..0)
+//   R9  = scratch for scalar result
+//   Y0-Y3 = activated values (constant after precompute)
+//   Y4  = zero register
+//   Y5  = scratch for weights/products
+//   Y8  = accumulator per output
+//   X5  = scratch for horizontal reduction
+// ============================================================================
+TEXT ·nnueMatMul32x32ReLU(SB), NOSPLIT, $0-32
+	MOVQ input+0(FP), AX
+	MOVQ weightsT+8(FP), BX
+	MOVQ biases+16(FP), CX
+	MOVQ output+24(FP), DX
+
+	// Precompute activated = ReLU(input >> 6)
+	VPXOR Y4, Y4, Y4
+	VMOVDQU (AX), Y0
+	VPSRAD $6, Y0, Y0
+	VPMAXSD Y4, Y0, Y0
+	VMOVDQU 32(AX), Y1
+	VPSRAD $6, Y1, Y1
+	VPMAXSD Y4, Y1, Y1
+	VMOVDQU 64(AX), Y2
+	VPSRAD $6, Y2, Y2
+	VPMAXSD Y4, Y2, Y2
+	VMOVDQU 96(AX), Y3
+	VPSRAD $6, Y3, Y3
+	VPMAXSD Y4, Y3, Y3
+
+	MOVQ $32, R8
+
+matmul32x32_loop:
+	VPXOR Y8, Y8, Y8              // zero accumulator
+
+	// Group 0: activated[0..7] × weights[0..7]
+	VMOVDQU (BX), X5              // load 8 int16 (128 bits)
+	VPMOVSXWD X5, Y5              // sign-extend to 8 int32
+	VPMULLD Y0, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Group 1: activated[8..15] × weights[8..15]
+	VMOVDQU 16(BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y1, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Group 2: activated[16..23] × weights[16..23]
+	VMOVDQU 32(BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y2, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Group 3: activated[24..31] × weights[24..31]
+	VMOVDQU 48(BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y3, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Horizontal reduce Y8 → R9
+	VEXTRACTI128 $1, Y8, X5
+	VPADDD X5, X8, X8
+	VPSHUFD $0x4E, X8, X5
+	VPADDD X5, X8, X8
+	VPSHUFD $0xB1, X8, X5
+	VPADDD X5, X8, X8
+	VMOVD X8, R9
+
+	// Add bias and store output
+	ADDL (CX), R9
+	MOVL R9, (DX)
+
+	ADDQ $64, BX                  // next weight row (32 int16)
+	ADDQ $4, CX                   // next bias
+	ADDQ $4, DX                   // next output
+	DECQ R8
+	JNZ matmul32x32_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueDotReLU32(input *int32, weights *int16) int32
+//
+// Returns: sum_k(max(0, input[k] >> 6) * int32(weights[k])) for k = 0..31
+// Used for the output layer (32 → 1 with ReLU activation).
+// ============================================================================
+TEXT ·nnueDotReLU32(SB), NOSPLIT, $0-24
+	MOVQ input+0(FP), AX
+	MOVQ weights+8(FP), BX
+
+	VPXOR Y4, Y4, Y4              // zero for ReLU
+	VPXOR Y8, Y8, Y8              // accumulator
+
+	// Group 0: input[0..7]
+	VMOVDQU (AX), Y0
+	VPSRAD $6, Y0, Y0
+	VPMAXSD Y4, Y0, Y0
+	VMOVDQU (BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y0, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Group 1: input[8..15]
+	VMOVDQU 32(AX), Y0
+	VPSRAD $6, Y0, Y0
+	VPMAXSD Y4, Y0, Y0
+	VMOVDQU 16(BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y0, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Group 2: input[16..23]
+	VMOVDQU 64(AX), Y0
+	VPSRAD $6, Y0, Y0
+	VPMAXSD Y4, Y0, Y0
+	VMOVDQU 32(BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y0, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Group 3: input[24..31]
+	VMOVDQU 96(AX), Y0
+	VPSRAD $6, Y0, Y0
+	VPMAXSD Y4, Y0, Y0
+	VMOVDQU 48(BX), X5
+	VPMOVSXWD X5, Y5
+	VPMULLD Y0, Y5, Y5
+	VPADDD Y5, Y8, Y8
+
+	// Horizontal reduce Y8
+	VEXTRACTI128 $1, Y8, X5
+	VPADDD X5, X8, X8
+	VPSHUFD $0x4E, X8, X5
+	VPADDD X5, X8, X8
+	VPSHUFD $0xB1, X8, X5
+	VPADDD X5, X8, X8
+	VMOVD X8, AX
+	MOVL AX, ret+16(FP)
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
 // nnueAccCopySubSubAdd256(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16)
 // Computes: dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i = 0..255
 // Fused copy+update for captures: reads from src (parent), writes to dst (child).

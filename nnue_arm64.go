@@ -55,3 +55,14 @@ func nnueAccCopySubAdd256(dst *int16, src *int16, oldW *int16, newW *int16)
 //
 //go:noescape
 func nnueAccCopySubSubAdd256(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16)
+
+// nnueMatMul32x32ReLU and nnueDotReLU32 — Go fallback for ARM64.
+// TODO: implement NEON assembly versions.
+
+func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *int32) {
+	panic("nnueMatMul32x32ReLU not yet implemented for ARM64")
+}
+
+func nnueDotReLU32(input *int32, weights *int16) int32 {
+	panic("nnueDotReLU32 not yet implemented for ARM64")
+}
