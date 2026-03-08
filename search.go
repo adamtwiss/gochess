@@ -979,22 +979,16 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	probCutBeta := beta + 200
 	if !inCheck && ply > 0 && depth >= 5 && staticEval+100 >= probCutBeta {
 		pcDepth := depth - 4
-		var pcMoves [64]Move
-		pcCount := 0
-		caps := b.GenerateCaptures()
+		var pcBuf [64]Move
+		caps := b.GenerateCapturesAppend(pcBuf[:0])
 		for _, m := range caps {
-			if b.SEESign(m, 0) && pcCount < len(pcMoves) {
-				pcMoves[pcCount] = m
-				pcCount++
+			if !b.SEESign(m, 0) {
+				continue
 			}
-		}
-		for i := 0; i < pcCount; i++ {
-			m := pcMoves[i]
-			if !b.IsLegalSlow(m) {
+			if !b.IsLegal(m, pinned, false) {
 				continue
 			}
 			b.MakeMove(m)
-			// Zero-window search at reduced depth
 			score := -b.negamax(pcDepth, ply+1, -probCutBeta, -probCutBeta+1, info)
 			b.UnmakeMove(m)
 			if atomic.LoadInt32(&info.Stopped) != 0 {
