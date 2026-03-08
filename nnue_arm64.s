@@ -335,3 +335,236 @@ copysubsubadd_loop:
 	BNE copysubsubadd_loop
 
 	RET
+
+// ============================================================================
+// nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *int32)
+//
+// Computes: output[k] = biases[k] + sum_j(max(0, input[j] >> 6) * weightsT[k*32+j])
+// for k = 0..31, j = 0..31.
+//
+// weightsT layout: [32][32] int16, row-major (each row = 64 bytes).
+// Precomputes activated = ReLU(input >> 6) into V0-V7 (8 regs × 4 int32).
+// Uses SSHLL/SSHLL2 to sign-extend int16 weights to int32, then MLA.
+//
+// Register allocation:
+//   R0  = input pointer (precompute only)
+//   R1  = weightsT pointer (advances by 64 per output)
+//   R2  = biases pointer (advances by 4 per output)
+//   R3  = output pointer (advances by 4 per output)
+//   R4  = loop counter (32..0)
+//   R5  = temp address for weight loads
+//   R12 = scratch for scalar result
+//   R13 = scratch for bias
+//   V0-V7  = activated input (constant after precompute)
+//   V8     = zero register
+//   V16    = accumulator per output
+//   V24    = weight load (8 int16)
+//   V25    = sign-extended weights / products
+// ============================================================================
+TEXT ·nnueMatMul32x32ReLU(SB), NOSPLIT, $0-32
+	MOVD input+0(FP), R0
+	MOVD weightsT+8(FP), R1
+	MOVD biases+16(FP), R2
+	MOVD output+24(FP), R3
+
+	// Zero register for ReLU
+	VEOR V8.B16, V8.B16, V8.B16
+
+	// Precompute activated[0..31] = max(0, input[i] >> 6)
+	// 8 NEON registers × 4 int32 = 32 values
+
+	VLD1 (R0), [V0.B16]
+	WORD $0x4F3A0400              // SSHR V0.4S, V0.4S, #6
+	WORD $0x4EA86400              // SMAX V0.4S, V0.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V1.B16]
+	WORD $0x4F3A0421              // SSHR V1.4S, V1.4S, #6
+	WORD $0x4EA86421              // SMAX V1.4S, V1.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V2.B16]
+	WORD $0x4F3A0442              // SSHR V2.4S, V2.4S, #6
+	WORD $0x4EA86442              // SMAX V2.4S, V2.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V3.B16]
+	WORD $0x4F3A0463              // SSHR V3.4S, V3.4S, #6
+	WORD $0x4EA86463              // SMAX V3.4S, V3.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V4.B16]
+	WORD $0x4F3A0484              // SSHR V4.4S, V4.4S, #6
+	WORD $0x4EA86484              // SMAX V4.4S, V4.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V5.B16]
+	WORD $0x4F3A04A5              // SSHR V5.4S, V5.4S, #6
+	WORD $0x4EA864A5              // SMAX V5.4S, V5.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V6.B16]
+	WORD $0x4F3A04C6              // SSHR V6.4S, V6.4S, #6
+	WORD $0x4EA864C6              // SMAX V6.4S, V6.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V7.B16]
+	WORD $0x4F3A04E7              // SSHR V7.4S, V7.4S, #6
+	WORD $0x4EA864E7              // SMAX V7.4S, V7.4S, V8.4S
+
+	MOVD $32, R4                  // 32 output neurons
+
+matmul32_loop:
+	// Zero accumulator
+	VEOR V16.B16, V16.B16, V16.B16
+
+	// Group 0: weights[0..7] × activated[0..7]
+	VLD1 (R1), [V24.B16]         // load 8 int16 weights
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0  (sign-extend low 4)
+	WORD $0x4E809730              // MLA    V16.4S, V25.4S, V0.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0  (sign-extend high 4)
+	WORD $0x4E819730              // MLA    V16.4S, V25.4S, V1.4S
+
+	// Group 1: weights[8..15] × activated[8..15]
+	ADD $16, R1, R5
+	VLD1 (R5), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E829730              // MLA    V16.4S, V25.4S, V2.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E839730              // MLA    V16.4S, V25.4S, V3.4S
+
+	// Group 2: weights[16..23] × activated[16..23]
+	ADD $32, R1, R5
+	VLD1 (R5), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E849730              // MLA    V16.4S, V25.4S, V4.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E859730              // MLA    V16.4S, V25.4S, V5.4S
+
+	// Group 3: weights[24..31] × activated[24..31]
+	ADD $48, R1, R5
+	VLD1 (R5), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E869730              // MLA    V16.4S, V25.4S, V6.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E879730              // MLA    V16.4S, V25.4S, V7.4S
+
+	// Horizontal reduce V16 → scalar
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C              // FMOV W12, S16
+	MOVW (R2), R13                // bias[k]
+	ADDW R13, R12, R12
+	MOVW R12, (R3)                // store output[k]
+
+	// Advance to next output neuron
+	ADD $64, R1, R1               // next weight row (32 int16 = 64 bytes)
+	ADD $4, R2, R2                // next bias
+	ADD $4, R3, R3                // next output
+	SUBS $1, R4, R4
+	BNE matmul32_loop
+
+	RET
+
+// ============================================================================
+// nnueDotReLU32(input *int32, weights *int16) int32
+//
+// Returns: sum_k(max(0, input[k] >> 6) * int32(weights[k])) for k = 0..31
+// Used for the output layer (32 → 1 with ReLU activation).
+//
+// Register allocation:
+//   R0  = input pointer (advances during precompute)
+//   R1  = weights pointer
+//   R5  = temp address
+//   V0-V7  = activated input (precomputed)
+//   V8     = zero register
+//   V16    = accumulator
+//   V24    = weight load (8 int16)
+//   V25    = sign-extended weights
+// ============================================================================
+TEXT ·nnueDotReLU32(SB), NOSPLIT, $0-24
+	MOVD input+0(FP), R0
+	MOVD weights+8(FP), R1
+
+	// Zero register for ReLU and accumulator
+	VEOR V8.B16, V8.B16, V8.B16
+	VEOR V16.B16, V16.B16, V16.B16
+
+	// Precompute activated[0..31] = max(0, input[i] >> 6)
+	VLD1 (R0), [V0.B16]
+	WORD $0x4F3A0400              // SSHR V0.4S, V0.4S, #6
+	WORD $0x4EA86400              // SMAX V0.4S, V0.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V1.B16]
+	WORD $0x4F3A0421              // SSHR V1.4S, V1.4S, #6
+	WORD $0x4EA86421              // SMAX V1.4S, V1.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V2.B16]
+	WORD $0x4F3A0442              // SSHR V2.4S, V2.4S, #6
+	WORD $0x4EA86442              // SMAX V2.4S, V2.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V3.B16]
+	WORD $0x4F3A0463              // SSHR V3.4S, V3.4S, #6
+	WORD $0x4EA86463              // SMAX V3.4S, V3.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V4.B16]
+	WORD $0x4F3A0484              // SSHR V4.4S, V4.4S, #6
+	WORD $0x4EA86484              // SMAX V4.4S, V4.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V5.B16]
+	WORD $0x4F3A04A5              // SSHR V5.4S, V5.4S, #6
+	WORD $0x4EA864A5              // SMAX V5.4S, V5.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V6.B16]
+	WORD $0x4F3A04C6              // SSHR V6.4S, V6.4S, #6
+	WORD $0x4EA864C6              // SMAX V6.4S, V6.4S, V8.4S
+
+	ADD $16, R0, R0
+	VLD1 (R0), [V7.B16]
+	WORD $0x4F3A04E7              // SSHR V7.4S, V7.4S, #6
+	WORD $0x4EA864E7              // SMAX V7.4S, V7.4S, V8.4S
+
+	// Group 0: weights[0..7] × activated[0..7]
+	VLD1 (R1), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E809730              // MLA    V16.4S, V25.4S, V0.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E819730              // MLA    V16.4S, V25.4S, V1.4S
+
+	// Group 1: weights[8..15] × activated[8..15]
+	ADD $16, R1, R5
+	VLD1 (R5), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E829730              // MLA    V16.4S, V25.4S, V2.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E839730              // MLA    V16.4S, V25.4S, V3.4S
+
+	// Group 2: weights[16..23] × activated[16..23]
+	ADD $32, R1, R5
+	VLD1 (R5), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E849730              // MLA    V16.4S, V25.4S, V4.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E859730              // MLA    V16.4S, V25.4S, V5.4S
+
+	// Group 3: weights[24..31] × activated[24..31]
+	ADD $48, R1, R5
+	VLD1 (R5), [V24.B16]
+	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
+	WORD $0x4E869730              // MLA    V16.4S, V25.4S, V6.4S
+	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
+	WORD $0x4E879730              // MLA    V16.4S, V25.4S, V7.4S
+
+	// Horizontal reduce V16 → scalar
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C              // FMOV W12, S16
+	MOVW R12, ret+16(FP)
+
+	RET
