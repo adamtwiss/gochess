@@ -34,8 +34,9 @@ func main() {
 	// Book loading flag
 	bookFile := flag.String("book", "", "opening book file for UCI mode")
 
-	// NNUE flag
-	nnueFile := flag.String("nnue", "", "NNUE network file")
+	// NNUE flags
+	nnueFile := flag.String("nnue", "", "NNUE network file (default: net.nnue in current directory)")
+	classical := flag.Bool("classical", false, "disable NNUE, use classical eval only")
 
 	// Syzygy tablebase flag
 	syzygyPath := flag.String("syzygy", "", "path to Syzygy tablebase files")
@@ -60,6 +61,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200 -compare base.json         # compare\n")
 		fmt.Fprintf(os.Stderr, "  chess -buildbook -pgn games.pgn -bookout book.bin\n")
 		fmt.Fprintf(os.Stderr, "  chess -book book.bin\n")
+		fmt.Fprintf(os.Stderr, "  chess -classical                                   # disable NNUE\n")
+		fmt.Fprintf(os.Stderr, "  chess -nnue custom.nnue                            # use specific net\n")
 	}
 	flag.Parse()
 
@@ -81,9 +84,13 @@ func main() {
 		return
 	}
 
-	// Load NNUE network if specified (before any mode branches)
+	// Load NNUE network (before any mode branches)
 	var nnueNet *chess.NNUENet
-	if *nnueFile != "" {
+	if *classical {
+		// Explicitly disable NNUE
+		chess.UseNNUE = false
+	} else if *nnueFile != "" {
+		// Explicit net path — must exist
 		var err error
 		nnueNet, err = chess.LoadNNUE(*nnueFile)
 		if err != nil {
@@ -93,6 +100,19 @@ func main() {
 		chess.UseNNUE = true
 		chess.GlobalNNUENet = nnueNet
 		fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
+	} else {
+		// Try default net.nnue in current directory
+		const defaultNet = "net.nnue"
+		var err error
+		nnueNet, err = chess.LoadNNUE(defaultNet)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %s not found, falling back to classical eval\n", defaultNet)
+			chess.UseNNUE = false
+		} else {
+			chess.UseNNUE = true
+			chess.GlobalNNUENet = nnueNet
+			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", defaultNet)
+		}
 	}
 
 	// Initialize Syzygy tablebases if specified

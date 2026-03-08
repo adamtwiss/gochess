@@ -130,7 +130,7 @@ func (e *UCIEngine) cmdUCI() {
 	e.send("option name MoveOverhead type spin default 50 min 0 max 1000")
 	e.send("option name OwnBook type check default true")
 	e.send("option name BookFile type string default <empty>")
-	e.send("option name UseNNUE type check default false")
+	e.send("option name UseNNUE type check default true")
 	e.send("option name NNUEFile type string default <empty>")
 	e.send("option name SyzygyPath type string default <empty>")
 	e.send("option name SyzygyProbeDepth type spin default 1 min 1 max 100")

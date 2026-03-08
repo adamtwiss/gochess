@@ -194,7 +194,7 @@ var OCBScale = 64
 
 // UseNNUE toggles NNUE evaluation. When true and NNUENet is loaded,
 // EvaluateRelative dispatches to the NNUE forward pass.
-var UseNNUE = false
+var UseNNUE = true
 
 // GlobalNNUENet is the shared NNUE network pointer. When non-nil and UseNNUE
 // is true, newly created boards (e.g. in EPD tests, benchmarks) automatically
