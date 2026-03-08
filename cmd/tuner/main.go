@@ -151,7 +151,7 @@ func runTune(args []string) {
 	epochs := fs.Int("epochs", 500, "number of optimization epochs")
 	lr := fs.Float64("lr", 1.0, "learning rate")
 	l2 := fs.Float64("l2", 0, "L2 regularization strength toward initial values (0=disabled)")
-	lambda := fs.Float64("lambda", 1.0, "result vs score weight: 1=result-only (default), 0=score-only")
+	lambda := fs.Float64("lambda", 0.0, "result vs score weight: 0=score-only (default), 1=result-only")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
@@ -268,7 +268,7 @@ func runNNUETrain(args []string) {
 	epochs := fs.Int("epochs", 100, "number of training epochs")
 	lr := fs.Float64("lr", 0.01, "learning rate")
 	batchSize := fs.Int("batch", 16384, "batch size")
-	lambda := fs.Float64("lambda", 0.5, "result vs score weight (0=score only, 1=result only)")
+	lambda := fs.Float64("lambda", 0.0, "result vs score weight (0=score only [default], 1=result only)")
 	kValue := fs.Float64("K", 0, "sigmoid scaling constant (0=auto-tune from data)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
