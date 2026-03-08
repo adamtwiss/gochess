@@ -8,48 +8,82 @@ import (
 	"testing"
 )
 
-func TestHalfKPIndex(t *testing.T) {
-	// Basic index range test
-	for ks := Square(0); ks < 64; ks++ {
-		for piece := WhitePawn; piece <= BlackQueen; piece++ {
-			if piece == WhiteKing || piece == BlackKing {
-				continue
+func TestKingBuckets(t *testing.T) {
+	// Verify all 64 squares map to valid buckets
+	for sq := 0; sq < 64; sq++ {
+		bucket := kingBucketTable[sq]
+		if bucket < 0 || bucket >= NNUEKingBuckets {
+			t.Errorf("square %d: bucket %d out of range [0, %d)", sq, bucket, NNUEKingBuckets)
+		}
+	}
+
+	// Verify horizontal mirror symmetry: e1 and d1 should have the same bucket
+	// because files a-d (0-3) and e-h (4-7) mirror
+	for rank := 0; rank < 8; rank++ {
+		for file := 0; file < 4; file++ {
+			sqLeft := rank*8 + file
+			sqRight := rank*8 + (7 - file)
+			if kingBucketTable[sqLeft] != kingBucketTable[sqRight] {
+				t.Errorf("mirror mismatch: sq %d (bucket %d) vs sq %d (bucket %d)",
+					sqLeft, kingBucketTable[sqLeft], sqRight, kingBucketTable[sqRight])
 			}
+		}
+	}
+
+	// Verify 16 distinct buckets exist
+	seen := make(map[int]bool)
+	for sq := 0; sq < 64; sq++ {
+		seen[kingBucketTable[sq]] = true
+	}
+	if len(seen) != NNUEKingBuckets {
+		t.Errorf("expected %d distinct buckets, got %d", NNUEKingBuckets, len(seen))
+	}
+}
+
+func TestHalfKAIndex(t *testing.T) {
+	// Basic index range test — all pieces including kings
+	for ks := Square(0); ks < 64; ks++ {
+		for piece := WhitePawn; piece <= BlackKing; piece++ {
 			for ps := Square(0); ps < 64; ps++ {
-				idx := HalfKPIndex(White, ks, piece, ps)
+				idx := HalfKAIndex(White, ks, piece, ps)
 				if idx < 0 || idx >= NNUEInputSize {
-					t.Errorf("HalfKPIndex(White, %d, %d, %d) = %d out of range [0, %d)", ks, piece, ps, idx, NNUEInputSize)
+					t.Errorf("HalfKAIndex(White, %d, %d, %d) = %d out of range [0, %d)", ks, piece, ps, idx, NNUEInputSize)
 				}
-				idx = HalfKPIndex(Black, ks, piece, ps)
+				idx = HalfKAIndex(Black, ks, piece, ps)
 				if idx < 0 || idx >= NNUEInputSize {
-					t.Errorf("HalfKPIndex(Black, %d, %d, %d) = %d out of range [0, %d)", ks, piece, ps, idx, NNUEInputSize)
+					t.Errorf("HalfKAIndex(Black, %d, %d, %d) = %d out of range [0, %d)", ks, piece, ps, idx, NNUEInputSize)
 				}
 			}
 		}
 	}
 }
 
-func TestHalfKPIndexKingReturnsNegative(t *testing.T) {
-	idx := HalfKPIndex(White, 4, WhiteKing, 4)
+func TestHalfKAIndexEmptyReturnsNegative(t *testing.T) {
+	idx := HalfKAIndex(White, 4, Empty, 4)
 	if idx != -1 {
-		t.Errorf("expected -1 for king, got %d", idx)
-	}
-	idx = HalfKPIndex(Black, 60, BlackKing, 60)
-	if idx != -1 {
-		t.Errorf("expected -1 for king, got %d", idx)
+		t.Errorf("expected -1 for empty, got %d", idx)
 	}
 }
 
-func TestHalfKPIndexUniqueness(t *testing.T) {
+func TestHalfKAIndexKingsIncluded(t *testing.T) {
+	// Kings should return valid indices (unlike HalfKP)
+	idx := HalfKAIndex(White, 4, WhiteKing, 4)
+	if idx < 0 {
+		t.Errorf("expected valid index for WhiteKing, got %d", idx)
+	}
+	idx = HalfKAIndex(Black, 60, BlackKing, 60)
+	if idx < 0 {
+		t.Errorf("expected valid index for BlackKing, got %d", idx)
+	}
+}
+
+func TestHalfKAIndexUniqueness(t *testing.T) {
 	// All indices for a given perspective+kingSq should be unique
 	seen := make(map[int]bool)
 	kingSq := Square(4) // e1
-	for piece := WhitePawn; piece <= BlackQueen; piece++ {
-		if piece == WhiteKing || piece == BlackKing {
-			continue
-		}
+	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		for ps := Square(0); ps < 64; ps++ {
-			idx := HalfKPIndex(White, kingSq, piece, ps)
+			idx := HalfKAIndex(White, kingSq, piece, ps)
 			if idx >= 0 {
 				if seen[idx] {
 					t.Errorf("duplicate index %d for piece=%d sq=%d", idx, piece, ps)
@@ -60,16 +94,43 @@ func TestHalfKPIndexUniqueness(t *testing.T) {
 	}
 }
 
-func TestHalfKPSymmetry(t *testing.T) {
+func TestHalfKASymmetry(t *testing.T) {
 	// A White pawn on e2 from White's perspective with king on e1
 	// should map to the same index as a Black pawn on e7 from Black's perspective with king on e8
 	// (after mirroring: squares ^56, colors swapped)
 
-	wIdx := HalfKPIndex(White, NewSquare(4, 0), WhitePawn, NewSquare(4, 1))
-	bIdx := HalfKPIndex(Black, NewSquare(4, 7), BlackPawn, NewSquare(4, 6))
+	wIdx := HalfKAIndex(White, NewSquare(4, 0), WhitePawn, NewSquare(4, 1))
+	bIdx := HalfKAIndex(Black, NewSquare(4, 7), BlackPawn, NewSquare(4, 6))
 
 	if wIdx != bIdx {
 		t.Errorf("symmetry broken: White index=%d, Black index=%d", wIdx, bIdx)
+	}
+
+	// Also test king feature symmetry
+	wIdx = HalfKAIndex(White, NewSquare(4, 0), WhiteKing, NewSquare(4, 0))
+	bIdx = HalfKAIndex(Black, NewSquare(4, 7), BlackKing, NewSquare(4, 7))
+	if wIdx != bIdx {
+		t.Errorf("king symmetry broken: White index=%d, Black index=%d", wIdx, bIdx)
+	}
+}
+
+func TestHalfKAFileMirroring(t *testing.T) {
+	// When king is on e1 (file 4, mirrored file 3), piece squares should be mirrored
+	// vs when king is on d1 (file 3, no mirror)
+	// King on d1 bucket == king on e1 bucket (both file 3 after mirror)
+	d1 := NewSquare(3, 0) // file 3
+	e1 := NewSquare(4, 0) // file 4, mirrored to 3
+
+	if KingBucket(d1) != KingBucket(e1) {
+		t.Fatalf("d1 and e1 should have same bucket, got %d and %d", KingBucket(d1), KingBucket(e1))
+	}
+
+	// A pawn on a2 with king on d1 should map to same index as pawn on h2 with king on e1
+	// because both mirror to the same effective position
+	idx1 := HalfKAIndex(White, d1, WhitePawn, NewSquare(0, 1)) // a2
+	idx2 := HalfKAIndex(White, e1, WhitePawn, NewSquare(7, 1)) // h2 (mirrored to a2)
+	if idx1 != idx2 {
+		t.Errorf("file mirror not working: d1+a2=%d, e1+h2=%d", idx1, idx2)
 	}
 }
 
@@ -129,7 +190,7 @@ func makeTestNet() *NNUENet {
 	}
 	// Set a few input weights to known values
 	// Feature for White pawn on e2, king on e1
-	idx := HalfKPIndex(White, NewSquare(4, 0), WhitePawn, NewSquare(4, 1))
+	idx := HalfKAIndex(White, NewSquare(4, 0), WhitePawn, NewSquare(4, 1))
 	if idx >= 0 {
 		for i := 0; i < NNUEHiddenSize; i++ {
 			net.InputWeights[idx][i] = int16(i % 10)
@@ -260,7 +321,7 @@ func TestNNUEIncrementalVsFullRecompute(t *testing.T) {
 	accFull := &NNUEAccumulator{}
 	net.RecomputeAccumulator(accFull, &b)
 
-	// Incremental: start with biases, add each piece
+	// Incremental: start with biases, add each piece (including kings for HalfKA)
 	accInc := &NNUEAccumulator{}
 	accInc.White = net.InputBiases
 	accInc.Black = net.InputBiases
@@ -269,10 +330,7 @@ func TestNNUEIncrementalVsFullRecompute(t *testing.T) {
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
-	for piece := WhitePawn; piece <= BlackQueen; piece++ {
-		if piece == WhiteKing || piece == BlackKing {
-			continue
-		}
+	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		bb := b.Pieces[piece]
 		for bb != 0 {
 			sq := bb.PopLSB()
@@ -326,7 +384,7 @@ func TestNNUESaveLoad(t *testing.T) {
 	}
 
 	// Compare a sample of input weights
-	idx := HalfKPIndex(White, NewSquare(4, 0), WhitePawn, NewSquare(4, 1))
+	idx := HalfKAIndex(White, NewSquare(4, 0), WhitePawn, NewSquare(4, 1))
 	if idx >= 0 {
 		for i := 0; i < NNUEHiddenSize; i++ {
 			if net.InputWeights[idx][i] != loaded.InputWeights[idx][i] {
@@ -519,10 +577,10 @@ func TestNNUEPieceIndex(t *testing.T) {
 		expected int
 	}{
 		{WhitePawn, 0}, {WhiteKnight, 1}, {WhiteBishop, 2},
-		{WhiteRook, 3}, {WhiteQueen, 4},
-		{BlackPawn, 5}, {BlackKnight, 6}, {BlackBishop, 7},
-		{BlackRook, 8}, {BlackQueen, 9},
-		{WhiteKing, -1}, {BlackKing, -1}, {Empty, -1},
+		{WhiteRook, 3}, {WhiteQueen, 4}, {WhiteKing, 5},
+		{BlackPawn, 6}, {BlackKnight, 7}, {BlackBishop, 8},
+		{BlackRook, 9}, {BlackQueen, 10}, {BlackKing, 11},
+		{Empty, -1},
 	}
 	for _, tt := range tests {
 		got := nnuePieceIndex(tt.piece)
@@ -680,20 +738,16 @@ func compareAccumulators(t *testing.T, inc, full *NNUEAccumulator, context strin
 
 // TestNNUEIncrementalEdgeCases tests NNUE accumulator consistency across
 // castling, en passant, promotions, captures, null moves, and long
-// move sequences. Uses the real net.nnue for maximum fidelity.
+// move sequences. Uses synthetic weights (real net.nnue is HalfKP v2).
 func TestNNUEIncrementalEdgeCases(t *testing.T) {
-	// Try to load the real network; fall back to synthetic if unavailable.
-	net, err := LoadNNUE("/home/adam/code/gochess/net.nnue")
-	if err != nil {
-		t.Logf("net.nnue not available (%v), using synthetic weights", err)
-		net = &NNUENet{}
-		for i := range net.InputBiases {
-			net.InputBiases[i] = 5
-		}
-		for i := 0; i < NNUEInputSize; i++ {
-			for j := 0; j < NNUEHiddenSize; j++ {
-				net.InputWeights[i][j] = int16((i*7 + j*13) % 100)
-			}
+	// Use synthetic weights for HalfKA
+	net := &NNUENet{}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = 5
+	}
+	for i := 0; i < NNUEInputSize; i++ {
+		for j := 0; j < NNUEHiddenSize; j++ {
+			net.InputWeights[i][j] = int16((i*7 + j*13) % 100)
 		}
 	}
 
@@ -773,7 +827,6 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("EnPassantWhite", func(t *testing.T) {
-		// White pawn on e5, Black plays d7d5, White captures en passant e5d6
 		testSequence(t,
 			"rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
 			[]string{"e5d6"},
@@ -781,7 +834,6 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("EnPassantBlack", func(t *testing.T) {
-		// Black pawn on d4, White plays e2e4, Black captures en passant d4e3
 		testSequence(t,
 			"rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 3",
 			[]string{"d4e3"},
@@ -789,7 +841,6 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("EnPassantSequence", func(t *testing.T) {
-		// Full game leading to en passant
 		testSequence(t,
 			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 			[]string{"e2e4", "d7d5", "e4e5", "f7f5", "e5f6"}, // en passant on f6
@@ -797,7 +848,6 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("PromotionQueen", func(t *testing.T) {
-		// White pawn on e7, promote to queen (king on d8 out of the way)
 		testSequence(t,
 			"3k4/4P3/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{"e7e8q"},
@@ -826,7 +876,6 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("CapturePromotion", func(t *testing.T) {
-		// White pawn on e7 captures on d8 and promotes
 		testSequence(t,
 			"3rk3/4P3/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{"e7d8q"},
@@ -841,7 +890,6 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("BlackPromotion", func(t *testing.T) {
-		// Black pawn on e2, promote to queen (white king on d1 out of the way)
 		testSequence(t,
 			"4k3/8/8/8/8/8/4p3/3K4 b - - 0 1",
 			[]string{"e2e1q"},
@@ -856,29 +904,19 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("SimpleCaptures", func(t *testing.T) {
-		// Italian Game with captures
 		testSequence(t,
 			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 			[]string{
 				"e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6",
-				"f3g5", // Ng5 threatening f7
-				"d7d5", // d5 counter
-				"e4d5", // exd5 capture
-				"c6d4", // Nxd4 capture
+				"f3g5", "d7d5", "e4d5", "c6d4",
 			},
 		)
 	})
 
 	t.Run("ManyCaptures", func(t *testing.T) {
-		// Position with lots of captures available
 		testSequence(t,
 			"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
-			[]string{
-				"f3e5", // Nxe5 capture
-				"c6e5", // Nxe5 capture back
-				"d2d4", // d4
-				"e5c4", // Nxc4 capture bishop
-			},
+			[]string{"f3e5", "c6e5", "d2d4", "e5c4"},
 		)
 	})
 
@@ -894,13 +932,10 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 
 		b.MakeNullMove()
 
-		// After null move, accumulator should still be valid
-		// (same position, just side flipped)
 		nullAcc := &NNUEAccumulator{}
 		net.RecomputeAccumulator(nullAcc, &b)
 		compareAccumulators(t, b.NNUEAcc.Current(), nullAcc, "during null move")
 
-		// Make a move inside null move, verify
 		m, _ := b.ParseUCIMove("g1f3")
 		b.MakeMove(m)
 		b.NNUEAcc.Materialize(net, &b)
@@ -916,80 +951,70 @@ func TestNNUEIncrementalEdgeCases(t *testing.T) {
 	})
 
 	t.Run("LongGameSequence", func(t *testing.T) {
-		// Scholar's mate + extra moves to stress test
 		testSequence(t,
 			"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 			[]string{
-				"e2e4", "e7e5",
-				"d1h5", "b8c6",
-				"f1c4", "g8f6",
-				"h5f7", // Qxf7 capture, check
+				"e2e4", "e7e5", "d1h5", "b8c6", "f1c4", "g8f6", "h5f7",
 			},
 		)
 	})
 
 	t.Run("KingMovesThenCapture", func(t *testing.T) {
-		// Test that king moves (full recompute) followed by non-king
-		// incremental updates work correctly in sequence.
 		testSequence(t,
 			"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
 			[]string{
-				"e7e5",
-				"e1e2", // White king move (full recompute)
-				"d7d5", // Black pawn push
-				"e2e3", // White king move again
-				"d5e4", // Black captures pawn
-				"e3e4", // White king captures pawn (king move + capture)
+				"e7e5", "e1e2", "d7d5", "e2e3", "d5e4", "e3e4",
 			},
 		)
 	})
 
 	t.Run("CastleThenCaptures", func(t *testing.T) {
-		// Castle early then play captures — tests that castle's
-		// king-move recompute properly sets up for subsequent incremental.
 		testSequence(t,
 			"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
-			[]string{
-				"e1g1",  // White castles kingside (king move -> recompute)
-				"c6d4",  // Nxd4
-				"f3d4",  // Nxd4 capture
-				"e5d4",  // exd4 capture
-			},
+			[]string{"e1g1", "c6d4", "f3d4", "e5d4"},
 		)
 	})
 
 	t.Run("RookCapturedOnHomeSquare", func(t *testing.T) {
-		// Test capturing a rook on its home square (castling rights change)
-		// Open a-file so white rook can reach a8
 		testSequence(t,
 			"r3k2r/1ppppppp/8/8/8/8/1PPPPPPP/R3K2R w KQkq - 0 1",
-			[]string{
-				"a1a8", // Rook captures rook on a8 (removes both castling rights)
-			},
+			[]string{"a1a8"},
 		)
 	})
 
 	t.Run("DoubleKingMovesAlternating", func(t *testing.T) {
-		// Both kings moving alternately — each triggers full recompute
-		// Kings stay far apart to avoid illegal proximity
 		testSequence(t,
 			"4k3/8/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{
-				"e1d1", "e8d8",
-				"d1c1", "d8c8",
-				"c1b1", "c8b8",
-				"b1a1", "b8a8",
+				"e1d1", "e8d8", "d1c1", "d8c8", "c1b1", "c8b8", "b1a1", "b8a8",
 			},
 		)
 	})
 
 	t.Run("PromotionSequenceMultiple", func(t *testing.T) {
-		// Both sides promote — pawns on a-file, kings far away
 		testSequence(t,
 			"8/P3k3/8/8/8/8/p3K3/8 w - - 0 1",
+			[]string{"a7a8q", "a2a1q"},
+		)
+	})
+
+	t.Run("KingMoveSameBucket", func(t *testing.T) {
+		// King moves within the same bucket should use incremental update
+		testSequence(t,
+			"4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+			[]string{"e1d1", "e8d8"}, // e1→d1: both file 3-4 region, same bucket
+		)
+	})
+
+	t.Run("KingMoveBucketChange", func(t *testing.T) {
+		// King moves that cross bucket boundaries
+		testSequence(t,
+			"4k3/8/8/8/8/8/8/4K3 w - - 0 1",
 			[]string{
-				"a7a8q", // White promotes queen
-				"a2a1q", // Black promotes queen
+				"e1d2", // might or might not change bucket depending on rank group
+				"e8d7",
+				"d2c3",
+				"d7c6",
 			},
 		)
 	})
@@ -1003,7 +1028,7 @@ func TestNNUEIncrementalRandomGames(t *testing.T) {
 		t.Skip("skipping random game test in short mode")
 	}
 
-	// Use synthetic net (real net not required for correctness check)
+	// Use synthetic net
 	net := &NNUENet{}
 	for i := range net.InputBiases {
 		net.InputBiases[i] = int16(i % 50)

@@ -74,16 +74,13 @@ func extractFeatures(b *Board) *NNUETrainSample {
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
-	// Iterate all non-king pieces
-	for piece := WhitePawn; piece <= BlackQueen; piece++ {
-		if piece == WhiteKing || piece == BlackKing {
-			continue
-		}
+	// Iterate all pieces including kings
+	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		bb := b.Pieces[piece]
 		for bb != 0 {
 			sq := bb.PopLSB()
-			wIdx := HalfKPIndex(White, wKingSq, piece, sq)
-			bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
+			wIdx := HalfKAIndex(White, wKingSq, piece, sq)
+			bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 			sample.WhiteFeatures = append(sample.WhiteFeatures, wIdx)
 			sample.BlackFeatures = append(sample.BlackFeatures, bIdx)
 		}

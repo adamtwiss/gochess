@@ -38,3 +38,21 @@ func nnueAccSubSubAdd256(acc *int16, oldW *int16, newW *int16, capW *int16)
 //
 //go:noescape
 func nnueAccAdd256(acc *int16, weights *int16)
+
+// nnueAccSub256 computes acc[i] -= weights[i] for i=0..255.
+// Used in RemoveFeature.
+//
+//go:noescape
+func nnueAccSub256(acc *int16, weights *int16)
+
+// nnueAccCopySubAdd256 computes dst[i] = src[i] + newW[i] - oldW[i] for i=0..255.
+// Fused copy+update for quiet moves in Materialize.
+//
+//go:noescape
+func nnueAccCopySubAdd256(dst *int16, src *int16, oldW *int16, newW *int16)
+
+// nnueAccCopySubSubAdd256 computes dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i=0..255.
+// Fused copy+update for captures in Materialize.
+//
+//go:noescape
+func nnueAccCopySubSubAdd256(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16)

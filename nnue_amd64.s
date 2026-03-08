@@ -242,3 +242,81 @@ accadd_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueAccSub256(acc *int16, weights *int16)
+// Computes: acc[i] -= weights[i] for i = 0..255
+// ============================================================================
+TEXT ·nnueAccSub256(SB), NOSPLIT, $0-16
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	MOVQ $16, CX
+
+accsub_loop:
+	VMOVDQU (AX), Y0                 // load accumulator
+	VPSUBW (BX), Y0, Y0              // subtract weights (memory operand)
+	VMOVDQU Y0, (AX)                 // store back
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ accsub_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueAccCopySubAdd256(dst *int16, src *int16, oldW *int16, newW *int16)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] for i = 0..255
+// Fused copy+update: reads from src (parent), writes to dst (child).
+// ============================================================================
+TEXT ·nnueAccCopySubAdd256(SB), NOSPLIT, $0-32
+	MOVQ dst+0(FP), AX
+	MOVQ src+8(FP), BX
+	MOVQ oldW+16(FP), CX
+	MOVQ newW+24(FP), DX
+	MOVQ $16, SI
+
+copysubadd_loop:
+	VMOVDQU (DX), Y0                 // new weights
+	VPSUBW (CX), Y0, Y0              // Y0 = new - old
+	VPADDW (BX), Y0, Y0              // Y0 = src + (new - old)
+	VMOVDQU Y0, (AX)                 // store to dst
+	ADDQ $32, AX
+	ADDQ $32, BX
+	ADDQ $32, CX
+	ADDQ $32, DX
+	DECQ SI
+	JNZ copysubadd_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueAccCopySubSubAdd256(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i = 0..255
+// Fused copy+update for captures: reads from src (parent), writes to dst (child).
+// ============================================================================
+TEXT ·nnueAccCopySubSubAdd256(SB), NOSPLIT, $0-40
+	MOVQ dst+0(FP), AX
+	MOVQ src+8(FP), BX
+	MOVQ oldW+16(FP), CX
+	MOVQ newW+24(FP), DX
+	MOVQ capW+32(FP), SI
+	MOVQ $16, DI
+
+copysubsubadd_loop:
+	VMOVDQU (DX), Y0                 // new weights
+	VPSUBW (CX), Y0, Y0              // Y0 = new - old
+	VPSUBW (SI), Y0, Y0              // Y0 = new - old - cap
+	VPADDW (BX), Y0, Y0              // Y0 = src + delta
+	VMOVDQU Y0, (AX)                 // store to dst
+	ADDQ $32, AX
+	ADDQ $32, BX
+	ADDQ $32, CX
+	ADDQ $32, DX
+	ADDQ $32, SI
+	DECQ DI
+	JNZ copysubsubadd_loop
+
+	VZEROUPPER
+	RET

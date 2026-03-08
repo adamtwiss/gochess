@@ -346,15 +346,12 @@ func makeSampleFromBoard(b *Board, stm Color) *NNUETrainSample {
 		SideToMove: stm,
 		Result:     0.5,
 	}
-	for piece := WhitePawn; piece <= BlackQueen; piece++ {
-		if piece == WhiteKing || piece == BlackKing {
-			continue
-		}
+	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		bb := b.Pieces[piece]
 		for bb != 0 {
 			sq := bb.PopLSB()
-			wIdx := HalfKPIndex(White, wKingSq, piece, sq)
-			bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
+			wIdx := HalfKAIndex(White, wKingSq, piece, sq)
+			bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 			if wIdx >= 0 {
 				sample.WhiteFeatures = append(sample.WhiteFeatures, wIdx)
 			}

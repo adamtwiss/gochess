@@ -50,8 +50,8 @@ func DefaultNNUETrainConfig() NNUETrainConfig {
 
 // NNUETrainSample represents a parsed training position.
 type NNUETrainSample struct {
-	WhiteFeatures []int     // active HalfKP feature indices for White perspective
-	BlackFeatures []int     // active HalfKP feature indices for Black perspective
+	WhiteFeatures []int     // active HalfKA feature indices for White perspective
+	BlackFeatures []int     // active HalfKA feature indices for Black perspective
 	SideToMove    Color     // side to move
 	Result        float32   // game result from White's perspective (1.0, 0.5, 0.0)
 	Score         float32   // search score in centipawns (White-relative)
@@ -87,11 +87,12 @@ type NNBinFile struct {
 func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 	net := &NNUETrainNet{}
 
-	// Input layer initialization scaled for CReLU [0, 1.0] with ~30 active features.
+	// Input layer initialization scaled for CReLU [0, 1.0] with ~32 active features.
+	// (HalfKA includes kings, so ~30 non-king pieces + 2 kings = ~32 features)
 	// Target accumulator std ~0.4 so most positive values stay in (0, 1) without
 	// saturating at the CReLU upper bound, giving ~49% of neurons active gradient
 	// flow (vs ~26% with full He init where std ~1.4 causes heavy saturation).
-	inputScale := float32(0.4 / math.Sqrt(30.0))
+	inputScale := float32(0.4 / math.Sqrt(32.0))
 	for i := range net.InputWeights {
 		for j := range net.InputWeights[i] {
 			net.InputWeights[i][j] = float32(rng.NormFloat64()) * inputScale
@@ -424,19 +425,16 @@ func ParseNNUETrainData(line string) (*NNUETrainSample, error) {
 		HasScore:   hasScore,
 	}
 
-	// Extract active features
+	// Extract active features (HalfKA: all pieces including kings)
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
-	for piece := WhitePawn; piece <= BlackQueen; piece++ {
-		if piece == WhiteKing || piece == BlackKing {
-			continue
-		}
+	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		bb := b.Pieces[piece]
 		for bb != 0 {
 			sq := bb.PopLSB()
-			wIdx := HalfKPIndex(White, wKingSq, piece, sq)
-			bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
+			wIdx := HalfKAIndex(White, wKingSq, piece, sq)
+			bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 			if wIdx >= 0 {
 				sample.WhiteFeatures = append(sample.WhiteFeatures, wIdx)
 			}
