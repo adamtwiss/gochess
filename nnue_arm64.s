@@ -254,3 +254,84 @@ accadd_loop:
 	BNE accadd_loop
 
 	RET
+
+// ============================================================================
+// nnueAccSub256(acc *int16, weights *int16)
+// Computes: acc[i] -= weights[i] for i = 0..255
+// ============================================================================
+TEXT ·nnueAccSub256(SB), NOSPLIT, $0-16
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
+	MOVD $32, R2
+
+accsub_loop:
+	VLD1 (R0), [V0.B16]          // load accumulator
+	VLD1 (R1), [V1.B16]          // load weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H
+	VST1 [V0.B16], (R0)          // store back
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE accsub_loop
+
+	RET
+
+// ============================================================================
+// nnueAccCopySubAdd256(dst *int16, src *int16, oldW *int16, newW *int16)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] for i = 0..255
+// Fused copy+update: reads from src (parent), writes to dst (child).
+// ============================================================================
+TEXT ·nnueAccCopySubAdd256(SB), NOSPLIT, $0-32
+	MOVD dst+0(FP), R0
+	MOVD src+8(FP), R1
+	MOVD oldW+16(FP), R2
+	MOVD newW+24(FP), R3
+	MOVD $32, R4
+
+copysubadd_loop:
+	VLD1 (R3), [V0.B16]          // new weights
+	VLD1 (R2), [V1.B16]          // old weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old)
+	VLD1 (R1), [V1.B16]          // src (parent accumulator)
+	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (src + delta)
+	VST1 [V0.B16], (R0)          // store to dst
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	SUBS $1, R4, R4
+	BNE copysubadd_loop
+
+	RET
+
+// ============================================================================
+// nnueAccCopySubSubAdd256(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i = 0..255
+// Fused copy+update for captures: reads from src (parent), writes to dst (child).
+// ============================================================================
+TEXT ·nnueAccCopySubSubAdd256(SB), NOSPLIT, $0-40
+	MOVD dst+0(FP), R0
+	MOVD src+8(FP), R1
+	MOVD oldW+16(FP), R2
+	MOVD newW+24(FP), R3
+	MOVD capW+32(FP), R4
+	MOVD $32, R5
+
+copysubsubadd_loop:
+	VLD1 (R3), [V0.B16]          // new weights
+	VLD1 (R2), [V1.B16]          // old weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old)
+	VLD1 (R4), [V1.B16]          // capture weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old - cap)
+	VLD1 (R1), [V1.B16]          // src (parent accumulator)
+	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (src + delta)
+	VST1 [V0.B16], (R0)          // store to dst
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	ADD $16, R4, R4
+	SUBS $1, R5, R5
+	BNE copysubsubadd_loop
+
+	RET

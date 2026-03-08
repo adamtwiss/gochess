@@ -21,11 +21,15 @@ func (b *Board) MakeMove(m Move) {
 	captured := b.Squares[to]
 
 	// Push NNUE accumulator before any piece modifications.
-	// King moves use PushEmpty (no copy — RecomputeAccumulator overwrites everything).
+	// King moves that change bucket or mirror status use PushEmpty (full recompute).
+	// King moves within the same bucket+mirror use Push (incremental update).
 	isKingMove := piece == WhiteKing || piece == BlackKing
+	kingBucketChanged := false
 	if b.NNUEAcc != nil {
-		if isKingMove {
+		if isKingMove && (KingBucket(from) != KingBucket(to) ||
+			kingBucketMirrorFile[from] != kingBucketMirrorFile[to]) {
 			b.NNUEAcc.PushEmpty()
+			kingBucketChanged = true
 		} else {
 			b.NNUEAcc.Push()
 		}
@@ -195,12 +199,52 @@ func (b *Board) MakeMove(m Move) {
 
 	// NNUE lazy accumulator — store the delta for deferred materialization.
 	// The actual copy+update is deferred until Evaluate() needs the accumulator.
-	// King moves still use PushEmpty (type=0) and get full recompute on demand.
-	if b.NNUEAcc != nil && !isKingMove {
+	// King moves that changed bucket used PushEmpty (type=0) → full recompute.
+	if b.NNUEAcc != nil && !kingBucketChanged {
 		acc := b.NNUEAcc.Current()
 		d := &acc.Dirty
 
-		if flags == FlagEnPassant {
+		if isKingMove {
+			// King move within same bucket — treat as incremental update.
+			if flags == FlagCastle {
+				// Castling: king SubAdd + rook SubAdd
+				d.Type = 7
+				d.Piece = piece
+				d.From = from
+				d.To = to
+				if b.SideToMove == Black { // side already flipped; was White's move
+					if to == NewSquare(6, 0) {
+						d.RookFrom = NewSquare(7, 0)
+						d.RookTo = NewSquare(5, 0)
+					} else {
+						d.RookFrom = NewSquare(0, 0)
+						d.RookTo = NewSquare(3, 0)
+					}
+				} else { // was Black's move
+					if to == NewSquare(6, 7) {
+						d.RookFrom = NewSquare(7, 7)
+						d.RookTo = NewSquare(5, 7)
+					} else {
+						d.RookFrom = NewSquare(0, 7)
+						d.RookTo = NewSquare(3, 7)
+					}
+				}
+			} else if undo.Captured != Empty {
+				// King captures within same bucket (SubSubAdd: remove cap, move king)
+				d.Type = 2
+				d.Piece = piece
+				d.From = from
+				d.To = to
+				d.CapPiece = undo.Captured
+				d.CapSq = to
+			} else {
+				// Quiet king move (same bucket, no castle, no capture)
+				d.Type = 6
+				d.Piece = piece
+				d.From = from
+				d.To = to
+			}
+		} else if flags == FlagEnPassant {
 			capSq := to - 8
 			capPiece := Piece(BlackPawn)
 			if b.SideToMove == White { // note: side already flipped

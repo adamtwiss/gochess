@@ -7,24 +7,27 @@ import (
 	"os"
 )
 
-// NNUE architecture: HalfKP (40960 inputs) -> 2x256 -> 32 -> 32 -> 1
-// Input features: king_square (64) * piece_type (10: 5 piece types x 2 colors) * piece_square (64) = 40960
+// NNUE architecture: HalfKA with king buckets
+// Input features: king_bucket (16) * piece_type (12: 6 piece types x 2 colors) * piece_square (64) = 12288
 // Two accumulators: White perspective, Black perspective
-// Concatenated (512) -> 32 hidden neurons -> 1 output
+// Concatenated (512) -> 32 hidden neurons -> 32 hidden neurons -> 1 output
 // ClippedReLU activations, int16 weights for inference
 
 const (
 	// Network dimensions
-	NNUEInputSize   = 40960 // 64 * 10 * 64
+	NNUEInputSize   = 12288 // 16 buckets * 12 piece types * 64 squares
 	NNUEHiddenSize  = 256   // per perspective
 	NNUEHidden2Size = 32    // second hidden layer
 	NNUEHidden3Size = 32    // third hidden layer
 	NNUEOutputSize  = 1
 
-	// HalfKP piece indexing: 10 piece types (excluding kings)
-	// 0=WhitePawn, 1=WhiteKnight, 2=WhiteBishop, 3=WhiteRook, 4=WhiteQueen
-	// 5=BlackPawn, 6=BlackKnight, 7=BlackBishop, 8=BlackRook, 9=BlackQueen
-	nnueNumPieceTypes = 10
+	// HalfKA piece indexing: 12 piece types (including kings)
+	// 0=WhitePawn, 1=WhiteKnight, 2=WhiteBishop, 3=WhiteRook, 4=WhiteQueen, 5=WhiteKing
+	// 6=BlackPawn, 7=BlackKnight, 8=BlackBishop, 9=BlackRook, 10=BlackQueen, 11=BlackKing
+	nnueNumPieceTypes = 12
+
+	// King buckets: 16 (4 mirrored files × 4 rank groups)
+	NNUEKingBuckets = 16
 
 	// Quantization scale factors
 	nnueInputScale  = 127 // input layer weight scale
@@ -38,8 +41,46 @@ const (
 
 	// File magic and version
 	nnueMagic   = uint32(0x4E4E5545) // "NNUE"
-	nnueVersion = uint32(2)         // v2: added Hidden2 layer (32→32)
+	nnueVersion = uint32(3)          // v3: HalfKA with king buckets (12288 inputs)
 )
+
+// kingBucketTable maps each of the 64 squares to one of 16 king buckets.
+// Uses horizontal mirroring (files a-d mirror to e-h) and 4 rank groups.
+// Bucket = mirroredFile * 4 + rankGroup
+//
+//	rankGroup: ranks 1-2 = 0, ranks 3-4 = 1, ranks 5-6 = 2, ranks 7-8 = 3
+//	mirroredFile: files a-d = 0-3, files e-h mirrored to 3-0
+var kingBucketTable [64]int
+
+// kingBucketMirrorFile indicates whether a king square requires file mirroring
+// for piece square indexing (king on files e-h → mirror piece squares too).
+var kingBucketMirrorFile [64]bool
+
+func init() {
+	for sq := 0; sq < 64; sq++ {
+		file := sq % 8
+		rank := sq / 8
+
+		// Mirror file: map to 0-3 range
+		mirroredFile := file
+		mirror := false
+		if file >= 4 {
+			mirroredFile = 7 - file
+			mirror = true
+		}
+
+		// Rank group: 0-1 → 0, 2-3 → 1, 4-5 → 2, 6-7 → 3
+		rankGroup := rank / 2
+
+		kingBucketTable[sq] = mirroredFile*4 + rankGroup
+		kingBucketMirrorFile[sq] = mirror
+	}
+}
+
+// KingBucket returns the king bucket index (0-15) for a king on the given square.
+func KingBucket(sq Square) int {
+	return kingBucketTable[sq]
+}
 
 // NNUENet holds all network weights (shared read-only across threads).
 type NNUENet struct {
@@ -63,18 +104,23 @@ type NNUENet struct {
 	// Layout: HWT[j*(HiddenSize*2)+i] = HiddenWeights[i][j]
 	// Populated by PrepareWeights(), nil when SIMD not available.
 	HWT []int16
+
+	// Transposed hidden2 weights for SIMD: [output_k][input_j]
+	// Layout: Hidden2WT[k*32+j] = Hidden2Weights[j][k]
+	Hidden2WT []int16
 }
 
 // DirtyPiece describes a pending accumulator update (deferred from MakeMove).
-// Up to 3 sub-features can be removed and 1 added in a single move.
 type DirtyPiece struct {
 	// Type encodes the move kind for lazy materialization.
-	//   0 = no pending update (already computed or king move)
+	//   0 = no pending update (bucket-changing king move → full recompute)
 	//   1 = quiet move (SubAdd: remove piece@From, add piece@To)
 	//   2 = capture (SubSubAdd: remove piece@From, add piece@To, remove capPiece@CapSq)
 	//   3 = en passant (SubSubAdd with different capSq)
 	//   4 = promotion (Remove pawn@From, Add promoted@To)
 	//   5 = capture-promotion (Remove captured@To, Remove pawn@From, Add promoted@To)
+	//   6 = king move same bucket (SubAdd for king feature only, one perspective)
+	//   7 = castling same bucket (king SubAdd + rook SubAdd, one perspective)
 	Type     uint8
 	Piece    Piece  // moving piece (before promotion)
 	From     Square // origin square
@@ -82,6 +128,9 @@ type DirtyPiece struct {
 	CapPiece Piece  // captured piece (for captures/EP)
 	CapSq    Square // capture square (same as To for normal captures, different for EP)
 	PromoPc  Piece  // promoted piece (for promotions)
+	// For castling (type 7): rook from/to
+	RookFrom Square
+	RookTo   Square
 }
 
 // NNUEAccumulator holds per-position accumulator state.
@@ -128,14 +177,14 @@ func (s *NNUEAccumulatorStack) Push() {
 }
 
 // PushEmpty advances the stack pointer without copying (for king moves
-// where RecomputeAccumulator will overwrite everything).
+// that change bucket, where RecomputeAccumulator will overwrite everything).
 func (s *NNUEAccumulatorStack) PushEmpty() {
 	if s.top+1 >= len(s.stack) {
 		s.stack = append(s.stack, NNUEAccumulator{})
 	}
 	s.top++
 	s.stack[s.top].Computed = false
-	s.stack[s.top].Dirty.Type = 0 // king move → full recompute on Materialize
+	s.stack[s.top].Dirty.Type = 0 // bucket change → full recompute on Materialize
 }
 
 // Pop restores the previous accumulator state.
@@ -160,32 +209,86 @@ func (s *NNUEAccumulatorStack) Materialize(net *NNUENet, b *Board) {
 
 	d := &acc.Dirty
 	if d.Type == 0 || s.top == 0 || !s.stack[s.top-1].Computed {
-		// King move, root position, or parent not materialized — full recompute
+		// Bucket-changing king move, root position, or parent not materialized — full recompute
 		net.RecomputeAccumulator(acc, b)
 		return
 	}
 
-	// Copy parent state
 	parent := &s.stack[s.top-1]
-	acc.White = parent.White
-	acc.Black = parent.Black
-
-	// Apply the deferred delta
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
 	switch d.Type {
-	case 1: // quiet move
-		net.SubAddFeature(acc, d.Piece, d.From, d.To, wKingSq, bKingSq)
-	case 2, 3: // capture or en passant
-		net.SubSubAddFeature(acc, d.Piece, d.From, d.To, d.CapPiece, d.CapSq, wKingSq, bKingSq)
-	case 4: // promotion (no capture)
+	case 1, 6: // quiet move or king move same bucket — fused copy+SubAdd
+		if nnueUseSIMD {
+			wIdxOld := HalfKAIndex(White, wKingSq, d.Piece, d.From)
+			wIdxNew := HalfKAIndex(White, wKingSq, d.Piece, d.To)
+			if wIdxOld >= 0 && wIdxNew >= 0 {
+				nnueAccCopySubAdd256(&acc.White[0], &parent.White[0],
+					&net.InputWeights[wIdxOld][0], &net.InputWeights[wIdxNew][0])
+			} else {
+				acc.White = parent.White
+			}
+			bIdxOld := HalfKAIndex(Black, bKingSq, d.Piece, d.From)
+			bIdxNew := HalfKAIndex(Black, bKingSq, d.Piece, d.To)
+			if bIdxOld >= 0 && bIdxNew >= 0 {
+				nnueAccCopySubAdd256(&acc.Black[0], &parent.Black[0],
+					&net.InputWeights[bIdxOld][0], &net.InputWeights[bIdxNew][0])
+			} else {
+				acc.Black = parent.Black
+			}
+		} else {
+			acc.White = parent.White
+			acc.Black = parent.Black
+			net.SubAddFeature(acc, d.Piece, d.From, d.To, wKingSq, bKingSq)
+		}
+	case 2, 3: // capture or en passant — fused copy+SubSubAdd
+		if nnueUseSIMD {
+			wIdxMoveOld := HalfKAIndex(White, wKingSq, d.Piece, d.From)
+			wIdxMoveNew := HalfKAIndex(White, wKingSq, d.Piece, d.To)
+			wIdxCap := HalfKAIndex(White, wKingSq, d.CapPiece, d.CapSq)
+			if wIdxMoveOld >= 0 && wIdxMoveNew >= 0 && wIdxCap >= 0 {
+				nnueAccCopySubSubAdd256(&acc.White[0], &parent.White[0],
+					&net.InputWeights[wIdxMoveOld][0], &net.InputWeights[wIdxMoveNew][0],
+					&net.InputWeights[wIdxCap][0])
+			} else {
+				acc.White = parent.White
+			}
+			bIdxMoveOld := HalfKAIndex(Black, bKingSq, d.Piece, d.From)
+			bIdxMoveNew := HalfKAIndex(Black, bKingSq, d.Piece, d.To)
+			bIdxCap := HalfKAIndex(Black, bKingSq, d.CapPiece, d.CapSq)
+			if bIdxMoveOld >= 0 && bIdxMoveNew >= 0 && bIdxCap >= 0 {
+				nnueAccCopySubSubAdd256(&acc.Black[0], &parent.Black[0],
+					&net.InputWeights[bIdxMoveOld][0], &net.InputWeights[bIdxMoveNew][0],
+					&net.InputWeights[bIdxCap][0])
+			} else {
+				acc.Black = parent.Black
+			}
+		} else {
+			acc.White = parent.White
+			acc.Black = parent.Black
+			net.SubSubAddFeature(acc, d.Piece, d.From, d.To, d.CapPiece, d.CapSq, wKingSq, bKingSq)
+		}
+	case 4: // promotion (no capture) — rare, use copy+update
+		acc.White = parent.White
+		acc.Black = parent.Black
 		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
 		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
-	case 5: // capture-promotion
+	case 5: // capture-promotion — rare, use copy+update
+		acc.White = parent.White
+		acc.Black = parent.Black
 		net.RemoveFeature(acc, d.CapPiece, d.To, wKingSq, bKingSq)
 		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
 		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
+	case 7: // castling, same bucket — rare, use copy+update
+		acc.White = parent.White
+		acc.Black = parent.Black
+		net.SubAddFeature(acc, d.Piece, d.From, d.To, wKingSq, bKingSq)
+		rookPiece := Piece(WhiteRook)
+		if d.Piece == BlackKing {
+			rookPiece = BlackRook
+		}
+		net.SubAddFeature(acc, rookPiece, d.RookFrom, d.RookTo, wKingSq, bKingSq)
 	}
 
 	acc.Computed = true
@@ -207,8 +310,8 @@ func (s *NNUEAccumulatorStack) Reset() {
 	s.stack[0].Computed = false
 }
 
-// nnuePieceIndexTable maps Piece values (0-12) to HalfKP piece type indices.
-// -1 for Empty (0) and kings (6, 12).
+// nnuePieceIndexTable maps Piece values (0-12) to HalfKA piece type indices.
+// -1 for Empty (0). Kings ARE included (indices 5 and 11).
 var nnuePieceIndexTable = [13]int{
 	-1, // Empty
 	0,  // WhitePawn
@@ -216,33 +319,34 @@ var nnuePieceIndexTable = [13]int{
 	2,  // WhiteBishop
 	3,  // WhiteRook
 	4,  // WhiteQueen
-	-1, // WhiteKing
-	5,  // BlackPawn
-	6,  // BlackKnight
-	7,  // BlackBishop
-	8,  // BlackRook
-	9,  // BlackQueen
-	-1, // BlackKing
+	5,  // WhiteKing
+	6,  // BlackPawn
+	7,  // BlackKnight
+	8,  // BlackBishop
+	9,  // BlackRook
+	10, // BlackQueen
+	11, // BlackKing
 }
 
-// nnuePieceIndex maps a Piece (1-12, excluding kings) to a HalfKP piece type index (0-9).
-// Returns -1 for Empty or kings.
+// nnuePieceIndex maps a Piece (1-12) to a HalfKA piece type index (0-11).
+// Returns -1 for Empty.
 func nnuePieceIndex(p Piece) int {
 	return nnuePieceIndexTable[p]
 }
 
-// HalfKPIndex computes the feature index for a given perspective.
+// HalfKAIndex computes the feature index for a given perspective.
 // perspective: White (0) or Black (1)
-// kingSq: king square from that perspective
-// piece: the piece (1-12, not king)
+// kingSq: king square from that perspective (used for bucket + mirroring)
+// piece: the piece (1-12, including kings)
 // pieceSq: the square the piece is on
 //
-// For Black perspective, squares are mirrored (^56) and piece colors are swapped.
-// Feature = kingSq * 640 + pieceType * 64 + pieceSq
-func HalfKPIndex(perspective Color, kingSq Square, piece Piece, pieceSq Square) int {
+// For Black perspective, squares are mirrored vertically (^56) and piece colors are swapped.
+// When the king is on files e-h, piece squares are mirrored horizontally for symmetry.
+// Feature = bucket * 768 + pieceType * 64 + pieceSq
+func HalfKAIndex(perspective Color, kingSq Square, piece Piece, pieceSq Square) int {
 	pi := nnuePieceIndex(piece)
 	if pi < 0 {
-		return -1 // king or empty — not a feature
+		return -1 // empty — not a feature
 	}
 
 	ks := int(kingSq)
@@ -252,21 +356,30 @@ func HalfKPIndex(perspective Color, kingSq Square, piece Piece, pieceSq Square) 
 		// Mirror squares vertically
 		ks ^= 56
 		ps ^= 56
-		// Swap piece colors: WhitePawn(0) <-> BlackPawn(5), etc.
-		if pi < 5 {
-			pi += 5
+		// Swap piece colors: 0-5 <-> 6-11
+		if pi < 6 {
+			pi += 6
 		} else {
-			pi -= 5
+			pi -= 6
 		}
 	}
 
-	return ks*nnueNumPieceTypes*64 + pi*64 + ps
+	// Get bucket and check if file mirroring is needed
+	bucket := kingBucketTable[ks]
+	if kingBucketMirrorFile[ks] {
+		// Mirror piece square horizontally (file a↔h, b↔g, c↔f, d↔e)
+		psFile := ps % 8
+		psRank := ps / 8
+		ps = psRank*8 + (7 - psFile)
+	}
+
+	return bucket*nnueNumPieceTypes*64 + pi*64 + ps
 }
 
 // AddFeature adds a feature (piece at square) to the accumulator for both perspectives.
 func (net *NNUENet) AddFeature(acc *NNUEAccumulator, piece Piece, sq Square, wKingSq, bKingSq Square) {
-	wIdx := HalfKPIndex(White, wKingSq, piece, sq)
-	bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
+	wIdx := HalfKAIndex(White, wKingSq, piece, sq)
+	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
 		if nnueUseSIMD {
@@ -290,17 +403,25 @@ func (net *NNUENet) AddFeature(acc *NNUEAccumulator, piece Piece, sq Square, wKi
 
 // RemoveFeature removes a feature (piece at square) from the accumulator for both perspectives.
 func (net *NNUENet) RemoveFeature(acc *NNUEAccumulator, piece Piece, sq Square, wKingSq, bKingSq Square) {
-	wIdx := HalfKPIndex(White, wKingSq, piece, sq)
-	bIdx := HalfKPIndex(Black, bKingSq, piece, sq)
+	wIdx := HalfKAIndex(White, wKingSq, piece, sq)
+	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.White[i] -= net.InputWeights[wIdx][i]
+		if nnueUseSIMD {
+			nnueAccSub256(&acc.White[0], &net.InputWeights[wIdx][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.White[i] -= net.InputWeights[wIdx][i]
+			}
 		}
 	}
 	if bIdx >= 0 {
-		for i := 0; i < NNUEHiddenSize; i++ {
-			acc.Black[i] -= net.InputWeights[bIdx][i]
+		if nnueUseSIMD {
+			nnueAccSub256(&acc.Black[0], &net.InputWeights[bIdx][0])
+		} else {
+			for i := 0; i < NNUEHiddenSize; i++ {
+				acc.Black[i] -= net.InputWeights[bIdx][i]
+			}
 		}
 	}
 }
@@ -308,8 +429,8 @@ func (net *NNUENet) RemoveFeature(acc *NNUEAccumulator, piece Piece, sq Square, 
 // SubAddFeature combines RemoveFeature(oldSq) + AddFeature(newSq) for the same piece
 // in a single pass over the accumulator, halving the number of accumulator writes.
 func (net *NNUENet) SubAddFeature(acc *NNUEAccumulator, piece Piece, fromSq, toSq Square, wKingSq, bKingSq Square) {
-	wIdxOld := HalfKPIndex(White, wKingSq, piece, fromSq)
-	wIdxNew := HalfKPIndex(White, wKingSq, piece, toSq)
+	wIdxOld := HalfKAIndex(White, wKingSq, piece, fromSq)
+	wIdxNew := HalfKAIndex(White, wKingSq, piece, toSq)
 	if wIdxOld >= 0 && wIdxNew >= 0 {
 		if nnueUseSIMD {
 			nnueAccSubAdd256(&acc.White[0], &net.InputWeights[wIdxOld][0], &net.InputWeights[wIdxNew][0])
@@ -319,8 +440,8 @@ func (net *NNUENet) SubAddFeature(acc *NNUEAccumulator, piece Piece, fromSq, toS
 			}
 		}
 	}
-	bIdxOld := HalfKPIndex(Black, bKingSq, piece, fromSq)
-	bIdxNew := HalfKPIndex(Black, bKingSq, piece, toSq)
+	bIdxOld := HalfKAIndex(Black, bKingSq, piece, fromSq)
+	bIdxNew := HalfKAIndex(Black, bKingSq, piece, toSq)
 	if bIdxOld >= 0 && bIdxNew >= 0 {
 		if nnueUseSIMD {
 			nnueAccSubAdd256(&acc.Black[0], &net.InputWeights[bIdxOld][0], &net.InputWeights[bIdxNew][0])
@@ -336,9 +457,9 @@ func (net *NNUENet) SubAddFeature(acc *NNUEAccumulator, piece Piece, fromSq, toS
 // Used for captures: remove captured piece at capSq, remove moving piece at fromSq, add moving piece at toSq.
 func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, fromSq, toSq Square, capPiece Piece, capSq Square, wKingSq, bKingSq Square) {
 	// White perspective
-	wIdxMoveOld := HalfKPIndex(White, wKingSq, movePiece, fromSq)
-	wIdxMoveNew := HalfKPIndex(White, wKingSq, movePiece, toSq)
-	wIdxCap := HalfKPIndex(White, wKingSq, capPiece, capSq)
+	wIdxMoveOld := HalfKAIndex(White, wKingSq, movePiece, fromSq)
+	wIdxMoveNew := HalfKAIndex(White, wKingSq, movePiece, toSq)
+	wIdxCap := HalfKAIndex(White, wKingSq, capPiece, capSq)
 	if wIdxMoveOld >= 0 && wIdxMoveNew >= 0 && wIdxCap >= 0 {
 		if nnueUseSIMD {
 			nnueAccSubSubAdd256(&acc.White[0], &net.InputWeights[wIdxMoveOld][0], &net.InputWeights[wIdxMoveNew][0], &net.InputWeights[wIdxCap][0])
@@ -349,9 +470,9 @@ func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, from
 		}
 	}
 	// Black perspective
-	bIdxMoveOld := HalfKPIndex(Black, bKingSq, movePiece, fromSq)
-	bIdxMoveNew := HalfKPIndex(Black, bKingSq, movePiece, toSq)
-	bIdxCap := HalfKPIndex(Black, bKingSq, capPiece, capSq)
+	bIdxMoveOld := HalfKAIndex(Black, bKingSq, movePiece, fromSq)
+	bIdxMoveNew := HalfKAIndex(Black, bKingSq, movePiece, toSq)
+	bIdxCap := HalfKAIndex(Black, bKingSq, capPiece, capSq)
 	if bIdxMoveOld >= 0 && bIdxMoveNew >= 0 && bIdxCap >= 0 {
 		if nnueUseSIMD {
 			nnueAccSubSubAdd256(&acc.Black[0], &net.InputWeights[bIdxMoveOld][0], &net.InputWeights[bIdxMoveNew][0], &net.InputWeights[bIdxCap][0])
@@ -364,7 +485,7 @@ func (net *NNUENet) SubSubAddFeature(acc *NNUEAccumulator, movePiece Piece, from
 }
 
 // RecomputeAccumulator performs a full recompute of the accumulator from the board state.
-// Used after king moves, SetFEN, and Reset.
+// Used after bucket-changing king moves, SetFEN, and Reset.
 func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 	// Start with biases
 	acc.White = net.InputBiases
@@ -373,15 +494,43 @@ func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
-	// Add all non-king pieces (dispatches to SIMD when available)
-	for piece := WhitePawn; piece <= BlackQueen; piece++ {
-		if piece == WhiteKing || piece == BlackKing {
-			continue
-		}
+	// Pre-gather all feature indices, then do a tight SIMD loop.
+	// Separates index computation from memory-heavy SIMD work for better ILP.
+	var wIndices [32]int
+	var bIndices [32]int
+	count := 0
+
+	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		bb := b.Pieces[piece]
 		for bb != 0 {
 			sq := bb.PopLSB()
-			net.AddFeature(acc, piece, sq, wKingSq, bKingSq)
+			wIndices[count] = HalfKAIndex(White, wKingSq, piece, sq)
+			bIndices[count] = HalfKAIndex(Black, bKingSq, piece, sq)
+			count++
+		}
+	}
+
+	if nnueUseSIMD {
+		for i := 0; i < count; i++ {
+			if wIndices[i] >= 0 {
+				nnueAccAdd256(&acc.White[0], &net.InputWeights[wIndices[i]][0])
+			}
+			if bIndices[i] >= 0 {
+				nnueAccAdd256(&acc.Black[0], &net.InputWeights[bIndices[i]][0])
+			}
+		}
+	} else {
+		for i := 0; i < count; i++ {
+			if wIdx := wIndices[i]; wIdx >= 0 {
+				for j := 0; j < NNUEHiddenSize; j++ {
+					acc.White[j] += net.InputWeights[wIdx][j]
+				}
+			}
+			if bIdx := bIndices[i]; bIdx >= 0 {
+				for j := 0; j < NNUEHiddenSize; j++ {
+					acc.Black[j] += net.InputWeights[bIdx][j]
+				}
+			}
 		}
 	}
 
@@ -501,12 +650,20 @@ func (net *NNUENet) PrepareWeights() {
 	if !nnueUseSIMD {
 		return
 	}
+	// Transpose hidden1 weights: HWT[j][i] = HiddenWeights[i][j]
 	inputDim := NNUEHiddenSize * 2 // 512
 	outputDim := NNUEHidden2Size   // 32
 	net.HWT = make([]int16, outputDim*inputDim)
 	for i := 0; i < inputDim; i++ {
 		for j := 0; j < outputDim; j++ {
 			net.HWT[j*inputDim+i] = net.HiddenWeights[i][j]
+		}
+	}
+	// Transpose hidden2 weights: Hidden2WT[k][j] = Hidden2Weights[j][k]
+	net.Hidden2WT = make([]int16, NNUEHidden2Size*NNUEHidden3Size)
+	for j := 0; j < NNUEHidden2Size; j++ {
+		for k := 0; k < NNUEHidden3Size; k++ {
+			net.Hidden2WT[k*NNUEHidden2Size+j] = net.Hidden2Weights[j][k]
 		}
 	}
 }
@@ -531,28 +688,12 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 	var hidden2 [NNUEHidden2Size]int32
 	nnueMatMul32x512(&input[0], &net.HWT[0], &net.HiddenBiases[0], &hidden2[0])
 
-	// Hidden layer 2 (scalar — only 32×32, not worth SIMD)
+	// Hidden layer 2: SIMD 32×32 matmul with ReLU activation
 	var hidden3 [NNUEHidden3Size]int32
-	hidden3 = net.Hidden2Biases
-	for j := 0; j < NNUEHidden2Size; j++ {
-		scaled := hidden2[j] >> 6
-		if scaled <= 0 {
-			continue
-		}
-		for k := 0; k < NNUEHidden3Size; k++ {
-			hidden3[k] += scaled * int32(net.Hidden2Weights[j][k])
-		}
-	}
+	nnueMatMul32x32ReLU(&hidden2[0], &net.Hidden2WT[0], &net.Hidden2Biases[0], &hidden3[0])
 
-	// Output layer: ReLU(hidden3) (no upper clamp)
-	output := int32(net.OutputBias)
-	for k := 0; k < NNUEHidden3Size; k++ {
-		scaled := hidden3[k] >> 6
-		if scaled <= 0 {
-			continue
-		}
-		output += scaled * int32(net.OutputWeights[k])
-	}
+	// Output layer: SIMD dot product with ReLU activation
+	output := net.OutputBias + nnueDotReLU32(&hidden3[0], &net.OutputWeights[0])
 
 	return int(output) / nnueOutputScale * NNUEEvalScale
 }
@@ -639,7 +780,7 @@ func readNNUE(r io.Reader) (*NNUENet, error) {
 		return nil, fmt.Errorf("reading version: %w", err)
 	}
 	if version != nnueVersion {
-		return nil, fmt.Errorf("unsupported NNUE version: %d (expected %d; old v1 nets must be retrained)", version, nnueVersion)
+		return nil, fmt.Errorf("unsupported NNUE version: %d (expected %d; old v2 HalfKP nets must be retrained)", version, nnueVersion)
 	}
 
 	net := &NNUENet{}
