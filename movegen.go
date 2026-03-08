@@ -228,9 +228,7 @@ func (b *Board) IsLegal(m Move, pinned Bitboard, inCheck bool) bool {
 	}
 
 	// Non-king moves when in check: must block or capture the checker.
-	// In the search hot path this branch is never reached — the evasion
-	// generator (InitEvasion) produces fully legal moves without calling
-	// IsLegal. This only executes via IsLegalSlow or GenerateLegalMoves.
+	// Fall back to full make/unmake since this is rare (~5% of nodes).
 	if inCheck {
 		b.MakeMove(m)
 		check := b.IsAttacked(kingSq, them)

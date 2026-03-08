@@ -2,7 +2,6 @@ package chess
 
 import (
 	"math"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,21 +171,10 @@ type SearchInfo struct {
 	tmBestMoveStable int  // consecutive iterations with unchanged best move
 	tmHasData        bool // true after first completed iteration
 
-	// RootMoves holds root moves sorted by score from the previous iteration.
-	// Initialized before iterative deepening, re-sorted between iterations.
-	RootMoves []RootMove
-
 	// Pre-allocated search structures (avoid per-node heap allocations)
 	pickers [MaxPly + MaxQSDepth]MovePicker
 	pvTable [MaxPly + 1][MaxPly + 1]Move
 	pvLen   [MaxPly + 1]int
-}
-
-// RootMove holds a root move and its score from the previous iteration,
-// used to order root moves by quality across iterative deepening.
-type RootMove struct {
-	Move  Move
-	Score int
 }
 
 // storeKiller stores a killer move at the given ply
@@ -321,13 +309,6 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 		}
 	}
 
-	// Initialize root moves: generate all legal moves, sorted by TT move first
-	legalMoves := b.GenerateLegalMoves()
-	info.RootMoves = make([]RootMove, len(legalMoves))
-	for i, m := range legalMoves {
-		info.RootMoves[i] = RootMove{Move: m, Score: -Infinity}
-	}
-
 	var bestMove Move
 	prevScore := 0
 
@@ -398,13 +379,6 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 			info.PV = make([]Move, info.pvLen[0])
 			copy(info.PV, info.pvTable[0][:info.pvLen[0]])
 		}
-
-		// Sort root moves by score from this iteration (best first).
-		// The best move goes to index 0 so it's searched first with full window
-		// on the next iteration — moves 2-N get PVS zero-window searches.
-		sort.Slice(info.RootMoves, func(i, j int) bool {
-			return info.RootMoves[i].Score > info.RootMoves[j].Score
-		})
 
 		// If the PV is short (likely due to TT cutoffs), extend it by
 		// walking the transposition table from the end of the known PV.
@@ -653,13 +627,6 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 		atomic.StoreInt64(&info.Deadline, info.StartTime.Add(info.MaxTime).UnixNano())
 	}
 
-	// Initialize root moves for this helper thread
-	legalMoves := b.GenerateLegalMoves()
-	info.RootMoves = make([]RootMove, len(legalMoves))
-	for i, m := range legalMoves {
-		info.RootMoves[i] = RootMove{Move: m, Score: -Infinity}
-	}
-
 	// Select skip pattern for this thread
 	skipIdx := (info.ThreadIndex - 1) % len(smpSkipDepths)
 	skipPattern := smpSkipDepths[skipIdx]
@@ -719,11 +686,6 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 		}
 
 		prevScore = score
-
-		// Sort root moves by score from this iteration
-		sort.Slice(info.RootMoves, func(i, j int) bool {
-			return info.RootMoves[i].Score > info.RootMoves[j].Score
-		})
 
 		// Check time: stop if remaining time is less than last iteration
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 {
@@ -1042,12 +1004,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				return score
 			}
 		}
-	}
-
-	// Root move ordering: at ply 0, use pre-sorted RootMoves list instead of MovePicker.
-	// Moves are sorted by score from the previous iteration (best first).
-	if ply == 0 && len(info.RootMoves) > 0 {
-		return b.searchRoot(depth, alpha, beta, info, pinned, inCheck, checkers, checkSq, discoverers)
 	}
 
 	// Get killers for this ply
@@ -1548,238 +1504,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove, staticEval)
-	}
-
-	return bestScore
-}
-
-// searchRoot handles the root node (ply=0) using the pre-sorted RootMoves list.
-// Moves are ordered by score from the previous iteration rather than MovePicker heuristics.
-func (b *Board) searchRoot(depth, alpha, beta int, info *SearchInfo, pinned Bitboard, inCheck bool, checkers Bitboard, checkSq [7]Bitboard, discoverers Bitboard) int {
-	ply := 0
-	alphaOrig := alpha
-
-	// TT move for singular extension
-	ttMove := NoMove
-	var ttHit bool
-	var ttEntry TTEntry
-	if entry, found := info.TT.Probe(b.HashKey); found {
-		ttHit = true
-		ttEntry = entry
-		ttMove = entry.Move
-	}
-
-	bestMove := NoMove
-	bestScore := -Infinity
-	moveCount := 0
-
-	for ri := range info.RootMoves {
-		move := info.RootMoves[ri].Move
-
-		if atomic.LoadInt32(&info.Stopped) != 0 {
-			return 0
-		}
-
-		moveCount++
-		isCap := isCapture(move, b)
-		movedPiece := b.Squares[move.From()]
-
-		// Singular extension at root
-		singularExtension := 0
-		if SingularExtEnabled &&
-			move == ttMove &&
-			ttMove != NoMove &&
-			depth >= 10 &&
-			!inCheck &&
-			info.ExcludedMove[ply] == NoMove &&
-			ttHit &&
-			ttEntry.Flag != TTUpper &&
-			int(ttEntry.Depth) >= depth-3 {
-
-			ttScore := int(ttEntry.Score)
-			if ttScore <= MateScore-100 && ttScore >= -MateScore+100 {
-				singularBeta := ttScore - depth*3
-				singularDepth := (depth - 1) / 2
-
-				info.ExcludedMove[ply] = ttMove
-				singularScore := b.negamax(singularDepth, ply, singularBeta-1, singularBeta, info)
-				info.ExcludedMove[ply] = NoMove
-
-				if atomic.LoadInt32(&info.Stopped) != 0 {
-					return 0
-				}
-
-				info.SingularTests++
-				if singularScore < singularBeta {
-					singularExtension = 1
-					info.SingularExtensions++
-					if DoubleSingularExtEnabled && singularScore < singularBeta-depth*3 {
-						singularExtension = 2
-						info.DoubleSingularExtensions++
-					}
-				} else if NegativeSingularExtEnabled && singularScore >= ttScore+depth*3 {
-					singularExtension = -1
-					info.NegativeSingularExtensions++
-				}
-			}
-		}
-
-		b.MakeMove(move)
-
-		// Check extension
-		var givesCheck bool
-		flags := move.Flags()
-		if flags == FlagEnPassant || flags == FlagCastle {
-			givesCheck = b.InCheck()
-		} else {
-			pt := int(movedPiece)
-			if pt > 6 {
-				pt -= 6
-			}
-			if move.IsPromotion() {
-				pt = flags - FlagPromoteN + 2
-			}
-			givesCheck = checkSq[pt]&SquareBB(move.To()) != 0 ||
-				discoverers&SquareBB(move.From()) != 0
-		}
-
-		extension := 0
-		if givesCheck {
-			extension = 1
-		}
-		if singularExtension != 0 && extension == 0 {
-			extension = singularExtension
-		}
-
-		// Recapture extension
-		if RecaptureExtEnabled && extension == 0 && isCap && len(b.UndoStack) >= 2 {
-			prevUndo := b.UndoStack[len(b.UndoStack)-2]
-			if prevUndo.Captured != Empty && move.To() == prevUndo.Move.To() {
-				extension = 1
-				info.RecaptureExtensions++
-			}
-		}
-
-		// Passed pawn push extension
-		if PassedPawnExtEnabled && extension == 0 && !isCap {
-			mp := b.Squares[move.To()]
-			moverColor := b.SideToMove ^ 1
-			if mp == pieceOf(WhitePawn, moverColor) {
-				rank := move.To().Rank()
-				relRank := rank
-				if moverColor == Black {
-					relRank = 7 - rank
-				}
-				if relRank >= 5 {
-					enemyPawns := b.Pieces[pieceOf(WhitePawn, moverColor^1)]
-					if PassedPawnMask[moverColor][move.To()]&enemyPawns == 0 {
-						extension = 1
-						info.PassedPawnExtensions++
-					}
-				}
-			}
-		}
-
-		newDepth := depth - 1 + extension
-
-		var score int
-
-		// LMR + PVS at root
-		isKiller := false // no killers at root
-		reduction := 0
-		if LMREnabled && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !givesCheck && moveCount > 1 {
-			d, m := depth, moveCount
-			if d >= 64 {
-				d = 63
-			}
-			if m >= 64 {
-				m = 63
-			}
-			reduction = lmrTable[d][m]
-			if reduction > 0 {
-				// Reduce less at PV nodes
-				if beta-alpha > 1 {
-					reduction--
-				}
-				// History adjustment
-				histScore := info.History[move.From()][move.To()]
-				reduction -= int(histScore / 5000)
-				if reduction < 0 {
-					reduction = 0
-				}
-				if reduction > newDepth-1 {
-					reduction = newDepth - 1
-				}
-			}
-		}
-
-		if reduction > 0 {
-			info.LMRAttempts++
-			score = -b.negamax(newDepth-reduction, ply+1, -alpha-1, -alpha, info)
-			if score > alpha && atomic.LoadInt32(&info.Stopped) == 0 {
-				info.LMRReSearches++
-				score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info)
-			} else {
-				info.LMRSavings++
-			}
-			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
-				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
-			}
-		} else if moveCount > 1 {
-			// PVS: zero-window for non-first moves
-			score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info)
-			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
-				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
-			}
-		} else {
-			// First move: full window
-			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
-		}
-
-		b.UnmakeMove(move)
-
-		if atomic.LoadInt32(&info.Stopped) != 0 {
-			return 0
-		}
-
-		// Update root move score for sorting on next iteration
-		info.RootMoves[ri].Score = score
-
-		if score > bestScore {
-			bestScore = score
-			bestMove = move
-
-			if score > alpha {
-				alpha = score
-
-				// Update PV
-				info.pvTable[ply][0] = move
-				copy(info.pvTable[ply][1:], info.pvTable[ply+1][:info.pvLen[ply+1]])
-				info.pvLen[ply] = 1 + info.pvLen[ply+1]
-
-				if alpha >= beta {
-					// Beta cutoff at root — update history for quiet moves
-					if !isCap {
-						bonus := historyBonus(depth)
-						info.updateHistory(move.From(), move.To(), bonus)
-					}
-					break
-				}
-			}
-		}
-	}
-
-	// Store in TT
-	if info.ExcludedMove[ply] == NoMove {
-		var flag TTFlag
-		if bestScore <= alphaOrig {
-			flag = TTUpper
-		} else if bestScore >= beta {
-			flag = TTLower
-		} else {
-			flag = TTExact
-		}
-		info.TT.Store(b.HashKey, depth, bestScore, flag, bestMove, 0)
 	}
 
 	return bestScore
