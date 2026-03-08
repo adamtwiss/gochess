@@ -335,7 +335,6 @@ func buildPolyglotBook(entries map[uint64][]BookMove) *OpeningBook {
 
 // Polyglot random number table offsets
 const (
-	polyglotPieceOffset  = 0   // 12 * 64 = 768 entries
 	polyglotCastleOffset = 768 // 4 entries
 	polyglotEPOffset     = 772 // 8 entries
 	polyglotTurnOffset   = 780 // 1 entry

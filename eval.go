@@ -155,10 +155,6 @@ var KingCenterBonusEG = -19       // per center-distance unit (penalty, both sid
 var KingProximityAdvantageEG = 30 // per unit closer to enemy king (stronger side)
 var KingCornerPushEG = 88         // per center-distance unit of weaker king (stronger side)
 
-// Pawn storm (legacy): attack units for friendly pawns advanced near enemy king, by relative rank
-var PawnStormUnits = [8]int{0, 0, 0, 0, 1, 2, 3, 0}
-var PawnStormEnabled = false // disabled in favor of direct PawnStormBonusMG
-
 // Direct pawn storm bonus (NOT gated on attackerCount).
 // PawnStormBonusMG/EG[opposed][relativeRank] gives centipawn bonus.
 // opposed=0: enemy pawn present on this file (blocked storm)
@@ -787,26 +783,6 @@ func (b *Board) evaluatePieces(color Color, pawnEntry *PawnEntry) (mg, eg int) {
 		attackUnits += openFileUnits
 		attackUnits += shelterWeakness
 
-		// Pawn storm: bonus for friendly pawns advanced near enemy king
-		if PawnStormEnabled {
-			for f := startFile; f <= endFile; f++ {
-				filePawns := friendlyPawns & FileMasks[f]
-				if filePawns == 0 {
-					continue
-				}
-				var advancedSq Square
-				if color == White {
-					advancedSq = filePawns.MSB()
-				} else {
-					advancedSq = filePawns.LSB()
-				}
-				relRank := advancedSq.Rank()
-				if color == Black {
-					relRank = 7 - relRank
-				}
-				attackUnits += PawnStormUnits[relRank]
-			}
-		}
 	}
 
 	// King attack penalty via table lookup (MG only)

@@ -537,16 +537,6 @@ func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 	acc.Computed = true
 }
 
-// clippedReLU applies ClippedReLU: clamp to [0, nnueClipMax].
-func clippedReLU(x int16) int16 {
-	if x < nnueClipMin {
-		return nnueClipMin
-	}
-	if x > nnueClipMax {
-		return nnueClipMax
-	}
-	return x
-}
 
 // Evaluate runs the NNUE forward pass and returns a score in centipawns
 // relative to the side to move.

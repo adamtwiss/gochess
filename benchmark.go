@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -174,7 +175,7 @@ func RunBenchmark(suites []BenchmarkSuiteConfig, timeLimitMs, hashMB, depth, thr
 			pr := BenchmarkPositionResult{
 				ID:          id,
 				FEN:         pos.FEN,
-				Expected:    joinStrings(pos.BestMoves),
+				Expected:    strings.Join(pos.BestMoves, "/"),
 				Found:       epdResult.BestMoveSAN,
 				Solved:      epdResult.Passed,
 				TotalTimeMs: float64(epdResult.TimeTaken.Milliseconds()),
@@ -236,13 +237,3 @@ func LoadBenchmarkResult(filename string) (*BenchmarkResult, error) {
 	return &result, nil
 }
 
-func joinStrings(ss []string) string {
-	if len(ss) == 0 {
-		return ""
-	}
-	result := ss[0]
-	for _, s := range ss[1:] {
-		result += "/" + s
-	}
-	return result
-}

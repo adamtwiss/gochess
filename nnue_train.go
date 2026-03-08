@@ -1125,60 +1125,6 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 	return totalLoss / float64(count)
 }
 
-// TuneNNUEK finds the optimal sigmoid scaling constant K by minimizing MSE
-// between sigmoid(score/K) and game results over the training data.
-// This uses the search scores from selfplay, NOT the network output.
-// Uses golden section search over [50, 1600].
-func TuneNNUEK(bf *NNBinFile, lambda float64) float64 {
-	// Sample up to 50K positions (data is pre-shuffled in .nnbin)
-	numTrain := int(bf.NumTrain)
-	sampleSize := numTrain
-	if sampleSize > 50000 {
-		sampleSize = 50000
-	}
-
-	computeMSE := func(K float64) float64 {
-		totalErr := 0.0
-		count := 0
-		for i := 0; i < sampleSize; i++ {
-			s, err := bf.ReadRecord(i)
-			if err != nil || !s.HasScore {
-				continue
-			}
-			score := float64(s.Score)
-			result := float64(s.Result)
-			// Scores and results are White-relative in the data
-			pred := nnueSigmoid(score, K)
-			diff := result - pred
-			totalErr += diff * diff
-			count++
-		}
-		if count == 0 {
-			return 1.0
-		}
-		return totalErr / float64(count)
-	}
-
-	lo, hi := 50.0, 1600.0
-	gr := (math.Sqrt(5) + 1) / 2
-	iter := 0
-	for hi-lo > 0.1 {
-		c := hi - (hi-lo)/gr
-		d := lo + (hi-lo)/gr
-		mc := computeMSE(c)
-		md := computeMSE(d)
-		iter++
-		if mc < md {
-			hi = d
-			fmt.Printf("  K search iter %d: [%.1f, %.1f] MSE=%.6f\n", iter, lo, hi, mc)
-		} else {
-			lo = c
-			fmt.Printf("  K search iter %d: [%.1f, %.1f] MSE=%.6f\n", iter, lo, hi, md)
-		}
-	}
-	return (lo + hi) / 2
-}
-
 // QuantizeNetwork converts a float32 training network to int16 for inference.
 func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 	net := &NNUENet{}

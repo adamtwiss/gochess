@@ -365,7 +365,6 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 	defer writer.Flush()
 
 	var mu sync.Mutex
-	var totalPositions int64
 
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
@@ -401,7 +400,6 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 				fmt.Fprintf(writer, "%s;%d;%.1f\n", fen, score, game.Result)
 			}
 			writer.Flush()
-			atomic.AddInt64(&totalPositions, int64(len(game.Positions)))
 			done := atomic.AddInt64(&gamesDone, 1)
 			if onGameDone != nil {
 				onGameDone(int(done), game)

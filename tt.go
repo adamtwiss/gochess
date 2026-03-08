@@ -236,9 +236,3 @@ func (tt *TranspositionTable) Hashfull() int {
 	return used * 1000 / totalSlots
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
