@@ -3,8 +3,9 @@
 /tuner
 chessgcc
 
-# NNUE network files
+# NNUE network files (except the default net)
 *.nnue
+!net.nnue
 
 # PGN output files (not testdata/)
 /gauntlet.pgn
