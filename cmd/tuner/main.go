@@ -156,7 +156,7 @@ func runSelfPlay(args []string) {
 
 func runTune(args []string) {
 	fs := flag.NewFlagSet("tune", flag.ExitOnError)
-	dataFile := fs.String("data", "training.dat", "training data file")
+	dataFile := fs.String("data", "training.bin", "training data file (.bin or .dat)")
 	epochs := fs.Int("epochs", 500, "number of optimization epochs")
 	lr := fs.Float64("lr", 1.0, "learning rate")
 	l2 := fs.Float64("l2", 0, "L2 regularization strength toward initial values (0=disabled)")
@@ -165,7 +165,8 @@ func runTune(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  tuner tune -data training.bin -epochs 1000 -lr 1.0\n")
 		fmt.Fprintf(os.Stderr, "  tuner tune -data training.dat -epochs 1000 -lr 1.0\n")
 	}
 	fs.Parse(args)
@@ -180,7 +181,14 @@ func runTune(args []string) {
 	fmt.Printf("Parameter count: %d (%d tunable, %d frozen)\n", tuner.NumParams(), tuner.NumParams()-frozenCount, frozenCount)
 
 	// Derive .tbin filename from data filename
-	tbinFile := strings.TrimSuffix(*dataFile, ".dat") + ".tbin"
+	isBin := strings.HasSuffix(*dataFile, ".bin")
+	tbinFile := *dataFile
+	if isBin {
+		tbinFile = strings.TrimSuffix(tbinFile, ".bin")
+	} else {
+		tbinFile = strings.TrimSuffix(tbinFile, ".dat")
+	}
+	tbinFile += ".tbin"
 
 	// Check if .tbin needs to be (re)built
 	needBuild := false
@@ -188,8 +196,8 @@ func runTune(args []string) {
 	if tbinErr != nil {
 		needBuild = true
 	} else {
-		datStat, datErr := os.Stat(*dataFile)
-		if datErr == nil && datStat.ModTime().After(tbinStat.ModTime()) {
+		srcStat, srcErr := os.Stat(*dataFile)
+		if srcErr == nil && srcStat.ModTime().After(tbinStat.ModTime()) {
 			needBuild = true
 			fmt.Printf("Source %s is newer than %s, rebuilding cache...\n", *dataFile, tbinFile)
 		}
@@ -198,7 +206,13 @@ func runTune(args []string) {
 	if needBuild {
 		fmt.Printf("Preprocessing %s → %s...\n", *dataFile, tbinFile)
 		start := time.Now()
-		if err := chess.PreprocessToFile(tuner, *dataFile, tbinFile); err != nil {
+		var err error
+		if isBin {
+			err = chess.PreprocessBinToFile(tuner, *dataFile, tbinFile)
+		} else {
+			err = chess.PreprocessToFile(tuner, *dataFile, tbinFile)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error preprocessing: %v\n", err)
 			os.Exit(1)
 		}

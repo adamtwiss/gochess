@@ -775,6 +775,125 @@ func PreprocessToFile(t *Tuner, inputFEN, outputBin string) error {
 	return nil
 }
 
+// PreprocessBinToFile reads positions from a .bin file (32-byte binary records),
+// computes evaluation traces, and writes a .tbin trace cache file.
+// This is the binary equivalent of PreprocessToFile (which reads text .dat files).
+func PreprocessBinToFile(t *Tuner, inputBin, outputBin string) error {
+	// Open and validate the .bin file
+	stat, err := os.Stat(inputBin)
+	if err != nil {
+		return err
+	}
+	if stat.Size()%BinpackRecordSize != 0 {
+		return fmt.Errorf("%s: file size %d is not a multiple of %d", inputBin, stat.Size(), BinpackRecordSize)
+	}
+	totalRecords := int(stat.Size() / BinpackRecordSize)
+	if totalRecords == 0 {
+		return fmt.Errorf("%s: empty file", inputBin)
+	}
+
+	f, err := os.Open(inputBin)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Read all records into memory for shuffling
+	data := make([]byte, stat.Size())
+	if _, err := io.ReadFull(f, data); err != nil {
+		return fmt.Errorf("reading %s: %w", inputBin, err)
+	}
+
+	// Build index array and shuffle deterministically
+	indices := make([]int, totalRecords)
+	for i := range indices {
+		indices[i] = i
+	}
+	rng := rand.New(rand.NewSource(42))
+	rng.Shuffle(len(indices), func(i, j int) {
+		indices[i], indices[j] = indices[j], indices[i]
+	})
+
+	// 90/10 split
+	numTrain := totalRecords * 9 / 10
+	numValidation := totalRecords - numTrain
+
+	// Write to a temp file first, then rename atomically
+	tmpFile := outputBin + ".tmp"
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		return err
+	}
+	bw := bufio.NewWriterSize(out, 256*1024)
+
+	// Write placeholder header
+	var headerBuf [tbinHeaderSize]byte
+	copy(headerBuf[0:4], tbinMagic)
+	binary.LittleEndian.PutUint16(headerBuf[4:6], tbinVersion)
+	binary.LittleEndian.PutUint16(headerBuf[6:8], uint16(t.NumParams()))
+	binary.LittleEndian.PutUint32(headerBuf[8:12], uint32(numTrain))
+	binary.LittleEndian.PutUint32(headerBuf[12:16], uint32(numValidation))
+	if _, err := bw.Write(headerBuf[:]); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+
+	// Write records in shuffled order: training first, then validation
+	var trainBytesTotal uint64
+	var rec [BinpackRecordSize]byte
+	for i, idx := range indices {
+		copy(rec[:], data[idx*BinpackRecordSize:(idx+1)*BinpackRecordSize])
+
+		b, score, resultByte, err := UnpackPosition(rec)
+		if err != nil {
+			out.Close()
+			os.Remove(tmpFile)
+			return fmt.Errorf("invalid record at index %d: %w", idx, err)
+		}
+
+		trace := t.computeTrace(b)
+		trace.Score = score
+		trace.Result = float64(ResultToFloat(resultByte))
+
+		n, err := writeTraceRecord(bw, &trace)
+		if err != nil {
+			out.Close()
+			os.Remove(tmpFile)
+			return err
+		}
+		if i < numTrain {
+			trainBytesTotal += uint64(n)
+		}
+	}
+
+	if err := bw.Flush(); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+
+	// Patch trainBytes in header
+	binary.LittleEndian.PutUint64(headerBuf[16:24], trainBytesTotal)
+	if _, err := out.Seek(0, io.SeekStart); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+	if _, err := out.Write(headerBuf[:]); err != nil {
+		out.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+
+	if err := out.Close(); err != nil {
+		os.Remove(tmpFile)
+		return err
+	}
+
+	return os.Rename(tmpFile, outputBin)
+}
+
 // OpenTraceFile mmaps a .tbin file and validates its header.
 // The caller must call Close() when done to unmap the file.
 func OpenTraceFile(filename string, numParams int) (*TraceFile, error) {

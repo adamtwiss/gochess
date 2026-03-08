@@ -23,8 +23,8 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 
 ./tuner selfplay -games 20000 -time 200 -concurrency 6                       # Generate training data (.bin)
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -syzygy /path/to/tb  # With Syzygy tablebases
-./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
-./tuner tune -data training.dat -epochs 500 -lr 1.0 -lambda 0.5             # Tune with blended loss (default lambda=0)
+./tuner tune -data training.bin -epochs 500 -lr 1.0                          # Tune eval parameters (.bin or .dat)
+./tuner tune -data training.bin -epochs 500 -lr 1.0 -lambda 0.5             # Tune with blended loss (default lambda=0)
 ./tuner nnue-train -data training.bin -epochs 100 -lr 0.01 -output net.nnue  # Train NNUE
 ./tuner nnue-train -data a.bin,b.bin -epochs 100 -lr 0.01                    # Train from multiple files
 ./tuner nnue-train -data training.dat -epochs 100 -lr 0.01                   # Train from legacy .dat
