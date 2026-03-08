@@ -32,13 +32,19 @@ TEXT ·nnueCReLU256(SB), NOSPLIT, $0-16
 	// V0 = zero vector (for max with 0)
 	VEOR V0.B16, V0.B16, V0.B16
 
-	MOVD $32, R3                  // 32 iterations
+	MOVD $16, R3                  // 16 iterations (2 vectors each)
 
 crelu_loop:
 	VLD1 (R0), [V2.B16]          // load 8 int16
 	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H  (max with 0)
 	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H  (min with 127)
 	VST1 [V2.B16], (R1)          // store result
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	VLD1 (R0), [V3.B16]          // load next 8 int16
+	WORD $0x4E606463              // SMAX V3.8H, V3.8H, V0.8H
+	WORD $0x4E616C63              // SMIN V3.8H, V3.8H, V1.8H
+	VST1 [V3.B16], (R1)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	SUBS $1, R3, R3
@@ -104,29 +110,25 @@ outer:
 inner:
 	VLD1 (R10), [V0.B16]         // load 8 int16 inputs
 
-	// Output j: multiply-accumulate into V16
+	// Output j: multiply-accumulate directly into V16
 	VLD1 (R6), [V4.B16]
-	WORD $0x0E64C014              // SMULL  V20.4S, V0.4H, V4.4H
-	WORD $0x4E648014              // SMLAL2 V20.4S, V0.8H, V4.8H
-	WORD $0x4EB48610              // ADD    V16.4S, V16.4S, V20.4S
+	WORD $0x0E648010              // SMLAL  V16.4S, V0.4H, V4.4H
+	WORD $0x4E648010              // SMLAL2 V16.4S, V0.8H, V4.8H
 
-	// Output j+1: multiply-accumulate into V17
+	// Output j+1: multiply-accumulate directly into V17
 	VLD1 (R7), [V5.B16]
-	WORD $0x0E65C015              // SMULL  V21.4S, V0.4H, V5.4H
-	WORD $0x4E658015              // SMLAL2 V21.4S, V0.8H, V5.8H
-	WORD $0x4EB58631              // ADD    V17.4S, V17.4S, V21.4S
+	WORD $0x0E658011              // SMLAL  V17.4S, V0.4H, V5.4H
+	WORD $0x4E658011              // SMLAL2 V17.4S, V0.8H, V5.8H
 
-	// Output j+2: multiply-accumulate into V18
+	// Output j+2: multiply-accumulate directly into V18
 	VLD1 (R8), [V6.B16]
-	WORD $0x0E66C016              // SMULL  V22.4S, V0.4H, V6.4H
-	WORD $0x4E668016              // SMLAL2 V22.4S, V0.8H, V6.8H
-	WORD $0x4EB68652              // ADD    V18.4S, V18.4S, V22.4S
+	WORD $0x0E668012              // SMLAL  V18.4S, V0.4H, V6.4H
+	WORD $0x4E668012              // SMLAL2 V18.4S, V0.8H, V6.8H
 
-	// Output j+3: multiply-accumulate into V19
+	// Output j+3: multiply-accumulate directly into V19
 	VLD1 (R9), [V7.B16]
-	WORD $0x0E67C017              // SMULL  V23.4S, V0.4H, V7.4H
-	WORD $0x4E678017              // SMLAL2 V23.4S, V0.8H, V7.8H
-	WORD $0x4EB78673              // ADD    V19.4S, V19.4S, V23.4S
+	WORD $0x0E678013              // SMLAL  V19.4S, V0.4H, V7.4H
+	WORD $0x4E678013              // SMLAL2 V19.4S, V0.8H, V7.8H
 
 	// Advance cursors
 	ADD $16, R10, R10
@@ -188,7 +190,7 @@ TEXT ·nnueAccSubAdd256(SB), NOSPLIT, $0-24
 	MOVD acc+0(FP), R0
 	MOVD oldW+8(FP), R1
 	MOVD newW+16(FP), R2
-	MOVD $32, R3
+	MOVD $16, R3                  // 16 iterations (2 vectors each)
 
 subadd_loop:
 	VLD1 (R2), [V0.B16]          // new weights
@@ -197,6 +199,15 @@ subadd_loop:
 	VLD1 (R0), [V1.B16]          // accumulator
 	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (acc + delta)
 	VST1 [V0.B16], (R0)          // store back
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	VLD1 (R2), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R0), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	ADD $16, R2, R2
@@ -214,7 +225,7 @@ TEXT ·nnueAccSubSubAdd256(SB), NOSPLIT, $0-32
 	MOVD oldW+8(FP), R1
 	MOVD newW+16(FP), R2
 	MOVD capW+24(FP), R3
-	MOVD $32, R4
+	MOVD $16, R4                  // 16 iterations (2 vectors each)
 
 subsubadd_loop:
 	VLD1 (R2), [V0.B16]          // new weights
@@ -225,6 +236,18 @@ subsubadd_loop:
 	VLD1 (R0), [V1.B16]          // accumulator
 	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (acc + delta)
 	VST1 [V0.B16], (R0)          // store back
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	VLD1 (R2), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R3), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R0), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	ADD $16, R2, R2
@@ -241,13 +264,19 @@ subsubadd_loop:
 TEXT ·nnueAccAdd256(SB), NOSPLIT, $0-16
 	MOVD acc+0(FP), R0
 	MOVD weights+8(FP), R1
-	MOVD $32, R2
+	MOVD $16, R2                  // 16 iterations (2 vectors each)
 
 accadd_loop:
-	VLD1 (R0), [V0.B16]          // load accumulator
-	VLD1 (R1), [V1.B16]          // load weights
+	VLD1 (R0), [V0.B16]
+	VLD1 (R1), [V1.B16]
 	WORD $0x4E618400              // ADD V0.8H, V0.8H, V1.8H
-	VST1 [V0.B16], (R0)          // store back
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	VLD1 (R0), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E638442              // ADD V2.8H, V2.8H, V3.8H
+	VST1 [V2.B16], (R0)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	SUBS $1, R2, R2
@@ -262,13 +291,19 @@ accadd_loop:
 TEXT ·nnueAccSub256(SB), NOSPLIT, $0-16
 	MOVD acc+0(FP), R0
 	MOVD weights+8(FP), R1
-	MOVD $32, R2
+	MOVD $16, R2                  // 16 iterations (2 vectors each)
 
 accsub_loop:
-	VLD1 (R0), [V0.B16]          // load accumulator
-	VLD1 (R1), [V1.B16]          // load weights
+	VLD1 (R0), [V0.B16]
+	VLD1 (R1), [V1.B16]
 	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H
-	VST1 [V0.B16], (R0)          // store back
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	VLD1 (R0), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VST1 [V2.B16], (R0)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	SUBS $1, R2, R2
@@ -286,7 +321,7 @@ TEXT ·nnueAccCopySubAdd256(SB), NOSPLIT, $0-32
 	MOVD src+8(FP), R1
 	MOVD oldW+16(FP), R2
 	MOVD newW+24(FP), R3
-	MOVD $32, R4
+	MOVD $16, R4                  // 16 iterations (2 vectors each)
 
 copysubadd_loop:
 	VLD1 (R3), [V0.B16]          // new weights
@@ -295,6 +330,16 @@ copysubadd_loop:
 	VLD1 (R1), [V1.B16]          // src (parent accumulator)
 	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (src + delta)
 	VST1 [V0.B16], (R0)          // store to dst
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	VLD1 (R3), [V2.B16]
+	VLD1 (R2), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	ADD $16, R2, R2
@@ -315,7 +360,7 @@ TEXT ·nnueAccCopySubSubAdd256(SB), NOSPLIT, $0-40
 	MOVD oldW+16(FP), R2
 	MOVD newW+24(FP), R3
 	MOVD capW+32(FP), R4
-	MOVD $32, R5
+	MOVD $16, R5                  // 16 iterations (2 vectors each)
 
 copysubsubadd_loop:
 	VLD1 (R3), [V0.B16]          // new weights
@@ -326,6 +371,19 @@ copysubsubadd_loop:
 	VLD1 (R1), [V1.B16]          // src (parent accumulator)
 	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (src + delta)
 	VST1 [V0.B16], (R0)          // store to dst
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	ADD $16, R4, R4
+	VLD1 (R3), [V2.B16]
+	VLD1 (R2), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R4), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
 	ADD $16, R0, R0
 	ADD $16, R1, R1
 	ADD $16, R2, R2
