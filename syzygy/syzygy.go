@@ -11,6 +11,9 @@ import (
 	"unsafe"
 )
 
+// CGOAvailable indicates whether this binary was built with CGO support.
+const CGOAvailable = true
+
 // MaxPieceCount is the largest tablebase available (e.g. 5 for 5-piece TBs).
 // Set after Init().
 var MaxPieceCount int

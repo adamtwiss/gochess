@@ -5,6 +5,9 @@ package syzygy
 // Stub implementations when CGO is not available.
 // All probes return failure so the engine runs without tablebase support.
 
+// CGOAvailable indicates whether this binary was built with CGO support.
+const CGOAvailable = false
+
 var MaxPieceCount int
 
 const (

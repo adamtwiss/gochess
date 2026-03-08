@@ -120,7 +120,11 @@ func main() {
 		if chess.SyzygyInit(*syzygyPath) {
 			fmt.Fprintf(os.Stderr, "Syzygy tablebases loaded from %s (up to %d-piece)\n", *syzygyPath, chess.SyzygyMaxPieceCount())
 		} else {
-			fmt.Fprintf(os.Stderr, "Warning: failed to load Syzygy tablebases from %s\n", *syzygyPath)
+			if !chess.SyzygyCGOAvailable() {
+				fmt.Fprintf(os.Stderr, "Warning: binary built without CGO, Syzygy tablebases unavailable (install gcc and rebuild)\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: failed to load Syzygy tablebases from %s\n", *syzygyPath)
+			}
 		}
 	}
 

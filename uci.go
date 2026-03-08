@@ -550,7 +550,11 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		if SyzygyInit(value) {
 			e.send("info string Syzygy tablebases loaded: up to %d-piece", syzygy.MaxPieceCount)
 		} else {
-			e.send("info string failed to load Syzygy tablebases from %s", value)
+			if !SyzygyCGOAvailable() {
+				e.send("info string binary built without CGO, Syzygy tablebases unavailable (install gcc and rebuild)")
+			} else {
+				e.send("info string failed to load Syzygy tablebases from %s", value)
+			}
 		}
 	} else if strings.EqualFold(name, "SyzygyProbeDepth") {
 		n, err := strconv.Atoi(tokens[valueIdx])

@@ -325,7 +325,11 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 		if SyzygyInit(cfg.SyzygyPath) {
 			fmt.Printf("Syzygy tablebases loaded: up to %d-piece positions\n", SyzygyMaxPieceCount())
 		} else {
-			fmt.Printf("Warning: failed to load Syzygy tablebases from %s\n", cfg.SyzygyPath)
+			if !SyzygyCGOAvailable() {
+				fmt.Printf("Warning: binary built without CGO, Syzygy tablebases unavailable (install gcc and rebuild)\n")
+			} else {
+				fmt.Printf("Warning: failed to load Syzygy tablebases from %s\n", cfg.SyzygyPath)
+			}
 		}
 		defer SyzygyFree()
 	}

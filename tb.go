@@ -34,6 +34,12 @@ const (
 	TBLossScore = -TBWinScore
 )
 
+// SyzygyCGOAvailable reports whether this binary was built with CGO support
+// (required for Syzygy tablebase probing via Fathom).
+func SyzygyCGOAvailable() bool {
+	return syzygy.CGOAvailable
+}
+
 // SyzygyInit initializes the Syzygy tablebase with the configured path.
 func SyzygyInit(path string) bool {
 	if path == "" {
