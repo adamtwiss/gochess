@@ -128,6 +128,26 @@ func main() {
 		}
 	}
 
+	// Load opening book (before any mode branches)
+	var book *chess.OpeningBook
+	if *bookFile != "" {
+		// Explicit path — must exist
+		var err error
+		book, err = chess.LoadOpeningBook(*bookFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading book: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Opening book loaded from %s\n", *bookFile)
+	} else {
+		// Try default book.bin in current directory
+		const defaultBook = "book.bin"
+		if b, err := chess.LoadOpeningBook(defaultBook); err == nil {
+			book = b
+			fmt.Fprintf(os.Stderr, "Opening book loaded from %s\n", defaultBook)
+		}
+	}
+
 	if *benchmark {
 		runBenchmark(*maxTimeMS, *hashMB, *depth, *threads, *benchSave, *benchCompare)
 		return
@@ -141,12 +161,7 @@ func main() {
 	// If forced UCI or stdin is not a terminal, use UCI mode
 	if *forceUCI || !term.IsTerminal(int(os.Stdin.Fd())) {
 		engine := chess.NewUCIEngine()
-		if *bookFile != "" {
-			book, err := chess.LoadOpeningBook(*bookFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error loading book: %v\n", err)
-				os.Exit(1)
-			}
+		if book != nil {
 			engine.SetBook(book)
 		}
 		if nnueNet != nil {
