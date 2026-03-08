@@ -344,7 +344,8 @@ copysubsubadd_loop:
 //
 // weightsT layout: [32][32] int16, row-major (each row = 64 bytes).
 // Precomputes activated = ReLU(input >> 6) into V0-V7 (8 regs × 4 int32).
-// Uses SSHLL/SSHLL2 to sign-extend int16 weights to int32, then MLA.
+// Uses SSHLL/SSHLL2 to sign-extend int16 weights to int32, then MUL+ADD.
+// Note: MLA is NOT available for .4S on NEON (that encoding is SDOT).
 //
 // Register allocation:
 //   R0  = input pointer (precompute only)
@@ -421,33 +422,41 @@ matmul32_loop:
 	// Group 0: weights[0..7] × activated[0..7]
 	VLD1 (R1), [V24.B16]         // load 8 int16 weights
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0  (sign-extend low 4)
-	WORD $0x4E809730              // MLA    V16.4S, V25.4S, V0.4S
+	WORD $0x4EA09F39              // MUL    V25.4S, V25.4S, V0.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0  (sign-extend high 4)
-	WORD $0x4E819730              // MLA    V16.4S, V25.4S, V1.4S
+	WORD $0x4EA19F39              // MUL    V25.4S, V25.4S, V1.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Group 1: weights[8..15] × activated[8..15]
 	ADD $16, R1, R5
 	VLD1 (R5), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E829730              // MLA    V16.4S, V25.4S, V2.4S
+	WORD $0x4EA29F39              // MUL    V25.4S, V25.4S, V2.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E839730              // MLA    V16.4S, V25.4S, V3.4S
+	WORD $0x4EA39F39              // MUL    V25.4S, V25.4S, V3.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Group 2: weights[16..23] × activated[16..23]
 	ADD $32, R1, R5
 	VLD1 (R5), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E849730              // MLA    V16.4S, V25.4S, V4.4S
+	WORD $0x4EA49F39              // MUL    V25.4S, V25.4S, V4.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E859730              // MLA    V16.4S, V25.4S, V5.4S
+	WORD $0x4EA59F39              // MUL    V25.4S, V25.4S, V5.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Group 3: weights[24..31] × activated[24..31]
 	ADD $48, R1, R5
 	VLD1 (R5), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E869730              // MLA    V16.4S, V25.4S, V6.4S
+	WORD $0x4EA69F39              // MUL    V25.4S, V25.4S, V6.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E879730              // MLA    V16.4S, V25.4S, V7.4S
+	WORD $0x4EA79F39              // MUL    V25.4S, V25.4S, V7.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Horizontal reduce V16 → scalar
 	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
@@ -533,33 +542,41 @@ TEXT ·nnueDotReLU32(SB), NOSPLIT, $0-24
 	// Group 0: weights[0..7] × activated[0..7]
 	VLD1 (R1), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E809730              // MLA    V16.4S, V25.4S, V0.4S
+	WORD $0x4EA09F39              // MUL    V25.4S, V25.4S, V0.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E819730              // MLA    V16.4S, V25.4S, V1.4S
+	WORD $0x4EA19F39              // MUL    V25.4S, V25.4S, V1.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Group 1: weights[8..15] × activated[8..15]
 	ADD $16, R1, R5
 	VLD1 (R5), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E829730              // MLA    V16.4S, V25.4S, V2.4S
+	WORD $0x4EA29F39              // MUL    V25.4S, V25.4S, V2.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E839730              // MLA    V16.4S, V25.4S, V3.4S
+	WORD $0x4EA39F39              // MUL    V25.4S, V25.4S, V3.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Group 2: weights[16..23] × activated[16..23]
 	ADD $32, R1, R5
 	VLD1 (R5), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E849730              // MLA    V16.4S, V25.4S, V4.4S
+	WORD $0x4EA49F39              // MUL    V25.4S, V25.4S, V4.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E859730              // MLA    V16.4S, V25.4S, V5.4S
+	WORD $0x4EA59F39              // MUL    V25.4S, V25.4S, V5.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Group 3: weights[24..31] × activated[24..31]
 	ADD $48, R1, R5
 	VLD1 (R5), [V24.B16]
 	WORD $0x0F10A719              // SSHLL  V25.4S, V24.4H, #0
-	WORD $0x4E869730              // MLA    V16.4S, V25.4S, V6.4S
+	WORD $0x4EA69F39              // MUL    V25.4S, V25.4S, V6.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 	WORD $0x4F10A719              // SSHLL2 V25.4S, V24.8H, #0
-	WORD $0x4E879730              // MLA    V16.4S, V25.4S, V7.4S
+	WORD $0x4EA79F39              // MUL    V25.4S, V25.4S, V7.4S
+	WORD $0x4EB98610              // ADD    V16.4S, V16.4S, V25.4S
 
 	// Horizontal reduce V16 → scalar
 	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
