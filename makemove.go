@@ -139,32 +139,9 @@ func (b *Board) MakeMove(m Move) {
 		b.HashKey ^= Zobrist.EnPassant[b.EnPassant.File()]
 	}
 
-	// Update castling rights
+	// Update castling rights via lookup table (replaces two switch statements)
 	oldCastling := b.Castling
-	switch from {
-	case NewSquare(4, 0):
-		b.Castling &^= WhiteKingside | WhiteQueenside
-	case NewSquare(4, 7):
-		b.Castling &^= BlackKingside | BlackQueenside
-	case NewSquare(0, 0):
-		b.Castling &^= WhiteQueenside
-	case NewSquare(7, 0):
-		b.Castling &^= WhiteKingside
-	case NewSquare(0, 7):
-		b.Castling &^= BlackQueenside
-	case NewSquare(7, 7):
-		b.Castling &^= BlackKingside
-	}
-	switch to {
-	case NewSquare(0, 0):
-		b.Castling &^= WhiteQueenside
-	case NewSquare(7, 0):
-		b.Castling &^= WhiteKingside
-	case NewSquare(0, 7):
-		b.Castling &^= BlackQueenside
-	case NewSquare(7, 7):
-		b.Castling &^= BlackKingside
-	}
+	b.Castling &= castleMask[from] & castleMask[to]
 
 	// Update castling rights in hash (only when changed)
 	if oldCastling != b.Castling {

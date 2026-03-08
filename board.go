@@ -111,6 +111,24 @@ const (
 	AllCastling    CastlingRights = WhiteKingside | WhiteQueenside | BlackKingside | BlackQueenside
 )
 
+// castleMask is a 64-byte lookup table for updating castling rights.
+// b.Castling &= castleMask[sq] clears the appropriate rights when a piece
+// moves from or to sq, replacing two switch statements with a single AND.
+// Most squares are AllCastling (0xF = preserve all rights).
+var castleMask [64]CastlingRights
+
+func init() {
+	for i := range castleMask {
+		castleMask[i] = AllCastling
+	}
+	castleMask[NewSquare(0, 0)] &^= WhiteQueenside  // a1
+	castleMask[NewSquare(7, 0)] &^= WhiteKingside   // h1
+	castleMask[NewSquare(4, 0)] &^= WhiteKingside | WhiteQueenside // e1
+	castleMask[NewSquare(0, 7)] &^= BlackQueenside   // a8
+	castleMask[NewSquare(7, 7)] &^= BlackKingside    // h8
+	castleMask[NewSquare(4, 7)] &^= BlackKingside | BlackQueenside // e8
+}
+
 // Board represents a chess board position
 type Board struct {
 	Squares       [64]Piece
