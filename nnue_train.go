@@ -1299,3 +1299,282 @@ func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
 	}
 	return (a + b) / 2
 }
+
+// TrainBinpack runs the NNUE training loop using binpack files directly.
+// This eliminates the .nnbin preprocessing step.
+func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
+	onEpoch func(epoch int, trainLoss, valLoss float64)) {
+
+	trainFraction := 0.9
+	numWorkers := runtime.NumCPU()
+
+	// Pre-allocate worker gradient structs
+	workerGrads := make([]NNUETrainGradients, numWorkers)
+	for w := range workerGrads {
+		initGradientTracking(&workerGrads[w])
+	}
+	workerLoss := make([]float64, numWorkers)
+	workerCount := make([]int, numWorkers)
+
+	var totalGrads NNUETrainGradients
+	initGradientTracking(&totalGrads)
+
+	rng := rand.New(rand.NewSource(42))
+
+	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
+		// Check for early stop signal
+		if cfg.Stop != nil {
+			select {
+			case <-cfg.Stop:
+				return
+			default:
+			}
+		}
+
+		reader := bf.NewEpochReader(rng, trainFraction)
+		numTrain := reader.NumTrainRecords()
+		if cfg.MaxPositions > 0 && cfg.MaxPositions < numTrain {
+			numTrain = cfg.MaxPositions
+		}
+
+		totalLoss := 0.0
+		numSamples := 0
+		processed := 0
+
+		// Pre-allocate sample buffer for batches
+		sampleBuf := make([]*NNUETrainSample, 0, cfg.BatchSize)
+
+		for processed < numTrain {
+			batchSize := cfg.BatchSize
+			if processed+batchSize > numTrain {
+				batchSize = numTrain - processed
+			}
+
+			// Read batch via block-shuffled reader
+			batch, err := reader.NextBatch(batchSize, sampleBuf)
+			if err != nil || batch == nil {
+				break
+			}
+			actualBatch := len(batch)
+			processed += actualBatch
+
+			// Parallel forward + backward
+			perWorker := (actualBatch + numWorkers - 1) / numWorkers
+
+			var wg sync.WaitGroup
+			for w := 0; w < numWorkers; w++ {
+				wg.Add(1)
+				go func(workerIdx int) {
+					defer wg.Done()
+					start := workerIdx * perWorker
+					end := start + perWorker
+					if end > actualBatch {
+						end = actualBatch
+					}
+
+					workerLoss[workerIdx] = 0
+					workerCount[workerIdx] = 0
+					zeroGradients(&workerGrads[workerIdx])
+
+					for i := start; i < end; i++ {
+						s := batch[i]
+						output, hidden1, hidden2, hidden3 := trainer.Net.Forward(s)
+						trainer.Net.Backward(s, &workerGrads[workerIdx],
+							output, hidden1, hidden2, hidden3, cfg)
+
+						pred := nnueSigmoid(float64(output), cfg.K)
+						var target float64
+						if s.HasScore {
+							result := float64(s.Result)
+							if s.SideToMove == Black {
+								result = 1.0 - result
+							}
+							score := float64(s.Score)
+							if s.SideToMove == Black {
+								score = -score
+							}
+							scoreTarget := nnueSigmoid(score, cfg.K)
+							target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
+						} else {
+							target = float64(s.Result)
+							if s.SideToMove == Black {
+								target = 1.0 - target
+							}
+						}
+						diff := pred - target
+						workerLoss[workerIdx] += diff * diff
+						workerCount[workerIdx]++
+					}
+				}(w)
+			}
+			wg.Wait()
+
+			// Aggregate gradients and loss
+			zeroGradients(&totalGrads)
+			for w := 0; w < numWorkers; w++ {
+				totalLoss += workerLoss[w]
+				numSamples += workerCount[w]
+				addGradients(&totalGrads, &workerGrads[w])
+			}
+
+			// Scale gradients and apply Adam updates
+			scale := 1.0 / float64(actualBatch)
+			trainer.step++
+			trainer.applyAdamUpdates(&totalGrads, scale, cfg.LR)
+		}
+
+		// Compute losses
+		trainLoss := 0.0
+		if numSamples > 0 {
+			trainLoss = totalLoss / float64(numSamples)
+		}
+
+		valLoss := trainer.computeValidationLossBinpack(bf, cfg, trainFraction)
+
+		if onEpoch != nil {
+			onEpoch(epoch, trainLoss, valLoss)
+		}
+	}
+}
+
+// computeValidationLossBinpack computes validation loss from binpack files.
+func (trainer *NNUETrainer) computeValidationLossBinpack(bf *BinpackFile, cfg NNUETrainConfig, trainFraction float64) float64 {
+	// Read validation samples
+	valSamples, err := bf.ValidationSamples(trainFraction)
+	if err != nil || len(valSamples) == 0 {
+		return 0
+	}
+
+	numWorkers := runtime.NumCPU()
+	perWorker := (len(valSamples) + numWorkers - 1) / numWorkers
+	wLoss := make([]float64, numWorkers)
+	wCount := make([]int, numWorkers)
+
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+			start := workerIdx * perWorker
+			end := start + perWorker
+			if end > len(valSamples) {
+				end = len(valSamples)
+			}
+
+			for i := start; i < end; i++ {
+				s := valSamples[i]
+				output, _, _, _ := trainer.Net.Forward(s)
+				pred := nnueSigmoid(float64(output), cfg.K)
+
+				var target float64
+				if s.HasScore {
+					result := float64(s.Result)
+					if s.SideToMove == Black {
+						result = 1.0 - result
+					}
+					score := float64(s.Score)
+					if s.SideToMove == Black {
+						score = -score
+					}
+					scoreTarget := nnueSigmoid(score, cfg.K)
+					target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
+				} else {
+					target = float64(s.Result)
+					if s.SideToMove == Black {
+						target = 1.0 - target
+					}
+				}
+
+				diff := pred - target
+				wLoss[workerIdx] += diff * diff
+				wCount[workerIdx]++
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	totalLoss := 0.0
+	count := 0
+	for w := 0; w < numWorkers; w++ {
+		totalLoss += wLoss[w]
+		count += wCount[w]
+	}
+	if count == 0 {
+		return 0
+	}
+	return totalLoss / float64(count)
+}
+
+// TuneKBinpack finds the optimal sigmoid scaling constant K using binpack files.
+func (trainer *NNUETrainer) TuneKBinpack(bf *BinpackFile, lambda float64) float64 {
+	// Sample up to 50K positions from the first file
+	sampleSize := bf.NumRecords()
+	if sampleSize > 50000 {
+		sampleSize = 50000
+	}
+
+	// Read samples
+	samples := make([]*NNUETrainSample, 0, sampleSize)
+	for i := 0; i < sampleSize; i++ {
+		rec, err := bf.ReadRecord(i)
+		if err != nil {
+			continue
+		}
+		samples = append(samples, ExtractFeaturesFromBinpack(rec))
+	}
+
+	computeError := func(K float64) float64 {
+		totalLoss := 0.0
+		for _, s := range samples {
+			output, _, _, _ := trainer.Net.Forward(s)
+			pred := nnueSigmoid(float64(output), K)
+
+			var target float64
+			if s.HasScore {
+				result := float64(s.Result)
+				if s.SideToMove == Black {
+					result = 1.0 - result
+				}
+				score := float64(s.Score)
+				if s.SideToMove == Black {
+					score = -score
+				}
+				scoreTarget := nnueSigmoid(score, K)
+				target = lambda*result + (1.0-lambda)*scoreTarget
+			} else {
+				target = float64(s.Result)
+				if s.SideToMove == Black {
+					target = 1.0 - target
+				}
+			}
+
+			diff := pred - target
+			totalLoss += diff * diff
+		}
+		if len(samples) == 0 {
+			return 0
+		}
+		return totalLoss / float64(len(samples))
+	}
+
+	fmt.Printf("  Sampling %d/%d positions\n", len(samples), bf.NumRecords())
+
+	// Golden section search
+	phi := (math.Sqrt(5) + 1) / 2
+	a, b := 100.0, 800.0
+	iter := 0
+	for b-a > 1.0 {
+		c := b - (b-a)/phi
+		d := a + (b-a)/phi
+		ec := computeError(c)
+		ed := computeError(d)
+		iter++
+		fmt.Printf("  iter %2d: K in [%.1f, %.1f]  err=%.8f\n", iter, a, b, math.Min(ec, ed))
+		if ec < ed {
+			b = d
+		} else {
+			a = c
+		}
+	}
+	return (a + b) / 2
+}

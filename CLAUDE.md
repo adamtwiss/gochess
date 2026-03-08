@@ -21,11 +21,17 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
 ./chess -buildbook -pgn testdata/2600.pgn -bookout book.bin  # Build Polyglot opening book
 
-./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat  # Generate training data
+./tuner selfplay -games 20000 -time 200 -concurrency 6                       # Generate training data (.bin)
+./tuner selfplay -games 20000 -time 200 -concurrency 6 -syzygy /path/to/tb  # With Syzygy tablebases
 ./tuner tune -data training.dat -epochs 500 -lr 1.0                          # Tune eval parameters
 ./tuner tune -data training.dat -epochs 500 -lr 1.0 -lambda 0.5             # Tune with blended loss (default lambda=0)
-./tuner nnue-train -data training.dat -epochs 100 -lr 0.01 -output net.nnue          # Train NNUE
-./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume
+./tuner nnue-train -data training.bin -epochs 100 -lr 0.01 -output net.nnue  # Train NNUE
+./tuner nnue-train -data a.bin,b.bin -epochs 100 -lr 0.01                    # Train from multiple files
+./tuner nnue-train -data training.dat -epochs 100 -lr 0.01                   # Train from legacy .dat
+./tuner nnue-train -data training.bin -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume
+./tuner convert -from training.dat -to training.bin                          # Convert text → binary
+./tuner convert -from training.bin -to training.dat                          # Convert binary → text
+cat a.bin b.bin > combined.bin                                               # Concatenate .bin files
 
 ./chess -nnue net.nnue -uci                             # UCI with NNUE
 ./chess -syzygy /path/to/tablebases -uci                # UCI with Syzygy tablebases
@@ -83,7 +89,8 @@ benchmark.go         Multi-suite benchmark with JSON save/compare
 book.go / polyglot.go  Polyglot opening book (build and load)
 uci.go               UCI protocol implementation
 cli.go               Interactive CLI engine
-selfplay.go          Self-play game generation for tuning data
+selfplay.go          Self-play game generation for tuning data (text or binpack output)
+binpack.go           Fixed-size binary training data format (32 bytes/record, no header)
 tuner.go             Texel tuner: parameter catalog, traces, .tbin cache, Adam optimizer
 nnue.go              NNUE inference: HalfKP network, lazy accumulators, incremental updates
 nnue_amd64.go/s      AVX2 SIMD (runtime detected)
@@ -126,6 +133,11 @@ All threads share only the TT (lockless via XOR-verified packed atomics). Board,
 ### NNUE
 HalfKP (40960 -> 2x256 -> 32 -> 32 -> 1). Lazy accumulator: MakeMove stores deltas, Materialize() applies on demand (saves ~17% NPS). King moves trigger full recompute. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
 
+### Training Data Formats
+- **Binpack** (`.bin`): Fixed-size 32-byte records, no file header. Stores packed board position (occupancy bitmap + piece nibbles), score (int16), result (uint8). Files can be concatenated with `cat`. Features extracted at training time. Block-shuffled reader (64KB = 2048 records/block) for efficient I/O.
+- **Text** (`.dat`): Legacy `FEN;score;result` format. Still supported for Texel tuner and via conversion.
+- **NNBin** (`.nnbin`): Legacy preprocessed binary cache with pre-extracted features. Deprecated in favor of binpack.
+
 ### Texel Tuner
 ~1268 parameters optimized via Adam. Training data: `FEN;score;result` from selfplay, preprocessed to `.tbin` binary cache, disk-streamed. `computeTrace()` mirrors `Evaluate()` recording sparse coefficients. Frozen params: material (coupling), tempo, trade bonuses. PST values are pre-scaled (effective = raw * scale/100).
 
@@ -143,6 +155,7 @@ Via bundled Fathom (CGO). Root: DTZ probe before search. Interior nodes: WDL pro
 - Lazy SMP: `Stopped` and `Deadline` accessed atomically. New shared state must use atomics or be per-thread
 - Tuner traces must mirror `Evaluate()` exactly. When modifying eval, update `computeTrace()` to match
 - `.tbin` cache must be rebuilt (delete or touch `.dat`) when `computeTrace()` or param catalog changes
+- `.bin` files have no header — file size must be a multiple of 32. Features are extracted from packed positions at training time, so binpack data survives feature set changes
 - `StreamTraining`/`StreamValidation` callbacks must not retain `[]TunerTrace` batch references (reused)
 - NNUE accumulator stack must stay in sync with undo stack (push on MakeMove, pop on UnmakeMove, null moves skip)
 - NNUE `putPiece`/`removePiece`/`movePiece` hooks read king bitboards — call when kings are on the board

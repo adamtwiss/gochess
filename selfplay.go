@@ -20,18 +20,23 @@ type SelfPlayConfig struct {
 	Threads      int           // search threads per game (Lazy SMP)
 	Concurrency  int           // parallel games
 	OpeningsFile string        // EPD file with starting positions
-	OutputFile   string        // output file for training data
-	HashMB  int       // TT size in MB per game
-	NNUENet *NNUENet  // optional NNUE network (shared read-only across games)
+	OutputFile   string        // output file for training data (.bin)
+	HashMB       int           // TT size in MB per game
+	NNUENet      *NNUENet      // optional NNUE network (shared read-only across games)
+	SyzygyPath   string        // path to Syzygy tablebases (empty = disabled)
 }
 
 // SelfPlayGame holds the result of one self-play game.
 type SelfPlayGame struct {
-	Positions []string  // FEN strings of recorded positions
-	Scores    []int     // White-relative search scores (parallel to Positions)
-	Result    float64   // game result from White's perspective: 1.0, 0.5, 0.0
-	ResultStr string    // "1-0", "0-1", or "1/2-1/2"
-	Plies     int       // total plies played
+	Records   [][BinpackRecordSize]byte // packed binary training records
+	Result    float64                   // game result from White's perspective: 1.0, 0.5, 0.0
+	ResultStr string                    // "1-0", "0-1", or "1/2-1/2"
+	Plies     int                       // total plies played
+}
+
+// NumPositions returns the number of recorded positions.
+func (g *SelfPlayGame) NumPositions() int {
+	return len(g.Records)
 }
 
 // GameOverReason describes why a game ended.
@@ -145,8 +150,7 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	hashCounts := make(map[uint64]int)
 	hashCounts[b.HashKey]++
 
-	var positions []string
-	var scores []int
+	var records [][BinpackRecordSize]byte
 	adjEvalCount := 0
 	lastEval := 0
 	totalPlies := 0
@@ -161,9 +165,9 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		// Check game termination
 		reason, result := gameOverResult(&b, hashCounts, adjEvalCount, lastEval)
 		if reason != GameNotOver {
+			patchBinpackResults(records, result)
 			return SelfPlayGame{
-				Positions: positions,
-				Scores:    scores,
+				Records:   records,
 				Result:    result,
 				ResultStr: resultString(result),
 				Plies:     totalPlies,
@@ -213,10 +217,11 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 		}
 
 		// Record position for training data (with filtering)
+		// Result byte is 0 here; patched to actual result when game ends.
 		plyFromStart := initialPly + totalPlies
 		if shouldRecordPosition(&b, bestMove, eval, plyFromStart) {
-			positions = append(positions, b.ToFEN())
-			scores = append(scores, eval)
+			rec := PackPosition(&b, int16(eval), 0)
+			records = append(records, rec)
 		}
 
 		// Make the move
@@ -228,9 +233,9 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	}
 
 	// Game exceeded ply limit — draw
+	patchBinpackResults(records, 0.5)
 	return SelfPlayGame{
-		Positions: positions,
-		Scores:    scores,
+		Records:   records,
 		Result:    0.5,
 		ResultStr: "1/2-1/2",
 		Plies:     totalPlies,
@@ -270,6 +275,14 @@ func shouldRecordPosition(b *Board, bestMove Move, whiteRelativeEval int, ply in
 	return true
 }
 
+// patchBinpackResults sets the result byte (offset 30) in all binpack records.
+func patchBinpackResults(records [][BinpackRecordSize]byte, result float64) {
+	r := ResultToUint8(result)
+	for i := range records {
+		records[i][30] = r
+	}
+}
+
 func resultString(result float64) string {
 	if result == 1.0 {
 		return "1-0"
@@ -304,49 +317,19 @@ func LoadOpeningPositions(filename string) ([]string, error) {
 	return positions, scanner.Err()
 }
 
-// openOutputFile opens the output file for writing training data.
-// If the file doesn't exist, it creates it. If it exists and looks like
-// training data (FEN;result lines), it opens for append. If it exists
-// but doesn't look like training data, it returns an error.
-func openOutputFile(path string) (*os.File, error) {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return os.Create(path)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	// File exists — check first few lines look like training data
-	scanner := bufio.NewScanner(f)
-	for i := 0; i < 3 && scanner.Scan(); i++ {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if !isTrainingDataLine(line) {
-			f.Close()
-			return nil, fmt.Errorf("%s exists but does not look like training data (line: %q)", path, line)
-		}
-	}
-	f.Close()
-
-	return os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0644)
-}
-
-// isTrainingDataLine checks if a line matches the FEN;result or FEN;score;result format.
-func isTrainingDataLine(line string) bool {
-	idx := strings.LastIndexByte(line, ';')
-	if idx < 0 {
-		return false
-	}
-	result := strings.TrimSpace(line[idx+1:])
-	return result == "1.0" || result == "0.5" || result == "0.0"
-}
-
 // RunSelfPlay generates training data by playing self-play games.
-// It writes positions to the output file as they complete.
+// Output is written in binary .bin format (32 bytes per position).
 func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayGame)) error {
+	// Initialize Syzygy tablebases if configured
+	if cfg.SyzygyPath != "" {
+		if SyzygyInit(cfg.SyzygyPath) {
+			fmt.Printf("Syzygy tablebases loaded: up to %d-piece positions\n", SyzygyMaxPieceCount())
+		} else {
+			fmt.Printf("Warning: failed to load Syzygy tablebases from %s\n", cfg.SyzygyPath)
+		}
+		defer SyzygyFree()
+	}
+
 	openings, err := LoadOpeningPositions(cfg.OpeningsFile)
 	if err != nil {
 		return fmt.Errorf("loading openings: %w", err)
@@ -355,7 +338,7 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 		return fmt.Errorf("no opening positions found in %s", cfg.OpeningsFile)
 	}
 
-	f, err := openOutputFile(cfg.OutputFile)
+	f, err := openBinOutputFile(cfg.OutputFile)
 	if err != nil {
 		return fmt.Errorf("output file: %w", err)
 	}
@@ -389,15 +372,10 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 
 			game := PlaySelfPlayGame(cfg, opening, rng)
 
-			// Write positions to file and invoke callback under lock
-			// (callback must be serialized to avoid data races in caller)
+			// Write records and invoke callback under lock
 			mu.Lock()
-			for i, fen := range game.Positions {
-				score := 0
-				if i < len(game.Scores) {
-					score = game.Scores[i]
-				}
-				fmt.Fprintf(writer, "%s;%d;%.1f\n", fen, score, game.Result)
+			for _, rec := range game.Records {
+				writer.Write(rec[:])
 			}
 			writer.Flush()
 			done := atomic.AddInt64(&gamesDone, 1)
@@ -410,4 +388,23 @@ func RunSelfPlay(cfg SelfPlayConfig, onGameDone func(gameNum int, game SelfPlayG
 
 	wg.Wait()
 	return nil
+}
+
+// openBinOutputFile opens or creates a .bin output file for appending.
+func openBinOutputFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	// Verify existing file is valid (size must be multiple of record size)
+	stat, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if stat.Size()%BinpackRecordSize != 0 {
+		f.Close()
+		return nil, fmt.Errorf("%s: existing file size %d is not a multiple of %d", path, stat.Size(), BinpackRecordSize)
+	}
+	return f, nil
 }

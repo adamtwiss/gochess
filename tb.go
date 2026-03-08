@@ -2,6 +2,7 @@ package chess
 
 import (
 	"chess/syzygy"
+	"sync"
 )
 
 // Syzygy tablebase configuration
@@ -16,6 +17,10 @@ var (
 
 	// SyzygyEnabled is true when tablebases are loaded and available.
 	SyzygyEnabled bool
+
+	// tbRootMu protects ProbeRoot calls which are NOT thread-safe in Fathom.
+	// ProbeWDL is thread-safe and does not need this mutex.
+	tbRootMu sync.Mutex
 )
 
 // SyzygyMaxPieceCount returns the largest tablebase available.
@@ -147,6 +152,7 @@ func tbWDLToScore(wdl int) int {
 
 // TBProbeRoot probes the DTZ table at the root to find the best move.
 // Returns (move, wdl, dtz, ok). The move is matched against legal moves.
+// Thread-safe: uses a mutex because Fathom's ProbeRoot is not reentrant.
 func (b *Board) TBProbeRoot() (Move, int, int, bool) {
 	if !b.tbCanProbeRoot() {
 		return NoMove, 0, 0, false
@@ -154,8 +160,10 @@ func (b *Board) TBProbeRoot() (Move, int, int, bool) {
 
 	white, black, kings, queens, rooks, bishops, knights, pawns, ep, isWhite := b.tbGetBitboards()
 
+	tbRootMu.Lock()
 	result, ok := syzygy.ProbeRoot(white, black, kings, queens, rooks, bishops, knights, pawns,
 		uint(b.HalfmoveClock), uint(b.Castling), ep, isWhite)
+	tbRootMu.Unlock()
 	if !ok {
 		return NoMove, 0, 0, false
 	}
