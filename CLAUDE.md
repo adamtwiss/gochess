@@ -258,7 +258,8 @@ Optional neural network evaluation behind `UseNNUE` toggle. Both classical and N
 
 - **Architecture**: HalfKP input (40960) -> 2x256 accumulators -> concat (512) -> 32 -> 32 -> 1
 - **Feature indexing**: `HalfKPIndex(perspective, kingSq, piece, pieceSq)`. 64 king squares x 10 piece types (excluding kings) x 64 piece squares = 40960. Black perspective mirrors squares (^56) and swaps piece colors.
-- **Incremental updates**: `putPiece`, `removePiece`, `movePiece` call `AddFeature`/`RemoveFeature` on the accumulator. King pieces are skipped (king moves trigger full `RecomputeAccumulator`).
+- **Lazy accumulator**: `MakeMove` stores a `DirtyPiece` delta (move type, piece, squares) instead of eagerly copying+updating the 1KB accumulator. `Materialize()` copies from parent and applies the delta on demand, called from `NNUEEvaluateRelative()`. Nodes pruned before evaluation never pay the copy+update cost (~17% NPS improvement). Falls back to full `RecomputeAccumulator` for king moves (type=0) or when the parent isn't materialized.
+- **Incremental updates**: `SubAddFeature` (quiet), `SubSubAddFeature` (capture/EP), `AddFeature`/`RemoveFeature` (promotions) apply deltas during materialization. King moves trigger full `RecomputeAccumulator`. Feature indexing via `nnuePieceIndexTable` lookup.
 - **SIMD forward pass**: Platform-specific assembly for AVX2 (x86-64) and NEON (ARM64). `nnueUseSIMD` flag controls dispatch. Five SIMD functions: `nnueCReLU256` (activation), `nnueMatMul32x512` (hidden layer), `nnueAccAdd256`/`nnueAccSubAdd256`/`nnueAccSubSubAdd256` (accumulator updates). `PrepareWeights()` transposes hidden weights for SIMD matmul. AVX2 uses runtime detection (`cpu.X86.HasAVX2`); NEON is always available on ARM64.
 - **Accumulator stack**: `NNUEAccumulatorStack` with Push/Pop mirrors the undo stack. `MakeMove` pushes before modifications, `UnmakeMove` pops at end. Null moves skip push/pop (no pieces change, child moves push/pop their own copies).
 - **Thread safety**: `NNUENet` is shared read-only across Lazy SMP threads. Each thread gets its own `NNUEAccumulatorStack` via `DeepCopy()`.
@@ -372,6 +373,7 @@ Standard Polyglot `.bin` format. Any Polyglot book (downloaded or self-built) wo
 - Syzygy `tbchess.inc` is `#include`d by `tbprobe.c` — it must NOT be compiled as a separate C file (hence the `.inc` extension, which CGO ignores). If adding new C files to `syzygy/`, ensure they don't get compiled twice.
 - Syzygy WDL probes require `HalfmoveClock == 0` (Fathom rejects non-zero rule50 for WDL). DTZ probes accept any rule50 value.
 - Fathom's `ProbeRoot` is NOT thread-safe. It is only called in `SearchWithInfo` on the main thread before iterative deepening begins. The WDL probe (`tb_probe_wdl`) IS thread-safe.
+- **cutechess-cli arg syntax**: Each CLI flag and its value must be separate `arg=` parameters. Use `arg=-nnue arg=/path/to/net.nnue`, NOT `arg="-nnue /path/to/net.nnue"`. The `-uci` flag is NOT needed — cutechess sets `proto=uci` and the engine auto-detects UCI mode when stdin is not a terminal (`!term.IsTerminal`). Use absolute paths for net files.
 
 ## Maintenance Reminders
 
