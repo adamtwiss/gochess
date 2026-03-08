@@ -1573,12 +1573,6 @@ func (b *Board) searchRoot(depth, alpha, beta int, info *SearchInfo, pinned Bitb
 	bestScore := -Infinity
 	moveCount := 0
 
-	// Track quiet and capture moves for history penalty on beta cutoff
-	var quietsTried [64]Move
-	quietsCount := 0
-	var capturesTried [32]Move
-	capturesCount := 0
-
 	for ri := range info.RootMoves {
 		move := info.RootMoves[ri].Move
 
@@ -1690,16 +1684,6 @@ func (b *Board) searchRoot(depth, alpha, beta int, info *SearchInfo, pinned Bitb
 
 		var score int
 
-		// Track quiet and capture moves for history penalty
-		if !isCap && !move.IsPromotion() && quietsCount < len(quietsTried) {
-			quietsTried[quietsCount] = move
-			quietsCount++
-		}
-		if isCap && capturesCount < len(capturesTried) {
-			capturesTried[capturesCount] = move
-			capturesCount++
-		}
-
 		// LMR + PVS at root
 		isKiller := false // no killers at root
 		reduction := 0
@@ -1774,36 +1758,10 @@ func (b *Board) searchRoot(depth, alpha, beta int, info *SearchInfo, pinned Bitb
 				info.pvLen[ply] = 1 + info.pvLen[ply+1]
 
 				if alpha >= beta {
-					// Beta cutoff at root — full history updates
+					// Beta cutoff at root — update history for quiet moves
 					if !isCap {
 						bonus := historyBonus(depth)
 						info.updateHistory(move.From(), move.To(), bonus)
-
-						// Penalize quiet moves tried before the cutoff move
-						for i := 0; i < quietsCount-1; i++ {
-							q := quietsTried[i]
-							info.updateHistory(q.From(), q.To(), -bonus)
-						}
-					} else {
-						// Capture caused beta cutoff
-						bonus := historyBonus(depth)
-						piece := b.Squares[move.From()]
-						cpt := capturedType(b.Squares[move.To()])
-						if move.Flags() == FlagEnPassant {
-							cpt = 1
-						}
-						info.updateCaptHistory(piece, move.To(), cpt, bonus)
-
-						// Penalize captures tried before cutoff
-						for i := 0; i < capturesCount-1; i++ {
-							c := capturesTried[i]
-							cp := b.Squares[c.From()]
-							ct := capturedType(b.Squares[c.To()])
-							if c.Flags() == FlagEnPassant {
-								ct = 1
-							}
-							info.updateCaptHistory(cp, c.To(), ct, -bonus)
-						}
 					}
 					break
 				}
