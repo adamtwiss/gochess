@@ -295,7 +295,7 @@ func runNNUETrain(args []string) {
 	lr := fs.Float64("lr", 0.01, "learning rate")
 	batchSize := fs.Int("batch", 16384, "batch size")
 	lambda := fs.Float64("lambda", 0.0, "result vs score weight (0=score only [default], 1=result only)")
-	kValue := fs.Float64("K", 0, "sigmoid scaling constant (0=auto-tune from data)")
+	kValue := fs.Float64("K", 400, "sigmoid scaling constant (0=auto-tune from data)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
@@ -410,7 +410,7 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 		elapsed := time.Since(epochStart)
 		epochStart = time.Now()
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
-			fmt.Printf("%-8d  %.8f    %.8f  %s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond))
+			fmt.Printf("%-8d  %-14.8f  %-14.8f  %s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond))
 		}
 	})
 
@@ -484,7 +484,7 @@ func runNNUETrainLegacy(trainer *chess.NNUETrainer, dataFile string, cfg chess.N
 		elapsed := time.Since(epochStart)
 		epochStart = time.Now()
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
-			fmt.Printf("%-8d  %.8f    %.8f  %s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond))
+			fmt.Printf("%-8d  %-14.8f  %-14.8f  %s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond))
 		}
 	})
 
