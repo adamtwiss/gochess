@@ -226,18 +226,18 @@ func (mp *MovePicker) generateAndScoreCaptures() {
 	mp.badMoves = mp.badMoves[:0]
 	mp.badScores = mp.badScores[:0]
 
-	// Partition: good captures stay in mp.moves, bad go to mp.badMoves
-	// TT move is excluded from both (already tried in stageTTMove)
+	// Partition: good captures (SEE >= 0) stay in mp.moves, bad go to mp.badMoves.
+	// Uses SEESign for fast early exits on obvious cases (e.g. PxN, equal trades).
+	// TT move is excluded from both (already tried in stageTTMove).
 	j := 0
 	for i := 0; i < len(mp.moves); i++ {
 		m := mp.moves[i]
 		if m == mp.ttMove {
 			continue
 		}
-		see := mp.board.SEE(m)
-		if see < 0 {
+		if !mp.board.SEESign(m, 0) {
 			mp.badMoves = append(mp.badMoves, m)
-			mp.badScores = append(mp.badScores, see+mp.captHistScore(m))
+			mp.badScores = append(mp.badScores, mp.captHistScore(m))
 		} else {
 			mp.moves[j] = m
 			mp.scores = append(mp.scores, mp.mvvLva(m)+mp.captHistScore(m))
