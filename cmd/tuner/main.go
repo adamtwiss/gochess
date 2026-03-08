@@ -238,12 +238,15 @@ func runTune(args []string) {
 	cfg.Stop = stopCh
 
 	fmt.Printf("Running Adam optimizer: epochs=%d, lr=%.2f, lambda=%.2f, l2=%.1e\n", cfg.Epochs, cfg.LR, *lambda, cfg.Lambda)
-	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Error", "Val Error")
-	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "-----------", "---------")
+	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "Epoch", "Train Error", "Val Error", "Time")
+	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "-----", "-----------", "---------", "----")
 
+	epochStart := time.Now()
 	tuner.Tune(tf, K, cfg, func(epoch int, trainErr, valErr float64) {
+		elapsed := time.Since(epochStart)
+		epochStart = time.Now()
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
-			fmt.Printf("%-8d  %.8f    %.8f\n", epoch, trainErr, valErr)
+			fmt.Printf("%-8d  %.8f    %.8f  %s\n", epoch, trainErr, valErr, elapsed.Round(time.Millisecond))
 		}
 	})
 
@@ -372,13 +375,16 @@ func runNNUETrain(args []string) {
 
 	fmt.Printf("Training NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f\n",
 		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda)
-	fmt.Printf("%-8s  %-14s  %-14s\n", "Epoch", "Train Loss", "Val Loss")
-	fmt.Printf("%-8s  %-14s  %-14s\n", "-----", "----------", "--------")
+	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "Epoch", "Train Loss", "Val Loss", "Time")
+	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "-----", "----------", "--------", "----")
 
 	start := time.Now()
+	epochStart := time.Now()
 	trainer.Train(bf, cfg, func(epoch int, trainLoss, valLoss float64) {
+		elapsed := time.Since(epochStart)
+		epochStart = time.Now()
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
-			fmt.Printf("%-8d  %.8f    %.8f\n", epoch, trainLoss, valLoss)
+			fmt.Printf("%-8d  %.8f    %.8f  %s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond))
 		}
 	})
 
