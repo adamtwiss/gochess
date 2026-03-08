@@ -18,6 +18,13 @@ DATA nnue_clamp_127<>+16(SB)/8, $0x007f007f007f007f
 DATA nnue_clamp_127<>+24(SB)/8, $0x007f007f007f007f
 GLOBL nnue_clamp_127<>(SB), NOPTR+RODATA, $32
 
+// 16 x int16(1) for VPMADDWD widening in int8 matmul
+DATA nnue_ones_16<>+0(SB)/8, $0x0001000100010001
+DATA nnue_ones_16<>+8(SB)/8, $0x0001000100010001
+DATA nnue_ones_16<>+16(SB)/8, $0x0001000100010001
+DATA nnue_ones_16<>+24(SB)/8, $0x0001000100010001
+GLOBL nnue_ones_16<>(SB), NOPTR+RODATA, $32
+
 // ============================================================================
 // nnueCReLU256(src *int16, dst *int16)
 // Clamps 256 int16 values to [0, 127].
@@ -39,6 +46,167 @@ crelu_loop:
 	ADDQ $32, BX
 	DECQ CX
 	JNZ crelu_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueCReLU256to8(src *int16, dst *byte)
+// Clamps 256 int16 values to [0, 127] and packs into 256 uint8 values.
+// Processes 32 int16 → 32 uint8 per iteration (8 iterations).
+// Uses VPACKUSWB + VPERMQ to pack and fix lane ordering.
+// ============================================================================
+TEXT ·nnueCReLU256to8(SB), NOSPLIT, $0-16
+	MOVQ src+0(FP), AX
+	MOVQ dst+8(FP), BX
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_127<>(SB), Y1    // Y1 = 127 (ceiling)
+	MOVQ $8, CX                         // 8 iterations (32 int16 → 32 uint8 each)
+
+crelu8_loop:
+	VMOVDQU (AX), Y2                    // load 16 int16
+	VMOVDQU 32(AX), Y3                  // load next 16 int16
+	VPMAXSW Y0, Y2, Y2                  // max(0, x)
+	VPMINSW Y1, Y2, Y2                  // min(127, x)
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3
+	VPACKUSWB Y3, Y2, Y4                // pack 2×16 int16 → 32 uint8 (lane-interleaved)
+	VPERMQ $0xD8, Y4, Y4                // fix lane ordering: [0,2,1,3]
+	VMOVDQU Y4, (BX)                    // store 32 uint8
+	ADDQ $64, AX                        // 32 int16 = 64 bytes
+	ADDQ $32, BX                        // 32 uint8 = 32 bytes
+	DECQ CX
+	JNZ crelu8_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueMatMul32x512_i8(input *byte, weightsT *int8, biases *int32, output *int32)
+//
+// Computes: output[j] = biases[j] + sum_i(input[i] * weightsT[j][i])
+// for j = 0..31, i = 0..511.
+//
+// input is uint8 [0,127], weightsT is int8 [-128,127].
+// weightsT layout: [32][512] int8, row-major. Each row = 512 bytes.
+// Uses VPMADDUBSW (u8×i8→i16) + VPMADDWD (i16→i32) for 2× throughput.
+//
+// Processes 4 output neurons at a time (8 groups of 4).
+// Register allocation:
+//   AX  = input base pointer (constant)
+//   BX  = weightsT[j] base (advances by 4 rows per outer iteration)
+//   DX  = biases pointer (advances by 16 per outer iteration)
+//   SI  = output pointer (advances by 16 per outer iteration)
+//   R8  = row stride (512 bytes, constant)
+//   R9  = weightsT[j+1] base
+//   R10 = weightsT[j+2] base
+//   R11 = byte offset for inner loop (0..512 by 32)
+//   R12 = weightsT[j+3] base
+//   R13 = outer loop counter (8..0)
+//   Y8-Y11 = accumulators for 4 outputs (int32)
+//   Y12 = constant: 16 × int16(1) for VPMADDWD widening
+//   Y0  = input load (32 uint8)
+//   Y1-Y4 = scratch for VPMADDUBSW/VPMADDWD results
+//   X5  = scratch for horizontal reduction
+// ============================================================================
+TEXT ·nnueMatMul32x512_i8(SB), NOSPLIT, $0-32
+	MOVQ input+0(FP), AX
+	MOVQ weightsT+8(FP), BX
+	MOVQ biases+16(FP), DX
+	MOVQ output+24(FP), SI
+
+	MOVQ $512, R8                       // stride = 512 bytes per row
+	MOVQ $8, R13                        // 8 groups of 4 outputs
+	VMOVDQU nnue_ones_16<>(SB), Y12     // Y12 = 16 × int16(1)
+
+i8_outer:
+	// Base pointers for 4 weight rows
+	LEAQ (BX)(R8*1), R9                // weightsT[j+1]
+	LEAQ (BX)(R8*2), R10               // weightsT[j+2]
+	LEAQ (R9)(R8*2), R12               // weightsT[j+3] = BX + 3*stride
+
+	// Zero accumulators
+	VPXOR Y8, Y8, Y8
+	VPXOR Y9, Y9, Y9
+	VPXOR Y10, Y10, Y10
+	VPXOR Y11, Y11, Y11
+
+	// Inner loop: 512 elements in groups of 32 (16 iterations)
+	XORQ R11, R11
+
+i8_inner:
+	VMOVDQU (AX)(R11*1), Y0            // load 32 uint8 activations
+
+	VPMADDUBSW (BX)(R11*1), Y0, Y1     // 32 (u8×i8) → 16 int16
+	VPMADDWD Y12, Y1, Y1               // 16 int16 → 8 int32
+	VPADDD Y1, Y8, Y8                  // accumulate
+
+	VPMADDUBSW (R9)(R11*1), Y0, Y2     // weights[j+1]
+	VPMADDWD Y12, Y2, Y2
+	VPADDD Y2, Y9, Y9
+
+	VPMADDUBSW (R10)(R11*1), Y0, Y3    // weights[j+2]
+	VPMADDWD Y12, Y3, Y3
+	VPADDD Y3, Y10, Y10
+
+	VPMADDUBSW (R12)(R11*1), Y0, Y4    // weights[j+3]
+	VPMADDWD Y12, Y4, Y4
+	VPADDD Y4, Y11, Y11
+
+	ADDQ $32, R11
+	CMPQ R11, $512
+	JNE i8_inner
+
+	// --- Horizontal reduce Y8 → output[j] ---
+	VEXTRACTI128 $1, Y8, X5
+	VPADDD X5, X8, X8
+	VPSHUFD $0x4E, X8, X5
+	VPADDD X5, X8, X8
+	VPSHUFD $0xB1, X8, X5
+	VPADDD X5, X8, X8
+	VMOVD X8, R11
+	ADDL (DX), R11
+	MOVL R11, (SI)
+
+	// --- Horizontal reduce Y9 → output[j+1] ---
+	VEXTRACTI128 $1, Y9, X5
+	VPADDD X5, X9, X9
+	VPSHUFD $0x4E, X9, X5
+	VPADDD X5, X9, X9
+	VPSHUFD $0xB1, X9, X5
+	VPADDD X5, X9, X9
+	VMOVD X9, R11
+	ADDL 4(DX), R11
+	MOVL R11, 4(SI)
+
+	// --- Horizontal reduce Y10 → output[j+2] ---
+	VEXTRACTI128 $1, Y10, X5
+	VPADDD X5, X10, X10
+	VPSHUFD $0x4E, X10, X5
+	VPADDD X5, X10, X10
+	VPSHUFD $0xB1, X10, X5
+	VPADDD X5, X10, X10
+	VMOVD X10, R11
+	ADDL 8(DX), R11
+	MOVL R11, 8(SI)
+
+	// --- Horizontal reduce Y11 → output[j+3] ---
+	VEXTRACTI128 $1, Y11, X5
+	VPADDD X5, X11, X11
+	VPSHUFD $0x4E, X11, X5
+	VPADDD X5, X11, X11
+	VPSHUFD $0xB1, X11, X5
+	VPADDD X5, X11, X11
+	VMOVD X11, R11
+	ADDL 12(DX), R11
+	MOVL R11, 12(SI)
+
+	// Advance outer pointers
+	ADDQ $2048, BX                      // weightsT += 4 rows (4 * 512)
+	ADDQ $16, DX                        // biases += 4 int32
+	ADDQ $16, SI                        // output += 4 int32
+	DECQ R13
+	JNZ i8_outer
 
 	VZEROUPPER
 	RET

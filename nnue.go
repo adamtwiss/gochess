@@ -105,6 +105,11 @@ type NNUENet struct {
 	// Populated by PrepareWeights(), nil when SIMD not available.
 	HWT []int16
 
+	// Int8 transposed hidden weights for SIMD int8 matmul: same layout as HWT.
+	// Values clamped from int16 to [-128, 127] at load time.
+	// Used by nnueMatMul32x512_i8 (VPMADDUBSW on AVX2, SMULL on NEON).
+	HWT8 []int8
+
 	// Transposed hidden2 weights for SIMD: [output_k][input_j]
 	// Layout: Hidden2WT[k*32+j] = Hidden2Weights[j][k]
 	Hidden2WT []int16
@@ -649,6 +654,24 @@ func (net *NNUENet) PrepareWeights() {
 			net.HWT[j*inputDim+i] = net.HiddenWeights[i][j]
 		}
 	}
+	// Create int8 version of transposed hidden weights for SIMD int8 matmul
+	net.HWT8 = make([]int8, outputDim*inputDim)
+	clamped := 0
+	for i := 0; i < len(net.HWT); i++ {
+		v := net.HWT[i]
+		if v < -128 {
+			v = -128
+			clamped++
+		} else if v > 127 {
+			v = 127
+			clamped++
+		}
+		net.HWT8[i] = int8(v)
+	}
+	if clamped > 0 {
+		fmt.Printf("info string warning: %d/%d hidden weights clamped to int8 range\n", clamped, len(net.HWT))
+	}
+
 	// Transpose hidden2 weights: Hidden2WT[k][j] = Hidden2Weights[j][k]
 	net.Hidden2WT = make([]int16, NNUEHidden2Size*NNUEHidden3Size)
 	for j := 0; j < NNUEHidden2Size; j++ {
@@ -669,14 +692,14 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 		opp = &acc.White
 	}
 
-	// Apply ClippedReLU and concatenate into input buffer
-	var input [NNUEHiddenSize * 2]int16
-	nnueCReLU256(&stm[0], &input[0])
-	nnueCReLU256(&opp[0], &input[NNUEHiddenSize])
+	// Apply ClippedReLU and pack into uint8 buffer (half the memory of int16)
+	var input8 [NNUEHiddenSize * 2]byte
+	nnueCReLU256to8(&stm[0], &input8[0])
+	nnueCReLU256to8(&opp[0], &input8[NNUEHiddenSize])
 
-	// Hidden layer matrix multiply (the bottleneck)
+	// Hidden layer matrix multiply using int8 weights (2× throughput via VPMADDUBSW/SMULL)
 	var hidden2 [NNUEHidden2Size]int32
-	nnueMatMul32x512(&input[0], &net.HWT[0], &net.HiddenBiases[0], &hidden2[0])
+	nnueMatMul32x512_i8(&input8[0], &net.HWT8[0], &net.HiddenBiases[0], &hidden2[0])
 
 	// Hidden layer 2: SIMD 32×32 matmul with ReLU activation
 	var hidden3 [NNUEHidden3Size]int32

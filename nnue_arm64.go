@@ -10,6 +10,12 @@ var nnueUseSIMD = true
 //go:noescape
 func nnueCReLU256(src *int16, dst *int16)
 
+// nnueCReLU256to8 applies ClippedReLU to 256 int16 values and packs into uint8.
+// Output values are clamped to [0, 127] and narrowed to bytes.
+//
+//go:noescape
+func nnueCReLU256to8(src *int16, dst *byte)
+
 // nnueMatMul32x512 computes the hidden layer matrix-vector multiply:
 //
 //	output[j] = biases[j] + sum_i(input[i] * weightsT[j][i])
@@ -19,6 +25,16 @@ func nnueCReLU256(src *int16, dst *int16)
 //
 //go:noescape
 func nnueMatMul32x512(input *int16, weightsT *int16, biases *int32, output *int32)
+
+// nnueMatMul32x512_i8 computes the hidden layer matrix-vector multiply using int8 weights:
+//
+//	output[j] = biases[j] + sum_i(input[i] * weightsT[j][i])
+//
+// for j=0..31, i=0..511. input is uint8 [0,127], weightsT is int8 [-128,127].
+// Uses SMULL/SMLAL2 on .8B for 2× element throughput over int16.
+//
+//go:noescape
+func nnueMatMul32x512_i8(input *byte, weightsT *int8, biases *int32, output *int32)
 
 // nnueAccSubAdd256 computes acc[i] += newW[i] - oldW[i] for i=0..255.
 // Used for quiet moves (SubAddFeature).
