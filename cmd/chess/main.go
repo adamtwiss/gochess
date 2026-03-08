@@ -429,8 +429,8 @@ func printBenchmarkResults(r *chess.BenchmarkResult) {
 }
 
 func printBenchmarkComparison(current, baseline *chess.BenchmarkResult) {
-	fmt.Printf("%-12s %18s %22s %16s\n", "Suite", "Solved", "Score", "Avg/pos")
-	fmt.Println(strings.Repeat("-", 72))
+	fmt.Printf("%-12s %18s %22s %16s %18s\n", "Suite", "Solved", "Score", "Avg/pos", "kNPS")
+	fmt.Println(strings.Repeat("-", 90))
 
 	// Build baseline lookup by suite name
 	baseMap := make(map[string]*chess.BenchmarkSuiteResult)
@@ -446,8 +446,9 @@ func printBenchmarkComparison(current, baseline *chess.BenchmarkResult) {
 			if s.Total > 0 {
 				avg = s.Score / float64(s.Total)
 			}
-			fmt.Printf("%-12s %5d/%-4d         %10.1f              %6.2f\n",
-				s.Name, s.Solved, s.Total, s.Score, avg)
+			knps := formatKNPSNum(s.TotalNodes, s.DurationMs)
+			fmt.Printf("%-12s %5d/%-4d         %10.1f              %6.2f %18s\n",
+				s.Name, s.Solved, s.Total, s.Score, avg, knps)
 			continue
 		}
 
@@ -466,13 +467,15 @@ func printBenchmarkComparison(current, baseline *chess.BenchmarkResult) {
 			sign = ""
 		}
 
-		fmt.Printf("%-12s %3d->%3d/%-4d %8.1f->%7.1f %6.2f->%5.2f (%s%.2f)\n",
+		npsStr := formatKNPSComparison(b.TotalNodes, b.DurationMs, s.TotalNodes, s.DurationMs)
+
+		fmt.Printf("%-12s %3d->%3d/%-4d %8.1f->%7.1f %6.2f->%5.2f (%s%.2f) %s\n",
 			s.Name, b.Solved, s.Solved, s.Total,
 			b.Score, s.Score,
-			baseAvg, curAvg, sign, avgDelta)
+			baseAvg, curAvg, sign, avgDelta, npsStr)
 	}
 
-	fmt.Println(strings.Repeat("-", 72))
+	fmt.Println(strings.Repeat("-", 90))
 
 	curTotal := current.TotalPositions()
 	baseTotal := baseline.TotalPositions()
@@ -490,10 +493,14 @@ func printBenchmarkComparison(current, baseline *chess.BenchmarkResult) {
 		sign = ""
 	}
 
-	fmt.Printf("%-12s %3d->%3d/%-4d %8.1f->%7.1f %6.2f->%5.2f (%s%.2f)\n",
+	npsStr := formatKNPSComparison(
+		baseline.TotalNodes(), baseline.TotalDuration(),
+		current.TotalNodes(), current.TotalDuration())
+
+	fmt.Printf("%-12s %3d->%3d/%-4d %8.1f->%7.1f %6.2f->%5.2f (%s%.2f) %s\n",
 		"TOTAL", baseline.TotalSolved(), current.TotalSolved(), curTotal,
 		baseline.TotalScore(), current.TotalScore(),
-		baseAvg, curAvg, sign, avgDelta)
+		baseAvg, curAvg, sign, avgDelta, npsStr)
 }
 
 func formatKNPSNum(nodes uint64, durationMs float64) string {
@@ -506,4 +513,21 @@ func formatKNPSNum(nodes uint64, durationMs float64) string {
 		return fmt.Sprintf("%d,%03d", whole/1000, whole%1000)
 	}
 	return fmt.Sprintf("%d", whole)
+}
+
+func formatKNPSComparison(baseNodes uint64, baseMs float64, curNodes uint64, curMs float64) string {
+	if baseMs <= 0 || curMs <= 0 {
+		return "-"
+	}
+	baseKNPS := float64(baseNodes) / baseMs
+	curKNPS := float64(curNodes) / curMs
+	pctDelta := (curKNPS - baseKNPS) / baseKNPS * 100
+	sign := "+"
+	if pctDelta < 0 {
+		sign = ""
+	}
+	return fmt.Sprintf("%s->%s (%s%.1f%%)",
+		formatKNPSNum(baseNodes, baseMs),
+		formatKNPSNum(curNodes, curMs),
+		sign, pctDelta)
 }
