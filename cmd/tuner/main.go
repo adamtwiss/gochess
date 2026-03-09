@@ -58,7 +58,8 @@ func runSelfPlay(args []string) {
 	openings := fs.String("openings", "testdata/noob_3moves.epd", "EPD file with opening positions")
 	output := fs.String("output", "training.bin", "output file for training data (.bin)")
 	hashMB := fs.Int("hash", 16, "TT size in MB per game")
-	nnueFile := fs.String("nnue", "", "NNUE network file (enables NNUE eval for self-play)")
+	nnueFile := fs.String("nnue", "", "NNUE network file (default: net.nnue in current directory)")
+	classical := fs.Bool("classical", false, "disable NNUE, use classical eval only")
 	syzygyPath := fs.String("syzygy", "", "path to Syzygy tablebase files")
 
 	fs.Usage = func() {
@@ -80,17 +81,27 @@ func runSelfPlay(args []string) {
 		*timeMS = 200 // default: time-limited at 200ms
 	}
 
-	// Load NNUE network if specified
+	// Load NNUE network (same behavior as chess binary)
 	var nnueNet *chess.NNUENet
-	if *nnueFile != "" {
+	if *classical {
+		// Explicitly disabled
+	} else if *nnueFile != "" {
 		net, err := chess.LoadNNUE(*nnueFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
 			os.Exit(1)
 		}
-		net.PrepareWeights()
 		nnueNet = net
-		fmt.Printf("Using NNUE: %s\n", *nnueFile)
+		fmt.Printf("NNUE loaded from %s\n", *nnueFile)
+	} else {
+		const defaultNet = "net.nnue"
+		net, err := chess.LoadNNUE(defaultNet)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %s not found, falling back to classical eval\n", defaultNet)
+		} else {
+			nnueNet = net
+			fmt.Printf("NNUE loaded from %s\n", defaultNet)
+		}
 	}
 
 	cfg := chess.SelfPlayConfig{
