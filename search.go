@@ -19,6 +19,12 @@ const (
 	MaxPly = 64
 	// MaxQSDepth is the maximum quiescence search depth
 	MaxQSDepth = 32
+
+	// Correction history constants
+	corrHistSize  = 16384 // entries per color
+	corrHistGrain = 256   // fixed-point scaling / gravity denominator
+	corrHistMax   = 128   // max correction error clamped per update
+	corrHistLimit = 32000 // max absolute stored value
 )
 
 // LMREnabled controls whether Late Move Reductions are used
@@ -123,6 +129,12 @@ type SearchInfo struct {
 	// Tracks which captures caused beta cutoffs, improving ordering among
 	// equal-MVV-LVA captures. ~11.4KB per thread (int16).
 	CaptHistory [13][64][7]int16
+
+	// Correction history: indexed by [color][pawnHash % corrHistSize].
+	// Stores the average error between static eval and search score,
+	// scaled by corrHistGrain. Used to adjust static eval for pruning.
+	// ~64KB per thread.
+	CorrectionHistory [2][corrHistSize]int32
 
 	// LMR statistics (for debugging/analysis)
 	LMRAttempts   uint64 // Times LMR was attempted
@@ -231,6 +243,54 @@ func (info *SearchInfo) updateCaptHistory(piece Piece, to Square, cpt int, bonus
 	info.CaptHistory[piece][to][cpt] = int16(v + bonus - v*abs/16384)
 }
 
+// correctedStaticEval adjusts the raw static eval using the pawn-hash-based
+// correction history. The correction captures the average error between static
+// eval and search scores for positions with similar pawn structures.
+func (info *SearchInfo) correctedStaticEval(b *Board, rawEval int) int {
+	entry := info.CorrectionHistory[b.SideToMove][b.PawnHashKey%corrHistSize]
+	adjusted := rawEval + int(entry)/corrHistGrain
+	// Clamp to avoid mate score range
+	if adjusted > MateScore-100 {
+		adjusted = MateScore - 100
+	}
+	if adjusted < -MateScore+100 {
+		adjusted = -MateScore + 100
+	}
+	return adjusted
+}
+
+// updateCorrectionHistory updates the pawn-hash-based correction entry using a
+// gravity/exponential moving average. Deeper searches receive more weight.
+func (info *SearchInfo) updateCorrectionHistory(b *Board, searchScore, rawEval, depth int) {
+	idx := b.PawnHashKey % corrHistSize
+	entry := info.CorrectionHistory[b.SideToMove][idx]
+
+	// Compute error, clamped to avoid extreme values
+	err := searchScore - rawEval
+	if err > corrHistMax {
+		err = corrHistMax
+	}
+	if err < -corrHistMax {
+		err = -corrHistMax
+	}
+
+	// Weight: deeper searches have more influence, capped at 16
+	weight := int32(depth + 1)
+	if weight > 16 {
+		weight = 16
+	}
+
+	// Gravity update: blend old value with new error
+	newVal := (entry*(corrHistGrain-weight) + int32(err)*corrHistGrain*weight) / corrHistGrain
+	if newVal > corrHistLimit {
+		newVal = corrHistLimit
+	}
+	if newVal < -corrHistLimit {
+		newVal = -corrHistLimit
+	}
+	info.CorrectionHistory[b.SideToMove][idx] = newVal
+}
+
 // Search performs iterative deepening search and returns the best move
 func (b *Board) Search(maxDepth int, maxTime time.Duration) (Move, SearchInfo) {
 	return b.SearchWithTT(maxDepth, maxTime, nil)
@@ -280,6 +340,9 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 
 	// Clear capture history
 	info.CaptHistory = [13][64][7]int16{}
+
+	// Clear correction history
+	info.CorrectionHistory = [2][corrHistSize]int32{}
 
 	// Clear excluded moves
 	for i := range info.ExcludedMove {
@@ -619,6 +682,7 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 	}
 	info.ContHistory = [13][64][13][64]int16{}
 	info.CaptHistory = [13][64][7]int16{}
+	info.CorrectionHistory = [2][corrHistSize]int32{}
 	for i := range info.ExcludedMove {
 		info.ExcludedMove[i] = NoMove
 	}
@@ -877,14 +941,19 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Stored per-ply so we can compare to 2 plies ago.
 	// Computed early because NMP, RFP, razoring, and futility all need it.
 	// Use TT staticEval when available to avoid recomputing.
+	// rawEval is the unadjusted eval (for TT storage and correction updates).
+	// staticEval is corrected by pawn-hash correction history (for pruning).
 	staticEval := -Infinity
+	rawEval := -Infinity
 	improving := false
 	if !inCheck {
 		if ttHit && ttEntry.StaticEval > -MateScore+100 {
-			staticEval = int(ttEntry.StaticEval)
+			rawEval = int(ttEntry.StaticEval)
 		} else {
-			staticEval = b.EvaluateRelative()
+			rawEval = b.EvaluateRelative()
 		}
+		// Apply pawn-hash correction history to get adjusted eval for pruning
+		staticEval = info.correctedStaticEval(b, rawEval)
 		if ply <= MaxPly {
 			info.StaticEvals[ply] = staticEval
 		}
@@ -1497,7 +1566,19 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			storeScore -= ply
 		}
 
-		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove, staticEval)
+		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove, rawEval)
+	}
+
+	// Update pawn-hash correction history when we have a reliable score.
+	// Only update on exact scores or fail-highs (beta cutoffs) — fail-lows
+	// are upper bounds and add noise. Skip in-check, mate scores, and
+	// singular verification nodes.
+	if !inCheck && bestMove != NoMove && depth >= 3 &&
+		info.ExcludedMove[ply] == NoMove &&
+		bestScore > alphaOrig &&
+		bestScore > -MateScore+100 && bestScore < MateScore-100 &&
+		rawEval > -MateScore+100 {
+		info.updateCorrectionHistory(b, bestScore, rawEval, depth)
 	}
 
 	return bestScore
