@@ -766,6 +766,17 @@ func writeNNUE(w io.Writer, net *NNUENet) error {
 }
 
 // LoadNNUE reads network weights from a binary file.
+// Fingerprint returns a simple checksum of the network weights for debugging.
+// It hashes the first 256 input weights + output bias to produce a short hex string.
+func (net *NNUENet) Fingerprint() string {
+	var h uint64
+	for i := 0; i < 256 && i < len(net.InputWeights[0]); i++ {
+		h = h*31 + uint64(uint16(net.InputWeights[0][i]))
+	}
+	h = h*31 + uint64(uint32(net.OutputBias))
+	return fmt.Sprintf("%016x", h)
+}
+
 func LoadNNUE(path string) (*NNUENet, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -777,6 +788,7 @@ func LoadNNUE(path string) (*NNUENet, error) {
 		return nil, err
 	}
 	net.PrepareWeights()
+	fmt.Fprintf(os.Stderr, "info string NNUE fingerprint %s from %s\n", net.Fingerprint(), path)
 	return net, nil
 }
 

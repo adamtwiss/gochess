@@ -116,6 +116,7 @@ func (e *UCIEngine) SetNNUE(net *NNUENet) {
 			e.board.NNUEAcc = NewNNUEAccumulatorStack(512)
 		}
 		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
+		e.send("info string SetNNUE fingerprint %s", net.Fingerprint())
 	} else {
 		e.board.NNUEAcc = nil
 	}
@@ -539,7 +540,7 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 			e.board.NNUEAcc = NewNNUEAccumulatorStack(512)
 		}
 		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
-		e.send("info string NNUE loaded from %s", value)
+		e.send("info string NNUE loaded from %s (fingerprint %s)", value, net.Fingerprint())
 	} else if strings.EqualFold(name, "SyzygyPath") {
 		value := strings.Join(tokens[valueIdx:], " ")
 		if value == "" || value == "<empty>" {
