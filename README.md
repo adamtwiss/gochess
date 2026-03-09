@@ -9,7 +9,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Lazy SMP multi-threaded search (configurable thread count)
 - Lockless transposition table, null-move pruning, late move reductions, late move pruning
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
-- Optional NNUE evaluation (HalfKP architecture, SIMD-accelerated on x86-64 and ARM64)
+- Optional NNUE evaluation (HalfKA architecture, SIMD-accelerated on x86-64 and ARM64)
 - Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
 - Syzygy endgame tablebase support (3-4-5-6 piece, via bundled Fathom C library)
 - Polyglot opening book support (standard .bin format, compatible with any Polyglot book)
@@ -48,8 +48,8 @@ The engine also enters UCI mode automatically when stdin is not a terminal (e.g.
 | `Hash` | 64 | Transposition table size in MB |
 | `Threads` | 1 | Number of search threads (Lazy SMP) |
 | `Ponder` | false | Enable pondering |
-| `UseNNUE` | false | Enable NNUE evaluation |
-| `NNUEFile` | | Path to NNUE network file (`.nnue`) |
+| `UseNNUE` | true | Enable NNUE evaluation (auto-loads `net.nnue` from working directory) |
+| `NNUEFile` | | Path to NNUE network file (`.nnue`); overrides auto-detection |
 | `OwnBook` | false | Use the engine's opening book |
 | `BookFile` | | Path to opening book file |
 | `SyzygyPath` | | Path to Syzygy tablebase files |
@@ -131,11 +131,14 @@ The tuner optimizes ~1268 evaluation parameters (material values, piece-square t
 #### Step 1: Generate training data
 
 ```bash
-./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat
-./tuner selfplay -games 20000 -depth 8 -concurrency 6 -output training.dat
+./tuner selfplay -games 20000 -time 200 -concurrency 6
+./tuner selfplay -games 20000 -depth 8 -concurrency 6
+./tuner selfplay -games 20000 -time 200 -concurrency 6 -classical   # Use classical eval
 ```
 
-This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the search score and game result in `FEN;score;result` format (score is White-relative centipawns, result is 1.0/0.5/0.0 from White's perspective). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
+Selfplay uses NNUE evaluation by default (auto-loads `net.nnue` from the working directory). Use `-classical` to fall back to handcrafted eval, or `-nnue path/to/net.nnue` to specify a network file.
+
+This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the search score and game result in binpack format (`.bin`). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
 
 Use `-time` for time-limited or `-depth` for depth-limited search (mutually exclusive). Depth-limited mode ensures consistent data quality across different machines.
 
@@ -148,23 +151,25 @@ Use `-time` for time-limited or `-depth` for depth-limited search (mutually excl
 | `-threads` | 1 | Search threads per game (Lazy SMP) |
 | `-hash` | 16 | TT size in MB per game |
 | `-openings` | `testdata/noob_3moves.epd` | EPD file with starting positions |
-| `-output` | `training.dat` | Output file for training data |
+| `-output` | `training.bin` | Output file for training data |
+| `-nnue` | | NNUE network file (default: auto-load `net.nnue`) |
+| `-classical` | false | Disable NNUE, use classical eval only |
 
 If neither `-time` nor `-depth` is specified, defaults to `-time 200`. With `-time 200 -concurrency 6`, expect roughly 1-2 games/second. 20K games produces ~1-2M training positions.
 
 #### Step 2: Tune parameters
 
 ```bash
-./tuner tune -data training.dat -epochs 500 -lr 1.0
+./tuner tune -data training.bin -epochs 500 -lr 1.0
 ```
 
-On first run, this preprocesses the `.dat` file into a binary cache (`training.tbin`) — shuffling positions, computing evaluation traces, and writing a compact binary format (~730 bytes/position). Subsequent runs reuse the cache automatically; the cache is rebuilt if the source `.dat` file is newer.
+On first run, this preprocesses the data file into a binary cache (`training.tbin`) — shuffling positions, computing evaluation traces, and writing a compact binary format (~730 bytes/position). Subsequent runs reuse the cache automatically; the cache is rebuilt if the source data file is newer.
 
 During tuning, training data is streamed from the `.tbin` file in batches of 65536, keeping memory usage at ~50-100 MB regardless of dataset size. The tuner finds the optimal sigmoid scaling constant K via golden section search, then runs the Adam optimizer. It prints the error every 10 epochs and outputs all tuned parameters in Go source format at the end.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-data` | `training.dat` | Training data file from step 1 |
+| `-data` | `training.bin` | Training data file from step 1 (.bin or .dat) |
 | `-epochs` | 500 | Number of optimization epochs |
 | `-lr` | 1.0 | Learning rate |
 | `-lambda` | 1.0 | Result vs score weight: 1=result-only, 0=score-only |
@@ -196,29 +201,29 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 
 ### NNUE Evaluation
 
-The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKP architecture: 40960 inputs (king-square × piece-type × piece-square), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→1 output. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
+The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKA architecture: 12288 inputs (16 king buckets × 12 piece types × 64 squares), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→1 output. The hidden layer uses int8 quantized weights for doubled SIMD throughput. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
 
 #### Training an NNUE network
 
 **Step 1: Generate training data**
 
 ```bash
-./tuner selfplay -games 20000 -time 200 -concurrency 6 -output training.dat
+./tuner selfplay -games 20000 -time 200 -concurrency 6
 ```
 
-Selfplay always records the engine's search score alongside each position and game result in `FEN;score;result` format. Both the game result and the search score are used as training targets.
+Selfplay records the engine's search score alongside each position and game result. Both the game result and the search score are used as training targets.
 
 **Step 2: Train the network**
 
 ```bash
-./tuner nnue-train -data training.dat -epochs 100 -lr 0.01 -output net.nnue
+./tuner nnue-train -data training.bin -epochs 100 -lr 0.01 -output net.nnue
 ```
 
-This trains a quantized NNUE network from scratch. On first run, the training data is preprocessed into a binary cache (`training.nnbin`) for efficient streaming. The loss function blends game-result prediction with score prediction: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`.
+This trains a quantized NNUE network from scratch. On first run, the training data is preprocessed into a binary cache (`.nnbin`) for efficient streaming. The loss function blends game-result prediction with score prediction: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-data` | `training.dat` | Training data file (must include scores) |
+| `-data` | `training.bin` | Training data file (.bin or .dat, must include scores) |
 | `-epochs` | 100 | Training epochs |
 | `-lr` | 0.01 | Learning rate |
 | `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
@@ -227,7 +232,7 @@ This trains a quantized NNUE network from scratch. On first run, the training da
 | `-positions` | 0 | Limit training positions per epoch (0=use all) |
 | `-resume` | | Resume training from an existing `.nnue` network file |
 
-Training uses float32 weights internally, then quantizes to int16 for inference. The `.nnbin` cache is rebuilt automatically when the source `.dat` file changes.
+Training uses float32 weights internally, then quantizes to int16 for inference (int8 for the hidden layer). The `.nnbin` cache is rebuilt automatically when the source data file changes.
 
 **Two-phase training workflow:**
 
@@ -235,20 +240,21 @@ You can train on a subset first, then fine-tune on the full dataset:
 
 ```bash
 # Phase 1: Quick initial training on 50K positions
-./tuner nnue-train -data training.dat -positions 50000 -epochs 50 -lr 0.01 -output net-v1.nnue
+./tuner nnue-train -data training.bin -positions 50000 -epochs 50 -lr 0.01 -output net-v1.nnue
 
 # Phase 2: Fine-tune on full dataset starting from Phase 1 weights
-./tuner nnue-train -data training.dat -resume net-v1.nnue -epochs 100 -lr 0.005 -output net-v2.nnue
+./tuner nnue-train -data training.bin -resume net-v1.nnue -epochs 100 -lr 0.005 -output net-v2.nnue
 ```
 
 #### Using NNUE in UCI mode
 
+The engine auto-loads `net.nnue` from the working directory on startup. To use a different network:
+
 ```bash
-# Start with NNUE enabled
-./chess -nnue net.nnue -uci
+./chess -nnue /path/to/custom.nnue -uci
 ```
 
-The `-nnue` flag loads the network and enables NNUE evaluation automatically. You can also toggle NNUE at runtime via UCI options:
+Use `-classical` to disable NNUE and use the handcrafted eval. You can also toggle NNUE at runtime via UCI options:
 
 ```
 setoption name UseNNUE value true
@@ -257,8 +263,11 @@ setoption name NNUEFile value /path/to/net.nnue
 
 #### Using NNUE in the interactive CLI
 
+NNUE is enabled by default when `net.nnue` is present. Use `-classical` for handcrafted eval:
+
 ```bash
-./chess -nnue net.nnue
+./chess              # Auto-loads net.nnue if present
+./chess -classical   # Force classical eval
 ```
 
 In the interactive CLI, additional NNUE commands are available:

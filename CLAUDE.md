@@ -92,7 +92,7 @@ cli.go               Interactive CLI engine
 selfplay.go          Self-play game generation for tuning data (text or binpack output)
 binpack.go           Fixed-size binary training data format (32 bytes/record, no header)
 tuner.go             Texel tuner: parameter catalog, traces, .tbin cache, Adam optimizer
-nnue.go              NNUE inference: HalfKP network, lazy accumulators, incremental updates
+nnue.go              NNUE inference: HalfKA network, lazy accumulators, incremental updates
 nnue_amd64.go/s      AVX2 SIMD (runtime detected)
 nnue_arm64.go/s      NEON SIMD
 nnue_nosimd.go       Fallback stubs
@@ -131,7 +131,7 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features:
 All threads share only the TT (lockless via XOR-verified packed atomics). Board, SearchInfo, pawn table, and NNUE accumulator stack are per-thread.
 
 ### NNUE
-HalfKP (40960 -> 2x256 -> 32 -> 32 -> 1). Lazy accumulator: MakeMove stores deltas, Materialize() applies on demand (saves ~17% NPS). King moves trigger full recompute. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
+HalfKA (12288 -> 2x256 -> 32 -> 32 -> 1). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. Lazy accumulator: MakeMove stores deltas, Materialize() applies on demand (saves ~17% NPS). King moves trigger full recompute. Hidden layer 1 (512→32) uses int8 quantized weights with VPMADDUBSW (AVX2) / SMULL+SADALP (NEON) for doubled throughput. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
 
 ### Training Data Formats
 - **Binpack** (`.bin`): Fixed-size 32-byte records, no file header. Stores packed board position (occupancy bitmap + piece nibbles), score (int16), result (uint8). Files can be concatenated with `cat`. Features extracted at training time. Block-shuffled reader (64KB = 2048 records/block) for efficient I/O.
