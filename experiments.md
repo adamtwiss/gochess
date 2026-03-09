@@ -93,11 +93,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: NNUE net-halfka.nnue, post-RFP tuning
 - **Notes**: Neither the uniform tightening (v1) nor the slope-only tightening (v2) helped. Per-move futility margins are already well-tuned. Unlike node-level RFP, per-move errors compound.
 
-## 2026-03-09: LMR v2 — more aggressive (RUNNING)
+## 2026-03-09: LMR v2 — more aggressive (MERGED)
 - **Change**: LMR constant C=1.75 -> 1.5.
-- **Result**: In progress. ~201 games, +43.7 Elo, LLR 1.94/2.94 (66%).
-- **Baseline**: NNUE net-halfka.nnue, post-LMR tuning
-- **Notes**: Even more aggressive LMR appears to be a significant win. If confirmed, should test C=1.25 next.
+- **Result**: **+44.4 Elo**, H1 accepted. W112-L73-D122 (307 games). LOS 99.8%.
+- **Baseline**: NNUE net-halfka.nnue, post-LMR v1 tuning
+- **Commit**: (pending)
+- **Notes**: Second consecutive LMR tightening win. C=2.0→1.75 was +16 Elo, C=1.75→1.5 is +44 Elo. Testing C=1.25 next to find the optimum.
 
 ---
 

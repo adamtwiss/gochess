@@ -71,9 +71,9 @@ func init() {
 	// Initialize LMR table using logarithmic formula:
 	//   reduction = ln(depth) * ln(moveNum) / C
 	// C controls aggressiveness: lower = more reduction.
-	// NNUE-tuned: 1.75 (was 2.0). More aggressive reduction is safe with
-	// NNUE's more accurate eval, pruning more late moves to search deeper.
-	const C = 1.75
+	// NNUE-tuned: 1.5 (was 2.0→1.75→1.5). More aggressive reduction is safe
+	// with NNUE's accurate eval. Each step validated by SPRT.
+	const C = 1.5
 	for depth := 1; depth < 64; depth++ {
 		for moveNum := 1; moveNum < 64; moveNum++ {
 			if depth >= 3 && moveNum >= 3 {
