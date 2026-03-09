@@ -61,6 +61,7 @@ func runSelfPlay(args []string) {
 	nnueFile := fs.String("nnue", "", "NNUE network file (default: net.nnue in current directory)")
 	classical := fs.Bool("classical", false, "disable NNUE, use classical eval only")
 	syzygyPath := fs.String("syzygy", "", "path to Syzygy tablebase files")
+	bookFile := fs.String("book", "", "Polyglot opening book for game diversification")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner selfplay [options]\n\nOptions:\n")
@@ -104,6 +105,28 @@ func runSelfPlay(args []string) {
 		}
 	}
 
+	// Load opening book for game diversification
+	var book *chess.OpeningBook
+	if *bookFile != "" {
+		// Explicit path — must exist
+		var err error
+		book, err = chess.LoadOpeningBook(*bookFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading book: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Opening book loaded: %d positions\n", book.Size())
+	} else {
+		// Try default books in order of preference
+		for _, defaultBook := range []string{"testdata/Titans.bin", "book.bin"} {
+			if b, err := chess.LoadOpeningBook(defaultBook); err == nil {
+				book = b
+				fmt.Printf("Opening book loaded from %s (%d positions)\n", defaultBook, b.Size())
+				break
+			}
+		}
+	}
+
 	cfg := chess.SelfPlayConfig{
 		TimePerMove:  time.Duration(*timeMS) * time.Millisecond,
 		FixedDepth:   *depth,
@@ -115,6 +138,7 @@ func runSelfPlay(args []string) {
 		HashMB:       *hashMB,
 		NNUENet:      nnueNet,
 		SyzygyPath:   *syzygyPath,
+		Book:         book,
 	}
 
 	fmt.Printf("Self-play configuration:\n")

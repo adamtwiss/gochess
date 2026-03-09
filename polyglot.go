@@ -139,6 +139,47 @@ func (book *OpeningBook) PickMove(b *Board) (Move, bool) {
 	return candidates[0].legal, true
 }
 
+// PickMoveRng selects a weighted random move using the provided RNG.
+// Thread-safe: each caller can pass its own *rand.Rand.
+func (book *OpeningBook) PickMoveRng(b *Board, rng *rand.Rand) (Move, bool) {
+	hash := PolyglotHash(b)
+	bmoves := book.entries[hash]
+	if len(bmoves) == 0 {
+		return NoMove, false
+	}
+
+	legalMoves := b.GenerateLegalMoves()
+
+	type candidate struct {
+		legal  Move
+		weight int
+	}
+	var candidates []candidate
+	totalWeight := 0
+
+	for _, bm := range bmoves {
+		if m, ok := matchPolyglotMove(bm.RawMove, legalMoves, b); ok {
+			w := int(bm.Weight)
+			candidates = append(candidates, candidate{m, w})
+			totalWeight += w
+		}
+	}
+
+	if len(candidates) == 0 {
+		return NoMove, false
+	}
+
+	r := rng.Intn(totalWeight)
+	cumulative := 0
+	for _, c := range candidates {
+		cumulative += c.weight
+		if r < cumulative {
+			return c.legal, true
+		}
+	}
+	return candidates[0].legal, true
+}
+
 // SetUseBook enables or disables book lookups.
 func (book *OpeningBook) SetUseBook(use bool) {
 	book.useBook = use

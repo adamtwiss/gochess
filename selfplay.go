@@ -24,6 +24,7 @@ type SelfPlayConfig struct {
 	HashMB       int           // TT size in MB per game
 	NNUENet      *NNUENet      // optional NNUE network (shared read-only across games)
 	SyzygyPath   string        // path to Syzygy tablebases (empty = disabled)
+	Book         *OpeningBook  // optional opening book for game diversification
 }
 
 // SelfPlayGame holds the result of one self-play game.
@@ -150,12 +151,27 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 	hashCounts := make(map[uint64]int)
 	hashCounts[b.HashKey]++
 
+	// Play book moves for opening diversification.
+	// Each game follows a different weighted-random path through the book,
+	// creating natural variety without artificial random moves.
+	if cfg.Book != nil {
+		for {
+			bookMove, ok := cfg.Book.PickMoveRng(&b, rng)
+			if !ok {
+				break // out of book
+			}
+			b.MakeMove(bookMove)
+			hashCounts[b.HashKey]++
+		}
+	}
+
 	var records [][BinpackRecordSize]byte
 	adjEvalCount := 0
 	lastEval := 0
 	totalPlies := 0
 
 	// Count initial ply offset from the FEN (openings may start after 3 moves = 6 plies)
+	// Book moves are included in the offset so early searched positions are still filtered.
 	initialPly := (b.FullmoveNum - 1) * 2
 	if b.SideToMove == Black {
 		initialPly++
