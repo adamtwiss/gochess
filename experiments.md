@@ -69,29 +69,35 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: NNUE net-halfka.nnue, post-RFP tuning
 - **Notes**: Preserves safe base margin of 100, only tightens per-depth scaling. Hypothesis: v1 failed because base was too tight, not the depth scaling.
 
-## 2026-03-09: ProbCut v1 (RUNNING)
+## 2026-03-09: ProbCut v1
 - **Change**: probCutBeta from beta+200 -> beta+150, pre-filter staticEval+100 -> +75.
-- **Result**: In progress. ~547 games, +11.6 Elo, LLR 1.69/2.94 (57%).
+- **Result**: -3.4 Elo, inconclusive (killed at 1007 games). W285-L292-D430. LOS 34%.
 - **Baseline**: NNUE net-halfka.nnue, post-RFP tuning
-- **Notes**: Looking promising. Same NNUE-tighter-margins pattern as RFP.
+- **Notes**: Looked promising early (+11.6 at 547 games) but faded to zero. Classic early noise. ProbCut margin of 200 appears well-calibrated already.
 
-## 2026-03-09: SEE Pruning v1 (RUNNING)
+## 2026-03-09: SEE Pruning v1
 - **Change**: Capture threshold -depth*100 -> -depth*75, quiet threshold -20*depth^2 -> -15*depth^2.
-- **Result**: In progress. ~193 games, -3.9 Elo, LLR -0.05/2.94.
+- **Result**: -7.7 Elo, killed at ~650 games (trending to rejection). W186-L199-D261. LOS 22.8%.
 - **Baseline**: NNUE net-halfka.nnue, post-LMR tuning
-- **Notes**: Early and slightly negative. SEE thresholds may be more about tactics than eval accuracy — NNUE doesn't change material exchange calculations.
+- **Notes**: SEE thresholds are about tactical accuracy, not eval quality — NNUE doesn't change material exchange calculations. Current thresholds are correct.
 
-## 2026-03-09: RFP v2 — deeper (RUNNING)
+## 2026-03-09: RFP v2 — deeper
 - **Change**: RFP depth limit 7->8 (margins unchanged at 85/60).
-- **Result**: In progress (just started, 2 concurrency).
+- **Result**: **-68.6 Elo**, killed at ~200 games (near-rejection). W46-L84-D68. LOS 0.0%.
 - **Baseline**: NNUE net-halfka.nnue, post-LMR tuning
-- **Notes**: Testing if the depth extension from v1 (6->7) can be pushed further. At depth 8, max margin is 8*85=680cp — getting large but NNUE might still be accurate enough.
+- **Notes**: Depth 7 is the sweet spot. At depth 8, max margin is 8*85=680cp — far too large. Pruning positions that shouldn't be pruned. Decisive and fast failure.
+
+## 2026-03-09: Futility Pruning v2
+- **Change**: Move futility margin 100+lmrDepth*100 -> 100+lmrDepth*75 (tighten slope only, keep base).
+- **Result**: -8.7 Elo, killed at ~462 games (trending to rejection). W130-L142-D190. LOS 23.7%.
+- **Baseline**: NNUE net-halfka.nnue, post-RFP tuning
+- **Notes**: Neither the uniform tightening (v1) nor the slope-only tightening (v2) helped. Per-move futility margins are already well-tuned. Unlike node-level RFP, per-move errors compound.
 
 ## 2026-03-09: LMR v2 — more aggressive (RUNNING)
 - **Change**: LMR constant C=1.75 -> 1.5.
-- **Result**: In progress (just started, 2 concurrency).
+- **Result**: In progress. ~201 games, +43.7 Elo, LLR 1.94/2.94 (66%).
 - **Baseline**: NNUE net-halfka.nnue, post-LMR tuning
-- **Notes**: Testing if the reduction increase from v1 can be pushed further. Risk: too much reduction loses tactical accuracy.
+- **Notes**: Even more aggressive LMR appears to be a significant win. If confirmed, should test C=1.25 next.
 
 ---
 

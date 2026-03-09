@@ -186,6 +186,7 @@ Changes to search, eval, or move ordering must be validated by self-play Elo, no
 5. **Tune before rejecting** — if a sound idea tests negative, try 2-3 parameter variants before giving up. Run variants in parallel at lower concurrency.
 6. **One change at a time** — never stack untested changes. Each commit should be independently validated.
 7. **Merge on SPRT acceptance** — merge the worktree branch to main, commit, push. Then move to the next idea.
+8. **Log results in `experiments.md`** — record every experiment (pass or fail) with the change, SPRT result, baseline, and lessons learned. This builds institutional knowledge and prevents re-testing failed ideas.
 
 CPU budget: on a 16-thread machine, 7 concurrency is the max for 10s+0.1s games without time-pressure noise. Two parallel experiments at 4 each is fine.
 
