@@ -483,10 +483,16 @@ func (b *Board) isPawnMoveLegal(from, to Square, us Color, flags int) bool {
 	toRank := to.Rank()
 	fromFile := from.File()
 	toFile := to.File()
+	isPromo := flags&FlagPromotion != 0
 
 	target := b.Squares[to]
 
 	if us == White {
+		// Promotion flag must match reaching rank 8 (index 7)
+		if (toRank == 7) != isPromo {
+			return false
+		}
+
 		// Must be moving forward
 		if toRank <= fromRank {
 			return false
@@ -516,6 +522,11 @@ func (b *Board) isPawnMoveLegal(from, to Square, us Color, flags int) bool {
 
 		return false
 	} else {
+		// Promotion flag must match reaching rank 1 (index 0)
+		if (toRank == 0) != isPromo {
+			return false
+		}
+
 		// Black - must be moving backward (in rank terms)
 		if toRank >= fromRank {
 			return false
