@@ -165,6 +165,30 @@ Via bundled Fathom (CGO). Root: DTZ probe before search. Interior nodes: WDL pro
 - Syzygy WDL probes require `HalfmoveClock == 0`; DTZ probes accept any value
 - **cutechess-cli**: Each flag and value must be separate `arg=` params (`arg=-nnue arg=/path/to/net.nnue`). `-uci` flag NOT needed (auto-detected). Use absolute paths
 
+## Search/Eval Optimization Workflow
+
+Changes to search, eval, or move ordering must be validated by self-play Elo, not just benchmarks or NPS. Follow this workflow:
+
+1. **Work in a worktree** — `isolation: worktree` for agents, or manual `git worktree add`. Keep main clean until the change is proven.
+2. **Build a binary** — `go build -o chess-<variant> ./cmd/chess` from the worktree.
+3. **SPRT test against HEAD** — non-regression test with both engines using identical settings (same NNUE net, same hash, `OwnBook=false`):
+   ```bash
+   cutechess-cli -tournament gauntlet \
+     -engine name=New cmd=./chess-new proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net.nnue option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
+     -engine name=Base cmd=./chess-base proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net.nnue option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
+     -each tc=0/10+0.1 \
+     -rounds 5000 -concurrency 6 \
+     -sprt elo0=-10 elo1=5 alpha=0.05 beta=0.05 \
+     -openings file=testdata/noob_3moves.epd format=epd order=random \
+     -pgnout sprt_test.pgn -recover -ratinginterval 20
+   ```
+4. **Be patient** — small gains (+5 Elo) are real and valuable. Stockfish gained hundreds of Elo from many +5 patches. SPRT at this level needs 1000-3000 games to converge.
+5. **Tune before rejecting** — if a sound idea tests negative, try 2-3 parameter variants before giving up. Run variants in parallel at lower concurrency.
+6. **One change at a time** — never stack untested changes. Each commit should be independently validated.
+7. **Merge on SPRT acceptance** — merge the worktree branch to main, commit, push. Then move to the next idea.
+
+CPU budget: on a 16-thread machine, 7 concurrency is the max for 10s+0.1s games without time-pressure noise. Two parallel experiments at 4 each is fine.
+
 ## Maintenance Reminders
 
 - **Keep CLAUDE.md and README.md up to date** when changing search, eval, tuner, CLI, or architecture
