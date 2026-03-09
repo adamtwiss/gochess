@@ -536,6 +536,8 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		e.nnueNet = net
 		e.board.NNUENet = net
+		UseNNUE = true
+		GlobalNNUENet = net
 		if e.board.NNUEAcc == nil {
 			e.board.NNUEAcc = NewNNUEAccumulatorStack(512)
 		}

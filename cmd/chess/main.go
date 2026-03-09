@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,6 +85,11 @@ func main() {
 		return
 	}
 
+	// Resolve binary directory for auto-loading net.nnue and book.bin.
+	// CWD is unreliable (cutechess-cli sets it to /tmp), so look next to the binary.
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+
 	// Load NNUE network (before any mode branches)
 	var nnueNet *chess.NNUENet
 	if *classical {
@@ -97,19 +103,22 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
 			os.Exit(1)
 		}
-		chess.UseNNUE = true
 		chess.GlobalNNUENet = nnueNet
 		fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
 	} else {
-		// Try default net.nnue in current directory
-		const defaultNet = "net.nnue"
+		// Try net.nnue next to the binary, then in CWD
+		defaultNet := filepath.Join(exeDir, "net.nnue")
 		var err error
 		nnueNet, err = chess.LoadNNUE(defaultNet)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %s not found, falling back to classical eval\n", defaultNet)
-			chess.UseNNUE = false
+			// Fall back to CWD (for development convenience)
+			nnueNet, err = chess.LoadNNUE("net.nnue")
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: net.nnue not found (tried %s and CWD), NNUE available via UCI NNUEFile option\n", exeDir)
+			// Don't set UseNNUE=false — the eval checks b.NNUENet != nil,
+			// and a GUI may load a net later via UCI NNUEFile option.
 		} else {
-			chess.UseNNUE = true
 			chess.GlobalNNUENet = nnueNet
 			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", defaultNet)
 		}
@@ -140,11 +149,14 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "Opening book loaded from %s\n", *bookFile)
 	} else {
-		// Try default book.bin in current directory
-		const defaultBook = "book.bin"
+		// Try book.bin next to the binary, then in CWD
+		defaultBook := filepath.Join(exeDir, "book.bin")
 		if b, err := chess.LoadOpeningBook(defaultBook); err == nil {
 			book = b
 			fmt.Fprintf(os.Stderr, "Opening book loaded from %s\n", defaultBook)
+		} else if b, err := chess.LoadOpeningBook("book.bin"); err == nil {
+			book = b
+			fmt.Fprintf(os.Stderr, "Opening book loaded from book.bin\n")
 		}
 	}
 
