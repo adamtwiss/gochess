@@ -25,6 +25,9 @@ const (
 	corrHistGrain = 256   // fixed-point scaling / gravity denominator
 	corrHistMax   = 128   // max correction error clamped per update
 	corrHistLimit = 32000 // max absolute stored value
+
+	// Pawn history table size (entries per pawn hash bucket)
+	pawnHistSize = 512
 )
 
 // LMREnabled controls whether Late Move Reductions are used
@@ -137,6 +140,12 @@ type SearchInfo struct {
 	// ~64KB per thread.
 	CorrectionHistory [2][corrHistSize]int32
 
+	// Pawn history: indexed by [pawnHash % pawnHistSize][piece][toSquare].
+	// Captures move patterns correlated with pawn structure — a stable, low-noise
+	// ordering signal since pawn structure changes slowly.
+	// ~832KB per thread (int16).
+	PawnHistory [pawnHistSize][13][64]int16
+
 	// LMR statistics (for debugging/analysis)
 	LMRAttempts   uint64 // Times LMR was attempted
 	LMRReSearches uint64 // Times we had to re-search at full depth
@@ -242,6 +251,17 @@ func (info *SearchInfo) updateCaptHistory(piece Piece, to Square, cpt int, bonus
 		abs = -abs
 	}
 	info.CaptHistory[piece][to][cpt] = int16(v + bonus - v*abs/16384)
+}
+
+// updatePawnHistory applies gravity to a pawn history entry.
+func (info *SearchInfo) updatePawnHistory(pawnKey uint64, piece Piece, to Square, bonus int32) {
+	idx := pawnKey % pawnHistSize
+	v := int32(info.PawnHistory[idx][piece][to])
+	abs := bonus
+	if abs < 0 {
+		abs = -abs
+	}
+	info.PawnHistory[idx][piece][to] = int16(v + bonus - v*abs/16384)
 }
 
 // correctedStaticEval adjusts the raw static eval using the pawn-hash-based
@@ -1117,11 +1137,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 	}
 
+	// Pawn history pointer for this position's pawn structure
+	pawnHistPtr := &info.PawnHistory[b.PawnHashKey%pawnHistSize]
+
 	// Use MovePicker for staged move generation (reuse pre-allocated picker)
 	if inCheck {
-		info.pickers[ply].InitEvasion(b, ttMove, ply, checkers, pinned, &info.History, contHistPtr, &info.CaptHistory)
+		info.pickers[ply].InitEvasion(b, ttMove, ply, checkers, pinned, &info.History, contHistPtr, &info.CaptHistory, pawnHistPtr)
 	} else {
-		info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr, &info.CaptHistory)
+		info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr, &info.CaptHistory, pawnHistPtr)
 	}
 	picker := &info.pickers[ply]
 
@@ -1525,6 +1548,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 							updateContHistory(contHistPtr, curPiece, move.To(), bonus)
 						}
 
+						// Update pawn history
+						info.updatePawnHistory(b.PawnHashKey, b.Squares[move.From()], move.To(), bonus)
+
 						// Penalize all quiet moves tried before the cutoff move
 						for i := 0; i < quietsCount-1; i++ {
 							q := quietsTried[i]
@@ -1535,6 +1561,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 								qPiece := b.Squares[q.From()]
 								updateContHistory(contHistPtr, qPiece, q.To(), -bonus)
 							}
+
+							// Penalize pawn history
+							info.updatePawnHistory(b.PawnHashKey, b.Squares[q.From()], q.To(), -bonus)
 						}
 
 						// Store counter-move
@@ -1697,7 +1726,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 
 	// When in check, generate all evasion moves (captures + blocks + king moves)
 	if qsInCheck {
-		info.pickers[qsIdx].InitEvasion(b, ttMove, 0, checkers, pinned, nil, nil, &info.CaptHistory)
+		info.pickers[qsIdx].InitEvasion(b, ttMove, 0, checkers, pinned, nil, nil, &info.CaptHistory, nil)
 		picker := &info.pickers[qsIdx]
 		bestScore := -Infinity
 		bestMove := NoMove

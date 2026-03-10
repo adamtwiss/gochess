@@ -15,6 +15,7 @@ type MovePicker struct {
 	history     *[64][64]int32
 	contHist    *[13][64]int16 // continuation history sub-table for prev move's piece+square
 	captHist    *[13][64][7]int16
+	pawnHist    *[13][64]int16 // pawn-structure-aware history for this position's pawn hash
 	stage       int
 	moves       []Move
 	scores      []int
@@ -47,9 +48,9 @@ const (
 )
 
 // NewMovePicker creates a new move picker for the main search
-func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16, captHist *[13][64][7]int16) *MovePicker {
+func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16, captHist *[13][64][7]int16, pawnHist *[13][64]int16) *MovePicker {
 	mp := &MovePicker{}
-	mp.Init(b, ttMove, ply, killers, history, counterMove, contHist, captHist)
+	mp.Init(b, ttMove, ply, killers, history, counterMove, contHist, captHist, pawnHist)
 	return mp
 }
 
@@ -61,7 +62,7 @@ func NewMovePickerQuiescence(b *Board, captHist *[13][64][7]int16) *MovePicker {
 }
 
 // Init resets a MovePicker for reuse, avoiding heap allocations on subsequent calls
-func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16, captHist *[13][64][7]int16) {
+func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, history *[64][64]int32, counterMove Move, contHist *[13][64]int16, captHist *[13][64][7]int16, pawnHist *[13][64]int16) {
 	mp.board = b
 	mp.ttMove = ttMove
 	mp.killers = killers
@@ -69,6 +70,7 @@ func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, hist
 	mp.history = history
 	mp.contHist = contHist
 	mp.captHist = captHist
+	mp.pawnHist = pawnHist
 	mp.ply = ply
 	mp.stage = stageTTMove
 	mp.index = 0
@@ -98,7 +100,7 @@ func (mp *MovePicker) InitQuiescence(b *Board, captHist *[13][64][7]int16) {
 // InitEvasion resets a MovePicker for evasion mode (when in check).
 // Evasion moves are fully legal — no IsLegal filtering needed by the caller.
 func (mp *MovePicker) InitEvasion(b *Board, ttMove Move, ply int, checkers, pinned Bitboard,
-	history *[64][64]int32, contHist *[13][64]int16, captHist *[13][64][7]int16) {
+	history *[64][64]int32, contHist *[13][64]int16, captHist *[13][64][7]int16, pawnHist *[13][64]int16) {
 	mp.board = b
 	mp.ttMove = ttMove
 	mp.checkers = checkers
@@ -106,6 +108,7 @@ func (mp *MovePicker) InitEvasion(b *Board, ttMove Move, ply int, checkers, pinn
 	mp.history = history
 	mp.contHist = contHist
 	mp.captHist = captHist
+	mp.pawnHist = pawnHist
 	mp.ply = ply
 	mp.stage = stageEvasionTTMove
 	mp.index = 0
@@ -260,13 +263,16 @@ func (mp *MovePicker) generateAndScoreQuiets() {
 			continue
 		}
 		mp.moves[j] = m
+		piece := mp.board.Squares[m.From()]
 		score := 0
 		if mp.history != nil {
 			score = int(mp.history[m.From()][m.To()])
 		}
 		if mp.contHist != nil {
-			piece := mp.board.Squares[m.From()]
 			score += 2 * int(mp.contHist[piece][m.To()])
+		}
+		if mp.pawnHist != nil {
+			score += int(mp.pawnHist[piece][m.To()])
 		}
 		mp.scores = append(mp.scores, score)
 		j++
@@ -301,13 +307,16 @@ func (mp *MovePicker) generateAndScoreEvasions() {
 			// Capture: MVV-LVA + capture history
 			score = 10000 + mp.mvvLva(m) + mp.captHistScore(m)
 		} else {
-			// Quiet: history + continuation history
+			// Quiet: history + continuation history + pawn history
 			if mp.history != nil {
 				score = int(mp.history[m.From()][m.To()])
 			}
+			piece := mp.board.Squares[m.From()]
 			if mp.contHist != nil {
-				piece := mp.board.Squares[m.From()]
 				score += 2 * int(mp.contHist[piece][m.To()])
+			}
+			if mp.pawnHist != nil {
+				score += int(mp.pawnHist[piece][m.To()])
 			}
 		}
 
