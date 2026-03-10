@@ -29,6 +29,8 @@ func main() {
 		runNNUETrain(os.Args[2:])
 	case "convert":
 		runConvert(os.Args[2:])
+	case "rescore":
+		runRescore(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -43,6 +45,7 @@ Commands:
   tune        Optimize evaluation parameters from training data
   nnue-train  Train an NNUE network from training data
   convert     Convert between .dat (text) and .bin (binary) formats
+  rescore     Re-search positions in a .bin file and update scores in-place
 
 Run 'tuner <command> -h' for command-specific options.
 `)
@@ -533,6 +536,113 @@ func runNNUETrainLegacy(trainer *chess.NNUETrainer, dataFile string, cfg chess.N
 	}
 	fi, _ := os.Stat(outputFile)
 	fmt.Printf("Network saved to %s (%.1f MB)\n", outputFile, float64(fi.Size())/(1024*1024))
+}
+
+func runRescore(args []string) {
+	fs := flag.NewFlagSet("rescore", flag.ExitOnError)
+	dataFile := fs.String("data", "training.bin", "training data file (.bin) to rescore in-place")
+	depth := fs.Int("depth", 8, "fixed search depth for rescoring")
+	concurrency := fs.Int("concurrency", 1, "number of parallel workers")
+	hashMB := fs.Int("hash", 256, "shared TT size in MB")
+	nnueFile := fs.String("nnue", "", "NNUE network file (default: net.nnue)")
+	classical := fs.Bool("classical", false, "disable NNUE, use classical eval only")
+	syzygyPath := fs.String("syzygy", "", "path to Syzygy tablebase files")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: tuner rescore [options]\n\nRe-searches each position in a .bin file at fixed depth and updates the score in-place.\nCrash-safe: restarting rescores from the beginning (idempotent).\n\nOptions:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  tuner rescore -data training.bin -depth 10 -concurrency 8 -hash 512\n")
+		fmt.Fprintf(os.Stderr, "  tuner rescore -data training.bin -depth 8 -concurrency 4 -syzygy /path/to/tb\n")
+	}
+	fs.Parse(args)
+
+	// Load NNUE network
+	var nnueNet *chess.NNUENet
+	if *classical {
+		// Explicitly disabled
+	} else if *nnueFile != "" {
+		net, err := chess.LoadNNUE(*nnueFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
+			os.Exit(1)
+		}
+		nnueNet = net
+		fmt.Printf("NNUE loaded from %s\n", *nnueFile)
+	} else {
+		const defaultNet = "net.nnue"
+		net, err := chess.LoadNNUE(defaultNet)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %s not found, falling back to classical eval\n", defaultNet)
+		} else {
+			nnueNet = net
+			fmt.Printf("NNUE loaded from %s\n", defaultNet)
+		}
+	}
+
+	// Initialize Syzygy tablebases if configured
+	if *syzygyPath != "" {
+		if chess.SyzygyInit(*syzygyPath) {
+			fmt.Printf("Syzygy tablebases loaded: up to %d-piece positions\n", chess.SyzygyMaxPieceCount())
+		} else {
+			if !chess.SyzygyCGOAvailable() {
+				fmt.Printf("Warning: binary built without CGO, Syzygy tablebases unavailable\n")
+			} else {
+				fmt.Printf("Warning: failed to load Syzygy tablebases from %s\n", *syzygyPath)
+			}
+		}
+		defer chess.SyzygyFree()
+	}
+
+	// Validate file
+	stat, err := os.Stat(*dataFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	totalRecords := stat.Size() / chess.BinpackRecordSize
+
+	cfg := chess.RescoreConfig{
+		DataFile:    *dataFile,
+		Depth:       *depth,
+		Concurrency: *concurrency,
+		HashMB:      *hashMB,
+		NNUENet:     nnueNet,
+		SyzygyPath:  *syzygyPath,
+	}
+
+	fmt.Printf("Rescore configuration:\n")
+	fmt.Printf("  File:        %s (%d positions, %.1f MB)\n", cfg.DataFile, totalRecords, float64(stat.Size())/(1024*1024))
+	fmt.Printf("  Depth:       %d\n", cfg.Depth)
+	fmt.Printf("  Concurrency: %d workers\n", cfg.Concurrency)
+	fmt.Printf("  Hash:        %d MB (shared)\n", cfg.HashMB)
+	if nnueNet != nil {
+		fmt.Printf("  Eval:        NNUE\n")
+	} else {
+		fmt.Printf("  Eval:        classical\n")
+	}
+	if *syzygyPath != "" {
+		fmt.Printf("  Syzygy:      %s\n", *syzygyPath)
+	}
+	fmt.Println()
+
+	start := time.Now()
+	err = chess.RescoreTrainingData(cfg, func(done, total int) {
+		elapsed := time.Since(start)
+		posPerSec := float64(done) / elapsed.Seconds()
+		remaining := time.Duration(float64(total-done)/posPerSec) * time.Second
+		fmt.Printf("\r  %d/%d positions (%.0f pos/s, ETA %v)        ",
+			done, total, posPerSec, remaining.Round(time.Second))
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+		os.Exit(1)
+	}
+
+	elapsed := time.Since(start)
+	fmt.Printf("\n\nDone: %d positions rescored in %v (%.0f pos/s)\n",
+		totalRecords, elapsed.Round(time.Second),
+		float64(totalRecords)/elapsed.Seconds())
 }
 
 func runConvert(args []string) {

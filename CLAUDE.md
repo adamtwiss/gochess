@@ -33,6 +33,9 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./tuner convert -from training.bin -to training.dat                          # Convert binary → text
 cat a.bin b.bin > combined.bin                                               # Concatenate .bin files
 
+./tuner rescore -data training.bin -depth 10 -concurrency 8 -hash 512        # Rescore .bin in-place
+./tuner rescore -data training.bin -depth 8 -concurrency 4 -syzygy /path/to/tb  # Rescore with Syzygy
+
 ./chess -nnue net.nnue -uci                             # UCI with NNUE
 ./chess -syzygy /path/to/tablebases -uci                # UCI with Syzygy tablebases
 
