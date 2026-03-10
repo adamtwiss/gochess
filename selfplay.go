@@ -219,6 +219,16 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 			eval = -eval
 		}
 
+		// Clamp mate/TB scores to trainable range before filtering and recording.
+		// TB wins (28800) and mates (29000-ply) become +1000; losses become -1000.
+		// This preserves these positions in training data instead of filtering them out,
+		// giving the NNUE a "clearly winning/losing" signal for endgames and forced mates.
+		if eval > 20000 {
+			eval = 1000
+		} else if eval < -20000 {
+			eval = -1000
+		}
+
 		// Adjudication tracking: consecutive moves with |eval| > 1000
 		absEval := eval
 		if absEval < 0 {
@@ -269,10 +279,8 @@ func shouldRecordPosition(b *Board, bestMove Move, whiteRelativeEval int, ply in
 	if b.InCheck() {
 		return false
 	}
-	// Skip positions with mate scores
-	if whiteRelativeEval > 20000 || whiteRelativeEval < -20000 {
-		return false
-	}
+	// Note: mate/TB scores are clamped to ±1000 before reaching here,
+	// so no need to filter on score magnitude.
 	// Skip positions where best move is a capture (not quiet)
 	if b.Squares[bestMove.To()] != Empty || bestMove.Flags() == FlagEnPassant {
 		return false
