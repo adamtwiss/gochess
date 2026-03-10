@@ -2,6 +2,7 @@
 /chess
 /tuner
 chessgcc
+/chess-
 
 # NNUE network files (except the default net)
 *.nnue
@@ -11,6 +12,10 @@ chessgcc
 /gauntlet.pgn
 /selfplay.pgn
 /sprt.pgn
+
+# SPRT output files
+/*.pgn
+/*.log
 
 # Misc
 nohup.out
