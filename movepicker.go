@@ -198,8 +198,7 @@ func (mp *MovePicker) Next() Move {
 		case stageEvasionTTMove:
 			mp.stage = stageGenerateEvasions
 			if mp.ttMove != NoMove && mp.board.IsPseudoLegal(mp.ttMove) {
-				pinned, checkers := mp.board.PinnedAndCheckers(mp.board.SideToMove)
-				if mp.board.IsLegal(mp.ttMove, pinned, checkers != 0) {
+				if mp.board.IsLegal(mp.ttMove, mp.pinned, mp.checkers != 0) {
 					return mp.ttMove
 				}
 			}
