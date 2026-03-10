@@ -970,6 +970,19 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 	}
 
+	// Eval instability: detect sharp eval swings from parent node.
+	// If |staticEval - (-parentEval)| > threshold, something tactical is happening.
+	// parentEval is opponent's perspective, so we negate it for comparison.
+	unstable := false
+	if !inCheck && ply >= 1 && info.StaticEvals[ply-1] > -Infinity {
+		parentEval := -info.StaticEvals[ply-1] // convert to our perspective
+		diff := staticEval - parentEval
+		if diff < 0 {
+			diff = -diff
+		}
+		unstable = diff > 200
+	}
+
 	// Internal Iterative Reduction: reduce depth when no TT move exists.
 	// Searching without a good move to try first is less efficient.
 	if IIREnabled && depth >= 6 && ttMove == NoMove && !inCheck {
@@ -1219,7 +1232,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		movedPiece := b.Squares[move.From()]
 
 		// History-based pruning: prune quiet moves with deeply negative history at shallow depths
-		if ply > 0 && !inCheck && !improving && depth <= 3 &&
+		if ply > 0 && !inCheck && !improving && !unstable && depth <= 3 &&
 			!isCap && !move.IsPromotion() &&
 			move != ttMove &&
 			move != killers[0] && move != killers[1] &&
@@ -1304,7 +1317,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// SEE quiet pruning: prune quiet moves where piece lands on a losing square
-		if checkSEEQuiet && !givesCheck && seeQuietScore < -20*depth*depth {
+		seeQuietThreshold := -20 * depth * depth
+		if unstable {
+			seeQuietThreshold -= 100 // more lenient when position is volatile
+		}
+		if checkSEEQuiet && !givesCheck && seeQuietScore < seeQuietThreshold {
 			info.SEEQuietPrunes++
 			b.UnmakeMove(move)
 			continue
@@ -1393,6 +1410,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 				// Reduce less when the position is improving (eval > eval 2 plies ago)
 				if improving {
+					reduction--
+				}
+
+				// Reduce less when eval is unstable (sharp swing from parent)
+				if unstable {
 					reduction--
 				}
 

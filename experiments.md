@@ -227,7 +227,7 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Add ply-2 continuation history to LMR and history pruning, at half weight (÷2).
 - **Result**: **+11.0 Elo**, H1 accepted. W300-L268-D439 (1007 games). LOS 91.0%.
 - **Baseline**: net.nnue @ fb7519b, post-LMR v2
-- **Commit**: (pending)
+- **Commit**: ab25488
 - **Notes**: Full weight was flat (-3.8 at 1925 games); half weight works. Ply-2 history is noisier than ply-1 (piece may have been captured), so down-weighting is essential. Adding to move ordering was actively harmful (-27 Elo) — pruning/reduction only.
 
 ## 2026-03-10: Futility improving (+50 margin)
@@ -247,6 +247,38 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: +0.0 Elo, killed at 898 games (dead flat). W251-L258-D389. LOS 50.0%.
 - **Baseline**: net.nnue @ fb7519b, post-LMR v2
 - **Notes**: The existing `!improving` gate is correct — extending history pruning to improving positions, even with a stricter threshold, doesn't help.
+
+## 2026-03-10: LMP PV-node exemption (MERGED)
+- **Change**: Add `beta-alpha == 1` to LMP gate, exempting PV nodes from late move pruning.
+- **Result**: **+16.9 Elo**, H1 accepted. W217-L183-D301 (701 games). LOS 95.5%. LLR 2.96.
+- **Baseline**: net.nnue @ ab25488, post-ContHist2
+- **Commit**: d92b873
+- **Notes**: At PV nodes, accuracy matters more than speed. Pruning late quiet moves at PV nodes risks missing the principal variation. Gate change, not margin — confirms that structural changes are higher-leverage than parameter tuning.
+
+## 2026-03-10: Eval instability heuristic (MERGED)
+- **Change**: Detect sharp eval swings from parent node (`|staticEval - (-parentEval)| > 200`). When unstable: skip history pruning, reduce LMR by 1, loosen SEE quiet threshold by 100cp.
+- **Result**: **+12.8 Elo**, H1 accepted. ~830 games. LOS 92.6%. LLR 2.95.
+- **Baseline**: net.nnue @ ab25488, post-ContHist2
+- **Commit**: (pending)
+- **Notes**: Novel heuristic — detects tactically volatile positions where pruning is dangerous. NNUE's accurate eval makes the 200cp swing meaningful (not eval noise). Opens a family of follow-up experiments: using instability to gate NMP, RFP, singular extensions; tuning the 200cp threshold.
+
+## 2026-03-10: Capture history in SEE pruning
+- **Change**: Modulate SEE capture pruning threshold by capture history: `seeThreshold += captHistVal/20`.
+- **Result**: -0.7 Elo, killed at 940 games (fully regressed). W261-L263-D416. LOS 46.5%.
+- **Baseline**: net.nnue @ ab25488, post-ContHist2
+- **Notes**: Early signal was +50 at 90 games, +17 at 150, +5 at 600, then zero by 940. Textbook early noise fade. SEE thresholds are about material exchange accuracy — capture history doesn't meaningfully improve the threshold. The capture history signal is already used in capture ordering (MVV-LVA + captHist), which is the right place for it.
+
+## 2026-03-10: Counter-move LMR reduction
+- **Change**: Reduce LMR by 1 for moves matching the counter-move heuristic (`if move == counterMove { reduction-- }`).
+- **Result**: -1.7 Elo, killed at 608 games (dead flat). W174-L177-D257. LOS 43.6%.
+- **Baseline**: net.nnue @ ab25488, post-ContHist2
+- **Notes**: Counter-move already gets priority in move ordering (tried before quiets). Reducing LMR for it doesn't add value — the ordering benefit is sufficient.
+
+## 2026-03-10: Double extension depth gate (depth≥12)
+- **Change**: Add `depth >= 12` to double singular extension condition (was no depth gate beyond singular's depth≥10).
+- **Result**: -15 Elo, killed at 437 games (consistently negative). W120-L138-D179. Win% 47.9%.
+- **Baseline**: net.nnue @ ab25488, post-ContHist2
+- **Notes**: Restricting double extensions to deeper nodes loses them when they matter most (depth 10-11). The existing threshold is correct. ~40-50 games may have been affected by CPU contention from concurrent training.
 
 ---
 
