@@ -1291,7 +1291,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Formula: (3 + depth*depth), +50% when improving
 		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
 			!isCap && !move.IsPromotion() && !givesCheck &&
-			bestScore > -MateScore+100 {
+			bestScore > -MateScore+100 && beta-alpha == 1 {
 			lmpLimit := 3 + depth*depth
 			if improving && depth >= 3 {
 				lmpLimit += lmpLimit / 2
