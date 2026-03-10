@@ -2,7 +2,7 @@
 /chess
 /tuner
 chessgcc
-/chess-
+/chess-*
 
 # NNUE network files (except the default net)
 *.nnue
@@ -19,3 +19,5 @@ chessgcc
 
 # Misc
 nohup.out
+tuner*.out
+/*.json
