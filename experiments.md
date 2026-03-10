@@ -145,11 +145,112 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: net.nnue @ fb7519b, post-LMR v2
 - **Notes**: depth*2 extends far too many moves, wasting search time. depth*3 is well-calibrated.
 
+## 2026-03-10: Aspiration window delta=12
+- **Change**: Aspiration window initial delta 15 → 12 (tighter windows).
+- **Result**: **-18.4 Elo**, H0 accepted. W196-L239-D376 (811 games). LOS 2.0%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Tighter windows cause more re-searches, wasting time. Delta=15 is well-calibrated. Testing delta=18 (opposite direction) next.
+
+## 2026-03-10: RFP improving margin 60→50
+- **Change**: RFP improving margin depth*60 → depth*50 (tighter pruning when position improving).
+- **Result**: -6.3 Elo, killed at 1391 games (inconclusive, trending reject). W374-L396-D621. LOS 18.3%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Even with NNUE's better eval, the improving margin can't be tightened further. 60 is already aggressive.
+
+## 2026-03-10: Razoring gentle (375+d*90)
+- **Change**: Razoring margin 400+depth*100 → 375+depth*90 (~7% tightening).
+- **Result**: -2.5 Elo, killed at 1402 games (dead flat). W399-L409-D594. LOS 36.2%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Gentler than the v1 attempt (-32 Elo at 300+d*75). Still no gain — razoring is well-calibrated in both directions.
+
+## 2026-03-10: IIR deeper reduction (2 at d≥10)
+- **Change**: IIR reduces by 2 plies when depth≥10 and no TT move (was always 1).
+- **Result**: +1.8 Elo, killed at 1394 games (inconclusive, essentially zero). W396-L387-D611. LOS 59.9%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Slight positive trend but too small to matter. Double IIR at deep nodes is neutral — the extra reduction doesn't save enough time to compensate.
+
+## 2026-03-10: Aspiration window delta=18
+- **Change**: Aspiration window initial delta 15 → 18 (wider windows, opposite of delta=12).
+- **Result**: -7.0 Elo, killed at 1253 games (trending reject). W348-L372-D533. LOS 23.0%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Both directions tested (12 and 18). Delta=15 is optimal — tighter wastes time on re-searches, wider loses precision.
+
+## 2026-03-10: Razoring loosening (425+d*110)
+- **Change**: Razoring margin 400+depth*100 → 425+depth*110 (opposite of gentle tightening).
+- **Result**: **-21.5 Elo**, H0 accepted. W186-L231-D307 (724 games). LOS 1.6%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Loosening loses even more than tightening. Both directions confirm 400+d*100 is optimal. Wider margins waste time searching hopeless positions.
+
+## 2026-03-10: Singular extension depth threshold depth/2
+- **Change**: Singular verification depth (depth-1)/2 → depth/2 (deeper verification, fewer extensions).
+- **Result**: -14.5 Elo, killed at 841 games (trending reject). W231-L267-D343. LOS 6.4%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Fewer extensions = miss important moves. (depth-1)/2 is well-calibrated.
+
+## 2026-03-10: NMP verification depth 12→10
+- **Change**: NMP verification search threshold depth≥12 → depth≥10 (verify at shallower depths).
+- **Result**: -13.1 Elo, killed at 850 games (trending reject). W223-L256-D371. LOS 7.2%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Verification at depth 10-11 costs too much time for insufficient zugzwang protection. Depth 12 is the right threshold.
+
+## 2026-03-10: Improving gate on razoring
+- **Change**: Skip razoring when position is improving (`&& !improving`).
+- **Result**: -6.6 Elo, killed at 1484 games (trending reject). W397-L424-D663. LOS 16.4%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Improving detection doesn't help razoring. At depth 1-2, the improving signal is noisy — positions that are "improving" at these shallow depths aren't reliably getting better.
+
+## 2026-03-10: Eval-based LMR adjustment
+- **Change**: Reduce less when staticEval+200 < alpha (losing), reduce more when staticEval-200 > beta (winning).
+- **Result**: -5.9 Elo, killed at 1480 games (trending reject). W391-L416-D673. LOS 18.9%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: The improving heuristic already captures position trajectory. Adding raw eval distance to alpha/beta is redundant and slightly harmful — it fights with the existing improving adjustment.
+
+## 2026-03-10: History-based LMP threshold
+- **Change**: Raise LMP limit by +2 for moves with history score > 4000 (harder to prune good-history moves).
+- **Result**: -3.1 Elo, killed at 1476 games (flat/slightly negative). W413-L421-D642. LOS 32.5%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: LMP already benefits from move ordering — high-history moves appear early and avoid pruning naturally. Explicit history gate is redundant.
+
+## 2026-03-10: 2-ply continuation history in LMR (full weight)
+- **Change**: Add ply-2 continuation history to LMR reduction adjustment and history pruning. Full weight (same as ply-1).
+- **Result**: -3.8 Elo, killed at 1925 games (dead flat then faded). W526-L543-D856. LOS 26.0%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Early positive signal (+1.4 at 1471 games) was noise. Ply-2 piece lookup is lossy (piece may be captured), adding noise. Half-weight variant still running.
+
+## 2026-03-10: 2-ply cont history in move ordering
+- **Change**: Add ply-2 continuation history to MovePicker quiet move scoring AND LMR/pruning.
+- **Result**: -27.1 Elo, killed at 194 games (strongly negative early). W50-L68-D76. LOS 9.1%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Adding noisy ply-2 signal to move ordering is actively harmful — bad ordering cascades through the entire search. Pruning-only is safer.
+
+## 2026-03-10: 2-ply cont history half weight (MERGED)
+- **Change**: Add ply-2 continuation history to LMR and history pruning, at half weight (÷2).
+- **Result**: **+11.0 Elo**, H1 accepted. W300-L268-D439 (1007 games). LOS 91.0%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Commit**: (pending)
+- **Notes**: Full weight was flat (-3.8 at 1925 games); half weight works. Ply-2 history is noisier than ply-1 (piece may have been captured), so down-weighting is essential. Adding to move ordering was actively harmful (-27 Elo) — pruning/reduction only.
+
+## 2026-03-10: Futility improving (+50 margin)
+- **Change**: Add +50 to futility margin when position is improving.
+- **Result**: -1.9 Elo, killed at 1115 games (flat). W313-L323-D479. LOS 40.6%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Early noise showed +15.6 at 205 games, faded to zero. Futility margins are already well-calibrated.
+
+## 2026-03-10: SEE quiet improving gate
+- **Change**: Loosen SEE quiet pruning threshold by -50 when improving.
+- **Result**: -0.4 Elo, killed at 902 games (flat). W243-L244-D415. LOS 48.2%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: Early +10.3 at 442 games faded to zero. SEE thresholds are about material exchange, not eval trajectory.
+
+## 2026-03-10: History pruning with improving (tighter threshold)
+- **Change**: Allow history pruning when improving, but with 2x stricter threshold (-4000*d vs -2000*d).
+- **Result**: +0.0 Elo, killed at 898 games (dead flat). W251-L258-D389. LOS 50.0%.
+- **Baseline**: net.nnue @ fb7519b, post-LMR v2
+- **Notes**: The existing `!improving` gate is correct — extending history pruning to improving positions, even with a stricter threshold, doesn't help.
+
 ---
 
 ## Ideas Not Yet Tested
-
-- **Aspiration windows**: Currently delta=15. Small effect expected — low priority.
 - **Singular extension depth threshold**: Currently (depth-1)/2. Could try depth/2 or depth/3.
 - **Double singular threshold**: Currently singularBeta - depth*3. Could try depth*2.
 - **Continuation history weight**: Currently added raw to histScore. Could scale.
@@ -164,3 +265,9 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 6. **LMR constant C=1.5 is near-optimal** — C=1.25 and C=1.375 both tested at zero. Further tuning has diminishing returns.
 7. **LMP improving bonus is critical** — removing it costs ~38 Elo. The improving heuristic correctly identifies positions where more moves should be searched.
 8. **History divisor 5000 is optimal** — both directions (4000 and 6000) lose Elo.
+9. **Aspiration delta=15 is optimal** — both directions (12 and 18) lose Elo. Bracketed.
+10. **Razoring 400+d*100 is optimal** — three attempts (300+d*75, 375+d*90, 425+d*110) all lose. Do not revisit.
+11. **Singular depth (depth-1)/2, NMP verify depth 12 are well-calibrated** — don't change.
+12. **Margin-tuning has diminishing returns** — after the initial NNUE-driven RFP/LMR wins, most parameters are already near-optimal. New features (structural changes) are more likely to gain than parameter adjustments.
+13. **2-ply continuation history needs half weight** — full weight adds noise (ply-2 piece may be captured); adding to move ordering is harmful (-27 Elo). Pruning/reduction only, at ÷2.
+14. **Improving heuristic doesn't help per-move pruning** — futility (+50), SEE (-50), history pruning (stricter threshold) all tested neutral. The improving signal is already captured by RFP and LMR adjustments.

@@ -193,6 +193,28 @@ Changes to search, eval, or move ordering must be validated by self-play Elo, no
 
 CPU budget: on a 16-thread machine, 7 concurrency is the max for 10s+0.1s games without time-pressure noise. Two parallel experiments at 4 each is fine.
 
+### Research Pipeline (Parallel SPRT)
+
+For sustained optimization, run a continuous pipeline of 4 parallel experiments (4 threads each = 16 total):
+
+1. **Build all variants in worktrees** — `git worktree add .claude/worktrees/<name> HEAD`, edit the parameter, build with `go build -o chess-<name> ./cmd/chess`.
+2. **Run SPRTs in background** — redirect output to `sprt_<name>.log`. Monitor with `tail` on the log files.
+3. **Check results hourly** — parse the last `SPRT:` and `Elo difference:` lines from each log. Report a summary table (games, Elo, LLR, status).
+4. **When an experiment finishes** (H0 or H1 accepted), immediately:
+   - Log the result in `experiments.md`
+   - Clean up the worktree and binary
+   - Queue a replacement experiment to keep all 16 threads busy
+5. **When an experiment is rejected (negative Elo)**, consider testing the opposite direction. If tightening a margin loses Elo, try loosening it — a strong negative result implies the optimum may be on the other side. If both directions lose, the parameter is well-calibrated.
+6. **When an experiment is accepted (positive Elo)**, merge to main, rebuild the baseline binary, and consider testing a further step in the same direction to find the true optimum.
+7. **Bracket the optimum** — for any parameter change that gains Elo, test values on both sides (e.g. if X=50 gains, test X=40 and X=60). Two zero-Elo results on either side confirms you've found the peak.
+
+Key principles:
+- **Report progress proactively** — post a summary table (game count, Elo, LLR, status) at least every hour, and immediately when any experiment reaches a conclusion (H0/H1). The user may be monitoring via remote control and needs regular updates without having to ask.
+- **Never leave threads idle** — always have experiments queued. Small gains compound.
+- **Test one parameter at a time per experiment** — but run multiple independent experiments in parallel.
+- **Revisit failed experiments when conditions change** — a new NNUE net or new search feature can shift optimal parameters. Check `experiments.md` before re-testing.
+- **Self-play Elo ≈ 2-3x cross-engine Elo** for search changes. A +5 self-play gain is real and worth merging.
+
 ## Maintenance Reminders
 
 - **Keep CLAUDE.md and README.md up to date** when changing search, eval, tuner, CLI, or architecture
