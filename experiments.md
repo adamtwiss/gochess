@@ -294,12 +294,51 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Commit**: (this commit)
 - **Notes**: Continuation history (what worked after the opponent's previous move) is a highly predictive ordering signal. Doubling its weight amplifies this signal relative to main history. Combined with pawn history, total move ordering improvement is ~50 Elo from this session. Note: ply-2 cont hist at full weight was previously harmful (-27 Elo), but ply-1 benefits from amplification.
 
+## 2026-03-11: New NNUE net (MERGED)
+- **Change**: Updated net.nnue from net-new.nnue (additional training).
+- **Result**: **+28.6 Elo**, H1 accepted. W167-L128-D180 (475 games). LOS 98.8%.
+- **Baseline**: net.nnue @ 1e9f490, post-PawnHist
+- **Commit**: 16d6592
+
+## 2026-03-11: QS TT move (MERGED)
+- **Change**: Pass TT move to quiescence search InitQuiescence, start at stageTTMove instead of stageGenerateCaptures.
+- **Result**: **+7.1 Elo**, H1 accepted. W386-L358-D624 (1368 games). LOS 84.8%.
+- **Baseline**: net.nnue @ 1e9f490, post-PawnHist
+- **Commit**: 204e62d
+- **Notes**: Low-hanging fruit — QS was ignoring TT information for move ordering.
+
+## 2026-03-11: Continuation history 3x weight (MERGED)
+- **Change**: Cont history weight in quiet and evasion move scoring 2x→3x.
+- **Result**: **+3.8 Elo**, H1 accepted. W644-L620-D921 (2185 games). LOS 75.0%.
+- **Baseline**: net.nnue @ 9ef020a, post-QS-TTMove
+- **Commit**: dab4bd4
+- **Notes**: Continuing the trend from 1x→2x (+27.9 Elo). Smaller gain as expected. Testing 4x next to bracket the optimum.
+
+## 2026-03-11: Pawn history in LMR
+- **Change**: Add pawn history scores to LMR reduction adjustment (alongside main/cont history).
+- **Result**: **-7.8 Elo**, H0 accepted. W742-L801-D1100 (2643 games). LOS 6.7%.
+- **Baseline**: net.nnue @ 9ef020a, post-QS-TTMove
+- **Notes**: Pawn history is useful for move ordering but too noisy for LMR adjustment. Consistent with pattern: ordering signals don't always transfer to pruning/reduction.
+
+## 2026-03-11: Eval instability threshold 150
+- **Change**: Instability threshold 200→150 (detect more volatile positions).
+- **Result**: -2.5 Elo at 3281 games (flat, killed). LOS 29.1%.
+- **Baseline**: net.nnue @ 9ef020a, post-QS-TTMove
+- **Notes**: Lower threshold fires too often, diluting the signal. 200 is better.
+
+## 2026-03-11: Eval instability threshold 300
+- **Change**: Instability threshold 200→300 (only flag extreme swings).
+- **Result**: **-6.8 Elo**, H0 accepted. W892-L955-D1353 (3200 games). LOS 7.1%.
+- **Baseline**: net.nnue @ 9ef020a, post-QS-TTMove
+- **Notes**: Higher threshold misses too many volatile positions. 200 is near-optimal. Bracketed: 150 flat, 300 negative.
+
 ---
 
 ## Ideas Not Yet Tested
 - **Singular extension depth threshold**: Currently (depth-1)/2. Could try depth/2 or depth/3.
 - **Double singular threshold**: Currently singularBeta - depth*3. Could try depth*2.
-- **Continuation history weight tuning**: 2x validated. Could try 3x, or tuning main history vs pawn history relative weights.
+- **Continuation history weight tuning**: 3x validated. Testing 4x to bracket the optimum.
+- **Pawn history weight tuning**: Currently 1x in ordering. Could try 2x.
 
 ## Key Patterns Observed
 
@@ -318,3 +357,5 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 13. **2-ply continuation history needs half weight** — full weight adds noise (ply-2 piece may be captured); adding to move ordering is harmful (-27 Elo). Pruning/reduction only, at ÷2.
 14. **Improving heuristic doesn't help per-move pruning** — futility (+50), SEE (-50), history pruning (stricter threshold) all tested neutral. The improving signal is already captured by RFP and LMR adjustments.
 15. **Move ordering has massive room for improvement** — pawn history (+22.2) and cont-hist 2x weight (+27.9) combined for ~50 Elo from a single session. New history signals and weight tuning are high-value experiments.
+16. **Eval instability threshold 200 is optimal** — 150 flat, 300 negative. Bracketed.
+17. **Pawn history doesn't transfer to LMR** — useful for ordering (-7.8 Elo in LMR). Ordering signals don't always work for pruning/reduction.
