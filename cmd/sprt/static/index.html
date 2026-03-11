@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoChess SPRT Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #1a1a2e; color: #eee; padding: 20px; }
+  h1 { color: #e94560; margin-bottom: 20px; }
+  h2 { color: #0f3460; background: #e94560; padding: 8px 16px; border-radius: 4px;
+       margin: 20px 0 10px; font-size: 1.1em; }
+
+  .card { background: #16213e; border-radius: 8px; padding: 16px; margin: 8px 0;
+          border-left: 4px solid #0f3460; }
+  .card.accepted { border-left-color: #4caf50; }
+  .card.rejected { border-left-color: #f44336; }
+  .card.running { border-left-color: #2196f3; }
+  .card.error { border-left-color: #ff9800; }
+
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .card-title { font-size: 1.1em; font-weight: bold; }
+  .card-status { padding: 2px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+  .card-status.running { background: #2196f3; }
+  .card-status.accepted { background: #4caf50; }
+  .card-status.rejected { background: #f44336; }
+  .card-status.error { background: #ff9800; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+           gap: 8px; margin: 8px 0; }
+  .stat { background: #0f3460; padding: 8px; border-radius: 4px; text-align: center; }
+  .stat-label { font-size: 0.75em; color: #aaa; text-transform: uppercase; }
+  .stat-value { font-size: 1.2em; font-weight: bold; margin-top: 2px; }
+
+  .llr-bar { background: #333; height: 24px; border-radius: 4px; position: relative;
+             overflow: hidden; margin: 8px 0; }
+  .llr-fill { height: 100%; position: absolute; top: 0; transition: width 0.3s; }
+  .llr-h0 { background: #f44336; left: 0; }
+  .llr-h1 { background: #4caf50; right: 0; left: auto; }
+  .llr-label { position: absolute; top: 3px; width: 100%; text-align: center;
+               font-size: 0.8em; font-weight: bold; z-index: 1; }
+
+  .meta { font-size: 0.8em; color: #888; margin-top: 6px; }
+
+  /* Create form */
+  .form-container { background: #16213e; border-radius: 8px; padding: 16px; margin: 8px 0; }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .form-row label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85em; color: #aaa; }
+  .form-row input, .form-row select { background: #0f3460; border: 1px solid #333;
+    color: #eee; padding: 6px 10px; border-radius: 4px; font-size: 0.95em; }
+  .form-row input:focus { border-color: #e94560; outline: none; }
+  button { background: #e94560; color: white; border: none; padding: 8px 20px;
+           border-radius: 4px; cursor: pointer; font-weight: bold; }
+  button:hover { background: #c73e54; }
+  button.delete { background: #666; font-size: 0.8em; padding: 4px 10px; }
+  button.delete:hover { background: #f44336; }
+
+  .empty { color: #666; font-style: italic; padding: 10px; }
+  .error { color: #f44336; margin: 8px 0; }
+</style>
+</head>
+<body>
+<h1>GoChess SPRT Dashboard</h1>
+
+<h2>Create Experiment</h2>
+<div class="form-container">
+  <div class="form-row">
+    <label>ID <input type="text" id="f-id" placeholder="lmr-c1.25"></label>
+    <label>Branch <input type="text" id="f-branch" placeholder="feature-branch"></label>
+    <label>Base Branch <input type="text" id="f-base" placeholder="main" value="main"></label>
+    <label>TC <input type="text" id="f-tc" placeholder="10+0.1" value="10+0.1"></label>
+  </div>
+  <div class="form-row">
+    <label>Elo0 <input type="number" id="f-elo0" value="0" step="1"></label>
+    <label>Elo1 <input type="number" id="f-elo1" value="10" step="1"></label>
+    <label>Hash MB <input type="number" id="f-hash" value="64"></label>
+    <label>Batch Size <input type="number" id="f-batch" value="50"></label>
+    <label>NNUE File <input type="text" id="f-nnue" placeholder="net.nnue"></label>
+  </div>
+  <button onclick="createExperiment()">Create</button>
+  <div id="form-error" class="error"></div>
+</div>
+
+<h2>Running</h2>
+<div id="running"></div>
+
+<h2>Finished</h2>
+<div id="finished"></div>
+
+<script>
+function $(id) { return document.getElementById(id); }
+
+async function fetchExperiments() {
+  try {
+    const resp = await fetch('/api/experiments');
+    const exps = await resp.json();
+    renderExperiments(exps || []);
+  } catch(e) {
+    console.error('fetch error:', e);
+  }
+}
+
+function renderExperiments(exps) {
+  const running = exps.filter(e => e.result.status === 'running' || e.result.status === '' || e.result.status === 'error');
+  const finished = exps.filter(e => e.result.status === 'accepted' || e.result.status === 'rejected');
+
+  $('running').innerHTML = running.length ? running.map(renderCard).join('') :
+    '<p class="empty">No running experiments</p>';
+  $('finished').innerHTML = finished.length ? finished.map(renderCard).join('') :
+    '<p class="empty">No finished experiments</p>';
+}
+
+function renderCard(e) {
+  const r = e.result;
+  const total = r.wins + r.draws + r.losses;
+  const status = r.status || 'running';
+
+  // LLR bar calculation
+  const lower = Math.log(e.sprt.beta / (1 - e.sprt.alpha));
+  const upper = Math.log((1 - e.sprt.beta) / e.sprt.alpha);
+  const range_ = upper - lower;
+  let llrPct = ((r.llr - lower) / range_) * 100;
+  llrPct = Math.max(0, Math.min(100, llrPct));
+
+  const eloColor = r.elo > 0 ? '#4caf50' : r.elo < -3 ? '#f44336' : '#fff';
+
+  return `
+    <div class="card ${status}">
+      <div class="card-header">
+        <span class="card-title">${e.id}</span>
+        <div>
+          <span class="card-status ${status}">${status.toUpperCase()}</span>
+          ${status === 'running' ? `<button class="delete" onclick="deleteExp('${e.id}')">Cancel</button>` : ''}
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="stat-label">Games</div><div class="stat-value">${total}</div></div>
+        <div class="stat"><div class="stat-label">W/D/L</div><div class="stat-value">${r.wins}/${r.draws}/${r.losses}</div></div>
+        <div class="stat"><div class="stat-label">Elo</div><div class="stat-value" style="color:${eloColor}">${r.elo.toFixed(1)} ± ${r.elo_err.toFixed(1)}</div></div>
+        <div class="stat"><div class="stat-label">LLR</div><div class="stat-value">${r.llr.toFixed(2)}</div></div>
+      </div>
+      <div class="llr-bar">
+        <div class="llr-label">LLR: ${r.llr.toFixed(2)} [${lower.toFixed(2)}, ${upper.toFixed(2)}]</div>
+        <div class="llr-fill" style="width:${llrPct}%;background:${llrPct > 50 ? '#4caf50' : '#f44336'}"></div>
+      </div>
+      <div class="meta">
+        Branch: ${e.branch} vs ${e.base_branch} · TC: ${e.tc} · Hash: ${e.hash_mb}MB
+        ${e.nnue_file ? ' · NNUE: ' + e.nnue_file : ''}
+        · Batches: ${(e.batches || []).length}
+        · Created: ${new Date(e.created_at).toLocaleString()}
+      </div>
+    </div>`;
+}
+
+async function createExperiment() {
+  const exp = {
+    id: $('f-id').value,
+    branch: $('f-branch').value,
+    base_branch: $('f-base').value || 'main',
+    tc: $('f-tc').value || '10+0.1',
+    hash_mb: parseInt($('f-hash').value) || 64,
+    batch_size: parseInt($('f-batch').value) || 50,
+    nnue_file: $('f-nnue').value || '',
+    sprt: {
+      elo0: parseFloat($('f-elo0').value) || 0,
+      elo1: parseFloat($('f-elo1').value) || 10,
+      alpha: 0.05, beta: 0.05
+    }
+  };
+
+  if (!exp.id || !exp.branch) {
+    $('form-error').textContent = 'ID and Branch are required';
+    return;
+  }
+
+  try {
+    const resp = await fetch('/api/experiments', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(exp)
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      $('form-error').textContent = text;
+      return;
+    }
+    $('form-error').textContent = '';
+    $('f-id').value = '';
+    $('f-branch').value = '';
+    fetchExperiments();
+  } catch(e) {
+    $('form-error').textContent = e.message;
+  }
+}
+
+async function deleteExp(id) {
+  if (!confirm('Cancel experiment ' + id + '?')) return;
+  await fetch('/api/experiments/' + id, {method: 'DELETE'});
+  fetchExperiments();
+}
+
+// Poll every 5 seconds
+fetchExperiments();
+setInterval(fetchExperiments, 5000);
+</script>
+</body>
+</html>
