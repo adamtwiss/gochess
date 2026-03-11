@@ -55,9 +55,9 @@ func NewMovePicker(b *Board, ttMove Move, ply int, killers [2]Move, history *[64
 }
 
 // NewMovePickerQuiescence creates a move picker for quiescence search (captures only)
-func NewMovePickerQuiescence(b *Board, captHist *[13][64][7]int16) *MovePicker {
+func NewMovePickerQuiescence(b *Board, ttMove Move, captHist *[13][64][7]int16) *MovePicker {
 	mp := &MovePicker{}
-	mp.InitQuiescence(b, captHist)
+	mp.InitQuiescence(b, ttMove, captHist)
 	return mp
 }
 
@@ -84,11 +84,11 @@ func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, hist
 }
 
 // InitQuiescence resets a MovePicker for quiescence search reuse
-func (mp *MovePicker) InitQuiescence(b *Board, captHist *[13][64][7]int16) {
+func (mp *MovePicker) InitQuiescence(b *Board, ttMove Move, captHist *[13][64][7]int16) {
 	mp.board = b
-	mp.ttMove = NoMove
+	mp.ttMove = ttMove
 	mp.captHist = captHist
-	mp.stage = stageGenerateCaptures
+	mp.stage = stageTTMove
 	mp.index = 0
 	mp.skipQuiet = true
 	if mp.moves == nil {

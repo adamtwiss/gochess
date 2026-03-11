@@ -1798,7 +1798,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	}
 
 	// Use MovePicker for captures only (reuse pre-allocated picker)
-	info.pickers[qsIdx].InitQuiescence(b, &info.CaptHistory)
+	info.pickers[qsIdx].InitQuiescence(b, ttMove, &info.CaptHistory)
 	picker := &info.pickers[qsIdx]
 	bestMove := NoMove
 
