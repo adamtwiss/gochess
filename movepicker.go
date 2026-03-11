@@ -269,7 +269,7 @@ func (mp *MovePicker) generateAndScoreQuiets() {
 			score = int(mp.history[m.From()][m.To()])
 		}
 		if mp.contHist != nil {
-			score += 2 * int(mp.contHist[piece][m.To()])
+			score += 3 * int(mp.contHist[piece][m.To()])
 		}
 		if mp.pawnHist != nil {
 			score += int(mp.pawnHist[piece][m.To()])
@@ -313,7 +313,7 @@ func (mp *MovePicker) generateAndScoreEvasions() {
 			}
 			piece := mp.board.Squares[m.From()]
 			if mp.contHist != nil {
-				score += 2 * int(mp.contHist[piece][m.To()])
+				score += 3 * int(mp.contHist[piece][m.To()])
 			}
 			if mp.pawnHist != nil {
 				score += int(mp.pawnHist[piece][m.To()])
