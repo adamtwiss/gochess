@@ -332,13 +332,131 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: net.nnue @ 9ef020a, post-QS-TTMove
 - **Notes**: Higher threshold misses too many volatile positions. 200 is near-optimal. Bracketed: 150 flat, 300 negative.
 
+## 2026-03-11: Continuation history 4x weight
+- **Change**: Cont history weight in quiet and evasion move scoring 3x→4x.
+- **Result**: -5.0 Elo at 1055 games (killed, trending negative). LOS 26.9%. LLR -0.57.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Overshoots the optimum. 3x is the sweet spot — confirmed by bracketing (2x +27.9, 3x +3.8, 4x negative). Do not increase further.
+
+## 2026-03-11: Pawn history pruning (weight=2)
+- **Change**: Apply pawn history score to quiet move pruning and LMR reduction (scaled to ±2x weight).
+- **Result**: **-17.0 Elo**, H0 accepted. W265-L313-D402 (980 games). LOS 2.3%.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Confirms pawn history in pruning/LMR is harmful (first attempt -7.8 Elo). Ordering only.
+
+## 2026-03-11: QS delta pruning margin
+- **Change**: Tighten quiescence delta pruning margin.
+- **Result**: -4.6 Elo at 1069 games (killed, trending negative). LOS 28.7%. LLR -0.47.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Current delta margin is well-calibrated. Do not tighten.
+
+## 2026-03-11: Correction history clamp 128→96
+- **Change**: Reduce correction history clamp from 128 to 96 (less aggressive corrections).
+- **Result**: -0.7 Elo at 1048 games (killed, flat). LOS 46.8%. LLR 0.40.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Slightly worse. Testing 192 next (more aggressive corrections).
+
+## 2026-03-11: Node fraction time management
+- **Change**: Track best move's share of root nodes. High fraction (>0.9) → 0.8x time, low fraction (<0.3) → 1.5x time, (<0.5) → 1.3x time.
+- **Result**: +2 Elo at ~960 games (killed, flat). LOS ~53%.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Sound concept (used in Stockfish) but thresholds may need tuning, or the benefit is too small at these time controls. Could revisit with different scaling factors.
+
+## 2026-03-11: Pawn history 2x weight in ordering
+- **Change**: Double pawn history weight in quiet move scoring: `score += 2 * pawnHist[...]` (was 1x).
+- **Result**: -4 Elo at ~960 games (killed, slightly negative). LOS ~38%.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: 1x is the right weight. Unlike cont history (which benefited from 1x→3x amplification), pawn history is already well-scaled.
+
+## 2026-03-11: Main history 2x weight in ordering
+- **Change**: Double main history weight in quiet move scoring.
+- **Result**: -1 Elo at ~950 games (killed, flat). LOS ~47%.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Main history weight is already well-calibrated. The cont history amplification trick doesn't generalize to all history tables.
+
+## 2026-03-11: Correction history clamp 128→192
+- **Change**: Increase correction history clamp from 128 to 192 (more aggressive corrections).
+- **Result**: +1 Elo at 968 games (killed, flat). LOS ~52%.
+- **Baseline**: net.nnue @ 4bbcb7d, post-ContHist3x
+- **Notes**: Bracketed: 96 was -0.7, 192 is +1. Both flat. 128 is near-optimal. Do not revisit.
+
+---
+
+## 2026-03-11: Net blended (lambda=0.05)
+- **Change**: NNUE net trained with lambda=0.05 result blending (same epochs, LR, dataset as current net).
+- **Result**: -3.1 Elo at 1667 games (killed, flat/negative). LOS 32.4%.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Lambda=0.05 didn't help. User plans further training iterations before resubmitting.
+
+## 2026-03-11: TM directional score drop
+- **Change**: Replace abs(scoreDelta) with directional scoreChange. Score drop (<-30 → 1.5x, <-15 → 1.25x time), score improve (>30 → 0.85x time).
+- **Result**: -0.6 Elo at 1686 games (killed, flat). LOS 46.2%. LLR 0.68.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Directional TM doesn't help at these thresholds. The existing abs(scoreDelta) approach may already capture what matters. Could revisit with more aggressive thresholds or combined with node fraction.
+
+## 2026-03-11: Quiet check bonus in move ordering
+- **Change**: +5000 score bonus for quiet moves that give direct check in generateAndScoreQuiets().
+- **Result**: **-10.9 Elo**, H0 accepted. 1682 games. LOS 4.6%.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Checking moves are already handled well by check extension. Boosting them in ordering disrupts history-based quality. Do not revisit.
+
+## 2026-03-11: Counter-move history table
+- **Change**: New [13][64][13][64]int16 history table indexed by [prevPiece][prevTo][piece][to]. Used in quiet/evasion scoring (1x weight), history pruning, and LMR adjustment.
+- **Result**: -7.2 Elo at 1683 games (killed, trending H0). LOS 13.0%. LLR -1.73.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Counter-move history adds noise rather than signal. The existing cont history (ply-1 piece/to) already captures this relationship. The extra [prevPiece][prevTo] indexing fragments the table too much for reliable statistics. Do not revisit without much larger games/deeper searches.
+
+## 2026-03-11: Singular extension depth 10→8
+- **Change**: Lower singular extension depth threshold from depth>=10 to depth>=8.
+- **Result**: **-66.8 Elo** at 100 games (killed immediately). LOS 0.8%.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Catastrophic. The verification search at half of depth 8 (=depth 4) is too expensive and unreliable for the benefit. Singular extensions need to remain at deep nodes where the TT entry is trustworthy. Testing wider singular margin (depth*2 instead of depth*3) next, which fires more often at depth>=10 without the cost of shallower verification.
+
+## 2026-03-11: Check Ext SEE Filter (Killed ~250 games)
+- **Change**: Only extend checks where SEE(check move) >= 0. Filters out checks where the checking piece can be captured for material gain.
+- **Result**: -8.4 Elo at 251 games (killed, trending negative). W66-L72-D113.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: SEE filter is too coarse — many valuable checks involve sacrificial piece placement. The issue isn't material cost but whether the check restricts the king.
+
+## 2026-03-11: NMP +1 Reduction with Rooks in EG (Killed ~252 games)
+- **Change**: In endgame (non-pawn-king pieces < 10), when both sides have rooks, add +1 to NMP reduction. Theory: rook endgames are drawish and NMP can be more aggressive.
+- **Result**: -12 Elo at 252 games (killed, trending negative). W68-L75-D109.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: More aggressive NMP in rook endgames actually hurts — rook endgames have subtle zugzwang-like positions where NMP is already borderline. Existing NMP calibration is correct.
+
+## 2026-03-11: EG Futility 75% Margin (Killed ~244 games)
+- **Change**: Tighten futility pruning margin by 25% in endgame (non-pawn-king < 10): `margin = (100 + lmrDepth*100) * 3/4`.
+- **Result**: -14 Elo at 244 games (killed, trending negative). W69-L74-D101.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Endgame positions are more sensitive to futility errors (single pawn = game-deciding). Tighter margins prune moves that actually matter. Confirms pattern #2: per-move pruning needs slack.
+
+## 2026-03-11: Singular Margin depth*2 (Killed ~254 games)
+- **Change**: Widen singular extension margin from `ttScore - depth*3` to `ttScore - depth*2`, making singular extensions fire more often.
+- **Result**: +3.5 Elo at 254 games (killed, regressed from early +27 to flat). Also retested with `restart=on`: -10 Elo at 122 games, confirming no gain.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Early results were noise. The current singular margin (depth*3) is well-calibrated. Wider margin fires more but many of those extra firings don't identify truly singular moves.
+
+## 2026-03-11: LMR Reduction -1 in EG (Killed ~69 games)
+- **Change**: Reduce LMR reduction by 1 in endgame (non-pawn-king pieces < 10). Theory: EG has higher LMR re-search rate, suggesting reductions too aggressive.
+- **Result**: -25 Elo at 69 games (killed early).
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Notes**: Less LMR in endgame loses Elo. The higher re-search rate in EG is acceptable; reducing less means searching too many moves fully.
+
+## 2026-03-12: History Divisor 5000→7000 (Killed ~100 games, vs PersistHistory baseline)
+- **Change**: Increase LMR history adjustment divisor from 5000 to 7000, dampening history's influence on reductions. Tested on top of persist-history fix (richer history data).
+- **Result**: -27 Elo at ~100 games (killed).
+- **Baseline**: chess-persist-history (history tables persist across searches)
+- **Notes**: Dampening history influence is wrong direction. With persistent history providing richer/higher-magnitude data, the current divisor of 5000 may already be correct or even too high. Don't increase further; consider testing lower (4000 or 3500).
+
 ---
 
 ## Ideas Not Yet Tested
-- **Singular extension depth threshold**: Currently (depth-1)/2. Could try depth/2 or depth/3.
-- **Double singular threshold**: Currently singularBeta - depth*3. Could try depth*2.
-- **Continuation history weight tuning**: 3x validated. Testing 4x to bracket the optimum.
-- **Pawn history weight tuning**: Currently 1x in ordering. Could try 2x.
+- **Singular extension margin widening**: Tested, no gain. Do not revisit.
+- **EG loose check filter** (in progress): Skip check extension when endgame AND king has 4+ escape squares. Data: 98% of EG checks are loose (4+ escapes) with only 7.2% cutoff rate vs 25-35% for tight checks. Targets 2.9M wasted nodes.
+- **Counter-move before killers in EG** (in progress): Data shows counter-move is 23% effective in EG vs 15% MG.
+- **LMR reduction -1 in EG** (in progress): EG has 1.5% LMR re-search rate vs 1.1% MG, suggesting reductions are slightly too aggressive.
+- **Endgame-specific move ordering**: TT move dominates EG cutoffs (51.4% vs 13.9% MG), suggesting other ordering signals need different weights.
+- **Queen check extension filter**: Queen checks are 86% of EG checks but mostly shuffling. Could selectively reduce extension for distant queen checks.
 
 ## Key Patterns Observed
 
@@ -359,3 +477,5 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 15. **Move ordering has massive room for improvement** — pawn history (+22.2) and cont-hist 2x weight (+27.9) combined for ~50 Elo from a single session. New history signals and weight tuning are high-value experiments.
 16. **Eval instability threshold 200 is optimal** — 150 flat, 300 negative. Bracketed.
 17. **Pawn history doesn't transfer to LMR** — useful for ordering (-7.8 Elo in LMR). Ordering signals don't always work for pruning/reduction.
+18. **EG-specific search parameters lose Elo** — Tested EG futility (75% margin), NMP +1 with rooks, check ext SEE filter. All negative. The existing "one size fits all" parameters are well-calibrated across phases. History tables naturally adapt during gradual MG→EG transition.
+19. **Check extension quality varies dramatically by phase** — MG: 35% loose (4+ escapes, 10% cutoff), EG: 98% loose (7% cutoff). 86% of EG checks are queen shuffling. Structural check quality filters > phase-specific parameter tweaks.

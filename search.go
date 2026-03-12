@@ -199,6 +199,50 @@ type SearchInfo struct {
 	pvLen   [MaxPly + 1]int
 }
 
+// resetForSearch clears per-search state while preserving learned move ordering
+// tables (history, killers, counter-moves, continuation history, etc.) that
+// accumulate useful knowledge across searches within the same game.
+func (info *SearchInfo) resetForSearch() {
+	info.Nodes = 0
+	info.Depth = 0
+	info.Score = 0
+	info.PV = nil
+	info.StartTime = time.Time{}
+	info.MaxTime = 0
+	atomic.StoreInt32(&info.Stopped, 0)
+	atomic.StoreInt64(&info.Deadline, 0)
+	atomic.StoreInt64(&info.SoftDeadline, 0)
+
+	// Reset statistics counters
+	info.LMRAttempts = 0
+	info.LMRReSearches = 0
+	info.LMRSavings = 0
+	info.LMPPrunes = 0
+	info.SEEQuietPrunes = 0
+	info.SingularTests = 0
+	info.SingularExtensions = 0
+	info.DoubleSingularExtensions = 0
+	info.NegativeSingularExtensions = 0
+	info.RecaptureExtensions = 0
+	info.PassedPawnExtensions = 0
+	info.TBHits = 0
+
+	// Reset per-ply scratch
+	info.ExcludedMove = [64]Move{}
+	info.StaticEvals = [MaxPly + 1]int{}
+
+	// Reset TM state
+	info.tmPrevBestMove = NoMove
+	info.tmPrevScore = 0
+	info.tmBestMoveStable = 0
+	info.tmHasData = false
+
+	// Reset callbacks and thread references
+	info.OnDepth = nil
+	info.HelperInfos = nil
+	info.ThreadIndex = 0
+}
+
 // storeKiller stores a killer move at the given ply
 func (info *SearchInfo) storeKiller(ply int, move Move) {
 	if ply >= 64 {
@@ -1353,6 +1397,20 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		extension := 0
 		if givesCheck {
 			extension = 1
+			// Skip loose check extensions in endgame: checks where the king
+			// has 4+ escape squares are mostly futile shuffling (98% of EG checks,
+			// only 7.2% cutoff rate vs 25-35% for tight checks).
+			allPieces := (b.Occupied[White] | b.Occupied[Black]) &^
+				b.Pieces[WhitePawn] &^ b.Pieces[BlackPawn] &^
+				b.Pieces[WhiteKing] &^ b.Pieces[BlackKing]
+			if allPieces.Count() < 10 {
+				checkedColor := b.SideToMove
+				kingSq := b.Pieces[pieceOf(WhiteKing, checkedColor)].LSB()
+				escapes := (KingAttacks[kingSq] &^ b.Occupied[checkedColor]).Count()
+				if escapes >= 4 {
+					extension = 0
+				}
+			}
 		}
 		if singularExtension != 0 && extension == 0 {
 			extension = singularExtension

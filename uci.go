@@ -27,6 +27,7 @@ type UCIEngine struct {
 	threads      int // number of search threads (Lazy SMP)
 	moveOverhead int // ms safety margin for UCI communication + OS scheduling
 	searchInfo   *SearchInfo
+	persistInfo  SearchInfo // persistent SearchInfo: history, killers, counter-moves survive across searches
 	searchMu     sync.Mutex
 	searchWg     sync.WaitGroup
 	input        *bufio.Scanner
@@ -146,6 +147,8 @@ func (e *UCIEngine) cmdNewGame() {
 	e.cmdStop()
 	e.tt.Clear()
 	e.board.Reset()
+	// Clear all persistent search state (history, killers, counter-moves, etc.)
+	e.persistInfo = SearchInfo{}
 	// Recompute NNUE accumulator after board reset
 	if e.nnueNet != nil && e.board.NNUENet != nil && e.board.NNUEAcc != nil {
 		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
@@ -287,11 +290,12 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 
 	e.searchMu.Lock()
 	now := time.Now()
-	info := &SearchInfo{
-		StartTime: now,
-		MaxTime:   time.Duration(hardMS) * time.Millisecond,
-		TT:        e.tt,
-	}
+	// Reuse persistent SearchInfo to preserve history tables across searches
+	info := &e.persistInfo
+	info.resetForSearch()
+	info.StartTime = now
+	info.MaxTime = time.Duration(hardMS) * time.Millisecond
+	info.TT = e.tt
 	if hardMS > 0 {
 		atomic.StoreInt64(&info.Deadline, now.Add(time.Duration(hardMS)*time.Millisecond).UnixNano())
 	}
