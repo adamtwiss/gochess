@@ -808,3 +808,9 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: 0.0 Elo (49.9%, 213-215-323, 751 games). Correctness fix, confirmed non-regression.
 - **Baseline**: 04796f7 (simplified extensions)
 - **Notes**: Bug fix — evasion ordering in QS was unordered for quiet moves. No strength gain because QS evasion sets are tiny (2-8 moves) and beta cutoffs are rare when in check during QS. Merged as correctness improvement.
+
+## 2026-03-12: CaptHist Scaling /16 in Good Captures (MERGED)
+- **Change**: Scale capture history by /16 in good capture scoring (`mvvLva + captHistScore/16` instead of `mvvLva + captHistScore`). CaptHist range [-16384, +16384] was dominating MVV-LVA range [~0, 9990], causing misordering.
+- **Result**: +5 Elo (50.7%, 463-441-642, 1546 games). Stable positive for 1000+ games.
+- **Baseline**: 04796f7 (simplified extensions)
+- **Notes**: Correctness fix — MVV-LVA should be primary signal for capture ordering, captHist acts as tiebreaker. Before this fix, a PxQ with bad captHist could sort below PxP with good captHist. Bad captures still scored by raw captHist (no MVV-LVA there).

@@ -242,7 +242,7 @@ func (mp *MovePicker) generateAndScoreCaptures() {
 			mp.badScores = append(mp.badScores, mp.captHistScore(m))
 		} else {
 			mp.moves[j] = m
-			mp.scores = append(mp.scores, mp.mvvLva(m)+mp.captHistScore(m))
+			mp.scores = append(mp.scores, mp.mvvLva(m)+mp.captHistScore(m)/16)
 			j++
 		}
 	}
