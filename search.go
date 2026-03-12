@@ -1749,7 +1749,20 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 
 	// When in check, generate all evasion moves (captures + blocks + king moves)
 	if qsInCheck {
-		info.pickers[qsIdx].InitEvasion(b, ttMove, 0, checkers, pinned, nil, nil, &info.CaptHistory, nil)
+		// Compute continuation history pointer for evasion ordering
+		var qsContHistPtr *[13][64]int16
+		if len(b.UndoStack) > 0 {
+			prevUndo := b.UndoStack[len(b.UndoStack)-1]
+			pm := prevUndo.Move
+			if pm != NoMove {
+				prevPiece := b.Squares[pm.To()]
+				if prevPiece != Empty {
+					qsContHistPtr = &info.ContHistory[prevPiece][pm.To()]
+				}
+			}
+		}
+		pawnHistPtr := &info.PawnHistory[b.PawnHashKey%pawnHistSize]
+		info.pickers[qsIdx].InitEvasion(b, ttMove, 0, checkers, pinned, &info.History, qsContHistPtr, &info.CaptHistory, pawnHistPtr)
 		picker := &info.pickers[qsIdx]
 		bestScore := -Infinity
 		bestMove := NoMove

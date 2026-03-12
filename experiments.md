@@ -802,3 +802,9 @@ Structured record of all search/eval tuning experiments. Each entry captures the
   - Recapture ext: -18.2 Elo when disabled, essential at full ply
   - Recap 14/16: -49.8 Elo, cannot reduce even slightly
   - Recap 12/16: -5.6 Elo trending, cannot reduce
+
+## 2026-03-12: QS Evasion History Ordering (MERGED)
+- **Change**: Pass history, contHist, and pawnHist pointers to QS evasion move picker instead of nil. Previously quiet evasions in QS were scored 0 (random order).
+- **Result**: 0.0 Elo (49.9%, 213-215-323, 751 games). Correctness fix, confirmed non-regression.
+- **Baseline**: 04796f7 (simplified extensions)
+- **Notes**: Bug fix — evasion ordering in QS was unordered for quiet moves. No strength gain because QS evasion sets are tiny (2-8 moves) and beta cutoffs are rare when in check during QS. Merged as correctness improvement.
