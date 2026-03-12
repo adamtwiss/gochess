@@ -1,11 +1,545 @@
 # NextUp
 * Review ARM performance on Macbook. On jupiter (A55) NEON is much slower - but Claude feels that's because it's 
-  a 'phone CPU rather than a compute one' (which is prob fair).>
-* Int8 SIMD - potentially 10% NPS speed up. DONE  Result 12% speedup!!!!
-* binpack vs .nnbin. DONE
-* Ensure Texel training uses new bin files.
-* Commit our released .net file to our repo.
+  a 'phone CPU rather than a compute one' (which is prob fair)
 * Fully deprecate/remove the .dat format for selfplay
+* Test rescoring (seems to work)
+* Bit gauntlet/RR versus other engines. See where we're at, and maybe find some new sparring partners?
+* Finish web experiments/testing framework - get a 2nd machine? Is the git branch the way to go?
+* Move models to git LFS? How much LFS space do we have?
+* Check on the fact if we've actually disabled all extensions (should we propogate fractional depth)
+
+Key commands:
+
+* Titan Self play cmd:  nohup ./tuner selfplay -games 1000000 -depth 10 -concurrency 32 -output /training/d10/training-titan-20260311.bin -syzy
+gy /tablebases &
+
+
+# Work Ideas:
+
+
+## Experiments.md Analysis
+
+
+ Excellent analysis. Here are the highlights:
+
+  Top 5 Experiment Ideas (by expected value)
+
+  1. Remove PP extensions entirely — Ablation confirmed 0.0 Elo. Saves computation on every quiet pawn move. Low risk.
+  2. Singular-like LMR boost (no verification search) — Instead of expensive verification search, just increase LMR reduction for non-TT moves
+  when ttHit && flag != Upper && depth >= depth-3. Gets the information without the cost. This is the most exciting idea.
+  3. QS evasion with history ordering — Currently passes nil, nil for history at search.go:1801. QS evasions are common; better ordering = faster
+  resolution. Similar to the QS TT move win (+7.1).
+  4. Material-key correction history — Second correction table indexed by material signature. Proven in Stockfish.
+  5. Continuous LMR for captures — Replace binary captHistVal < 0 gate with continuous reduction -= captHistVal/5000. Mirrors the successful quiet
+   LMR approach.
+
+  Key Bug Found
+
+  QS evasion ordering is broken — search.go:1801 passes nil for history and contHist to the evasion picker. This means QS evasions only use
+  captHist, missing significant ordering signal. This is exactly the kind of "infrastructure correctness" issue that delivered +19.2 Elo with
+  persist-history.
+
+  Meta-Pattern Confirmed
+
+  The analysis independently confirms what we observed: waste removal > parameter tuning > new features. All 4 wins today were waste removal. The
+  50+ parameter tweaks nearly all failed. The next Elo will come from structural changes.
+
+  I'd suggest we queue up the QS evasion history fix and the singular-LMR boost as the next experiments once current slots free up. The QS evasion
+   fix is especially appealing — it's a genuine bug/oversight, not a speculative feature.
+
+
+## Move Ordering optisations: 
+
+  Move Generation & Ordering: Improvement Opportunities
+
+  1. 2-ply Continuation History (contHistPtr2) Not Passed to MovePicker
+
+  This is likely your biggest low-hanging fruit. You compute contHistPtr2 (search.go:1176-1184) and use it in:
+  - LMR reduction tuning (line 1510-1512)
+  - History-based pruning (line 1315-1316)
+
+  But you never pass it to the MovePicker for quiet move scoring (movepicker.go:266-277). The picker only uses contHistPtr (1-ply). Adding
+  contHistPtr2 to quiet scoring would improve move ordering at very low cost. Stockfish uses multiple continuation history plies for ordering.
+
+  Concrete change: Add a contHist2 field to MovePicker, pass it in Init(), and add its contribution in generateAndScoreQuiets() and
+  generateAndScoreEvasions() (weight it ~1x vs 3x for contHist1).
+
+  2. Quiescence Evasion Search Has No History Ordering
+
+  At line 1790, QS evasions pass nil for both history and contHist:
+  info.pickers[qsIdx].InitEvasion(b, ttMove, 0, checkers, pinned, nil, nil, &info.CaptHistory, nil)
+
+  This means evasion moves in QS are ordered purely by capture/promotion bonuses, with all quiet evasions scored 0 (random order). Since QS
+  evasions are fully searched (no pruning), bad ordering wastes a lot of nodes. Passing &info.History and contHist pointers here is free and could
+   measurably help.
+
+  3. QS Duplicate SEE Work
+
+  In quiescence (lines 1862-1887), the InitQuiescence picker calls SEESign during generateAndScoreCaptures() to partition good/bad captures
+  (movepicker.go:240). Then the search loop calls SEESign again at line 1885 on every move that survived the picker. The second SEE call is
+  redundant for moves from the stageGoodCaptures phase — they already passed SEE >= 0. Only bad captures (which QS skips entirely since
+  skipQuiet=true goes straight to stageBadCaptures... wait, actually looking more carefully:
+
+  The QS picker with skipQuiet=true goes stageGoodCaptures → stageBadCaptures. So bad captures DO get returned. The line-1885 SEE check filters
+  those bad captures. But the good captures get SEE-checked twice. You could avoid this by either:
+  - Not doing the SEE partition in QS mode (just score by MVV-LVA + captHist, let the search-side SEE filter)
+  - Or skipping the search-side SEE for moves from the good captures stage (add a flag)
+
+  This is a minor NPS gain, not a strength change.
+
+  4. No Promotion Bonus in Quiet Move Scoring
+
+  Queen promotions from GenerateQuietsAppend won't appear (those are in captures), but castling moves go through quiet scoring with just history
+  score. Consider whether castling moves deserve a small bonus since they're almost always worth trying early.
+
+  5. Evasion Ordering: Missing Killer/Counter-Move Integration
+
+  In generateAndScoreEvasions() (movepicker.go:287-328), evasion moves are scored by capture/history but killers and counter-moves aren't given
+  any bonus. The evasion path in the main search doesn't try killers separately either — it generates all evasions at once and scores them. If the
+   killer happens to be a legal evasion, it gets its history score but no killer bonus. Giving killer evasions a scoring bonus (e.g., +5000) would
+   help order them higher.
+
+  6. captHistScore Scaling in Good Captures
+
+  In generateAndScoreCaptures() line 245:
+  mp.scores = append(mp.scores, mp.mvvLva(m)+mp.captHistScore(m))
+
+  MVV-LVA returns values like 900-1000 (queen captures). CaptHistory values are in [-16384, +16384]. This means captHist completely dominates
+  MVV-LVA, which defeats the purpose of MVV-LVA as a primary signal. Most engines scale captHist down (e.g., /16 or /32) so it acts as a
+  tiebreaker within similar MVV-LVA buckets rather than overriding them.
+
+  7. History Divisor for LMR Could Include Pawn History
+
+  Your LMR history adjustment (line 1506-1513) includes History + contHist + contHist2, but not pawnHist. Since you use pawnHist for ordering and
+  pruning, including it in the LMR formula would make the reduction more consistent with the ordering.
+
+  8. No SkipQuiets Signal from Search to Picker
+
+  Some engines (Stockfish) tell the move picker to skip quiet moves entirely when the search knows it will prune all remaining quiets (e.g., at
+  very shallow depths after LMP threshold is reached). Currently your LMP check is per-move after MakeMove (expensive). You could set
+  picker.skipQuiet = true when you know moveCount > lmpLimit to avoid generating quiets at all.
+
+  ---
+  Recommended Priority Order (by expected Elo impact)
+
+  1. CaptHist scaling in good capture scoring — likely a bug causing misordering
+  2. contHistPtr2 in MovePicker — proven technique, easy to add
+  3. History in QS evasions — free ordering improvement
+  4. Killer bonus in evasion scoring — small but principled
+  5. SkipQuiets after LMP — NPS gain at shallow depths
+  6. PawnHist in LMR formula — consistency improvement
+
+  Would you like me to implement any of these? I'd suggest starting with #1 (captHist scaling fix) since it's the most likely to be a misordering
+  bug, then #2 (contHistPtr2 in picker).
+
+(Verification of above)
+
+● Good, I've now verified all the claims. Here's my assessment:
+
+  1. CaptHist scaling in good captures — AGREE, this is likely a real bug
+
+  Line 245: mp.mvvLva(m) + mp.captHistScore(m) — MVV-LVA returns at most ~9990 (Queen x Pawn), but captHist ranges [-16384, +16384]. CaptHist
+  completely dominates MVV-LVA. A PxQ with bad captHist could sort below a PxP with good captHist. This defeats the purpose of MVV-LVA. Scaling
+  captHist by /16 or /32 would fix this. Top priority for SPRT.
+
+  2. contHistPtr2 not passed to MovePicker — AGREE, real omission
+
+  contHistPtr2 is computed (line 1176-1184) and used in LMR (line 1472) and history pruning (line 1317), but never passed to Init() or
+  InitEvasion(). The MovePicker struct has no field for it. Adding it to quiet scoring at ~1x weight (vs 3x for contHist1) is a proven Stockfish
+  technique. Easy change.
+
+  3. QS evasion history — AGREE, confirmed bug
+
+  Line 1752: InitEvasion(b, ttMove, 0, checkers, pinned, nil, nil, &info.CaptHistory, nil) — passes nil for history and contHist. The evasion
+  scorer (movepicker.go:311-316) checks if mp.history != nil and if mp.contHist != nil, so all quiet evasions score 0. Since QS evasions are fully
+   searched with no pruning, this is pure ordering waste. Free fix.
+
+  4. QS duplicate SEE — PARTIALLY AGREE, but minor
+
+  The analysis says good captures get SEE-checked twice. Looking at the code: InitQuiescence calls generateAndScoreCaptures() which does SEESign
+  at line 240 to partition good/bad. Then QS at line 1847 calls SEESign again on every move. For good captures from stageGoodCaptures, the second
+  SEE is redundant. However — QS also returns bad captures via stageBadCaptures (line 144: mp.stage = stageBadCaptures), so the search-side SEE
+  catches those. The fix would be to either not return bad captures in QS mode, or skip SEE for good captures. It's a minor NPS optimization, not
+  a strength change. Low priority.
+
+  5. Killer bonus in evasion scoring — DISAGREE somewhat
+
+  The analysis says killers aren't given a bonus in evasions. Looking at generateAndScoreEvasions() (line 287-328), this is true — but the main
+  search evasion path at line 1192-1193 calls InitEvasion without passing killers at all. Since evasion moves are a small set (usually 2-8 moves),
+   the sorting overhead is minimal and the killer may not even be a legal evasion. Very low priority.
+
+  6. CaptHist scaling — see #1 above, same issue
+
+  7. PawnHist in LMR formula — DISAGREE
+
+  The LMR history adjustment (line 1468-1475) uses mainHist + contHist + contHist2/2. Adding pawnHist would increase the total magnitude,
+  requiring retuning the /5000 divisor. It's a consistency argument but not clearly better — pawnHist is position-dependent (pawn structure
+  changes), while LMR tuning should reflect move-specific quality. Speculative, not proven.
+
+  8. SkipQuiets after LMP — AGREE in principle, low priority
+
+  This would avoid generating quiet moves when we know they'll all be pruned by LMP. NPS gain only. Stockfish does this. Worth trying after the
+  higher-priority items.
+
+  ---
+  My recommended SPRT priority:
+
+  ┌─────┬───────────────────────────────────────────┬──────────────────────────────────────────────────────────────┐
+  │  #  │                  Change                   │                          Rationale                           │
+  ├─────┼───────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+  │ 1   │ CaptHist scaling /16 in good captures     │ Likely bug — captHist dominates MVV-LVA, causing misordering │
+  ├─────┼───────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+  │ 2   │ QS evasion history                        │ Free fix — nil pointers mean random quiet evasion order      │
+  ├─────┼───────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+  │ 3   │ contHistPtr2 in MovePicker                │ Proven technique, easy to add at 1x weight                   │
+  ├─────┼───────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+  │ 4   │ QS skip bad captures (or skip double SEE) │ Minor NPS, clean fix                                         │
+  └─────┴───────────────────────────────────────────┴──────────────────────────────────────────────────────────────┘
+
+  Items 5-8 are speculative/low-impact. Want me to set up 4 worktrees for the top items and launch parallel SPRTs?
+
+
+## Search Analysis
+  ---
+  Search Code: Strength Improvement Opportunities
+
+  Pruning & Reductions
+
+  1. contHistPtr2 Not Used in Quiet History Updates on Beta Cutoff
+
+  At lines 1568-1572, when a quiet move causes a beta cutoff, you update contHistPtr but not contHistPtr2. Similarly, the penalty loop (1582-1586)
+   only penalizes contHistPtr. Since contHistPtr2 represents "what worked after our own previous move," updating it on cutoffs/penalties would
+  give it more training signal and strengthen its use in ordering and LMR.
+
+  2. No Check Extension Anymore — Consider Giving-Check Bonus in LMR Instead
+
+  You removed check extensions (harmful, -11.2 Elo). But you still skip LMR for checking moves (!givesCheck at line 1436). Consider instead
+  allowing LMR but reducing less for checks (e.g., reduction--), rather than the binary skip. This lets you search checks at reduced depth instead
+   of full depth, saving nodes on futile checks while still exploring promising ones.
+
+  3. Futility Pruning Happens After MakeMove
+
+  Futility pruning (lines 1346-1372) runs after MakeMove, which is wasteful since it does significant board-state work just to potentially skip
+  the move. The givesCheck computation is the reason it's post-MakeMove, but you could split it: do the static-eval futility check before MakeMove
+   for non-checking moves (most moves), and only defer the check for moves that might give check. You already have checkSq and discoverers
+  precomputed — you can detect most non-checking moves before MakeMove.
+
+  4. LMP Also After MakeMove
+
+  Same issue as futility — LMP (lines 1374-1388) is after MakeMove to exempt checking moves. But you could detect checks before MakeMove using
+  checkSq/discoverers for most moves (except EP/castling), and do LMP pre-MakeMove for the vast majority.
+
+  5. ProbCut Doesn't Use MovePicker
+
+  ProbCut (lines 1128-1152) generates all captures with GenerateCapturesAppend, does SEE filtering, then searches in generation order. It doesn't
+  use MVV-LVA or capture history ordering. Better-ordered ProbCut captures would cut faster, especially in positions with many captures. Using a
+  quiescence-style MovePicker here (or at least sorting by MVV-LVA) could reduce the number of ProbCut searches needed.
+
+  6. Aspiration Window Fail-High Strategy
+
+  On fail-high (line 484-493), you set alpha = beta then widen beta = score + delta. This is non-standard — most engines keep alpha where it was
+  and only widen beta. Setting alpha = beta narrows the window asymmetrically, which can cause extra re-searches. The standard approach is:
+  alpha = (alpha + beta) / 2  // or just keep alpha unchanged
+  beta = score + delta
+
+  7. No TT Move Bonus for Captures in QS
+
+  The QS move picker (InitQuiescence) takes a TT move but doesn't order captures by history except through captHistScore. In QS positions where
+  the TT move is a non-capture (and thus skipped), there's no issue. But when the TT move is a capture, it's tried first correctly. The one miss
+  is: for QS evasions (line 1790), you pass nil for history/contHist, so quiet evasions are effectively unordered. (Same point as the movepicker
+  analysis.)
+
+  8. historyBonus Cap at 1200 May Be Too Low
+
+  historyBonus(depth) = min(depth*depth, 1200) caps at depth ~34 (34*34=1156). But most impactful cutoffs happen at depths 6-15 where depth*depth
+  = 36-225. The gravity denominator is 16384, so the effective "saturation point" is about 16384/1200 ≈ 14 updates to saturate. This might be
+  fine, but engines like Stockfish use larger bonuses and divisors. A tuning experiment with different caps (e.g., 1600 or 2000) could be
+  worthwhile.
+
+  9. Null Move Verification Search Window
+
+  The verification search (line 1090) uses [beta-1, beta] which is correct, but it searches at the same reduced depth depth-1-R. Some engines use
+  a less aggressive depth for verification (e.g., depth-R without the -1). This is a small tuning parameter.
+
+  10. No Fail-Low History Updates
+
+  When a node fails low (all moves searched, bestScore <= alphaOrig), you don't update history at all. Some engines apply a small penalty to all
+  quiets tried at fail-low nodes, on the theory that none of these moves were good enough. This is a known technique but must be done carefully to
+   avoid noise.
+
+  11. IIR Only Reduces by 1
+
+  Internal Iterative Reduction (line 1056) reduces by 1 ply when there's no TT move. Some engines reduce by 2 at very high depths (e.g., depth >=
+  10). The cost of searching without a TT move is high, and a stronger reduction might be net positive at depth.
+
+  12. No Multi-Cut Pruning
+
+  After null-move pruning fails, some engines try a "multi-cut" approach: if multiple moves in the early ordering produce a beta cutoff at reduced
+   depth, prune the node. This is a well-known technique that catches positions where the eval is genuinely above beta but null-move was
+  insufficient (e.g., zugzwang-adjacent positions).
+
+  History / Learning
+
+  13. Pawn History Not Updated for Penalized Quiets in contHistPtr2
+
+  The penalty loop (lines 1578-1590) updates history, contHist, and pawnHist for failed quiets. But it doesn't update contHistPtr2. As noted in
+  #1, this is a missed learning signal.
+
+  14. Correction History Update Only on bestScore > alphaOrig
+
+  Line 1672 requires bestScore > alphaOrig for correction history updates. This means fail-low nodes (which provide upper-bound information) are
+  excluded. While this avoids noise from uncertain scores, it also means the correction history only learns from positions where the engine found
+  a good move. Testing with fail-low updates (perhaps weighted lower) could be beneficial.
+
+  ---
+  Recommended Priority (by expected Elo)
+
+  1. contHistPtr2 updates on cutoffs/penalties (#1, #13) — cheap, completes the learning loop
+  2. Pre-MakeMove futility/LMP (#3, #4) — meaningful NPS gain
+  3. ProbCut move ordering (#5) — better-ordered ProbCut cuts sooner
+  4. LMR for checks instead of skip (#2) — reclaims some of the check-extension benefit safely
+  5. Aspiration fail-high fix (#6) — may reduce re-search rate
+  6. historyBonus tuning (#8) — low-risk parameter experiment
+  7. IIR depth >= 10 reduce by 2 (#11) — easy experiment
+
+
+## Response to above
+
+
+
+  #1. contHistPtr2 updates on cutoffs/penalties — AGREE, good idea
+
+  Confirmed: lines 1568-1572 update contHistPtr but not contHistPtr2. Same for the penalty loop (1582-1586). This is a real omission — we compute
+  contHistPtr2, use it for LMR and pruning decisions, but never feed it learning signal from cutoffs. Cheap fix, completes the learning loop.
+  Worth SPRT testing.
+
+  #2. LMR for checks instead of full-skip — AGREE, interesting
+
+  Line 1436: !givesCheck completely skips LMR for checking moves. Since we proved check extensions were harmful (-11.2 Elo), the opposite approach
+   — allowing LMR but reducing less — is worth trying. A reduction-- for checks rather than reduction = 0 would save nodes on futile checks while
+  preserving tactical ones. Worth SPRT testing.
+
+  #3. Pre-MakeMove futility — DISAGREE for now
+
+  The analysis is correct that futility runs post-MakeMove (line 1346), but the reason is sound: we need givesCheck to avoid pruning checking
+  moves. While we do have checkSq and discoverers pre-MakeMove, using them requires computing the piece type for promotion moves, handling
+  EP/castling edge cases, etc. The complexity is significant and the NPS gain is modest (futility only fires at depth <= 8, and
+  MakeMove/UnmakeMove is fast with incremental updates). Low priority, high risk of bugs.
+
+  #4. Pre-MakeMove LMP — same as #3, DISAGREE for now
+
+  Same reasoning. LMP is depth <= 8 only. The NPS gain from avoiding MakeMove at shallow depths is small relative to the bug risk. Low priority.
+
+  #5. ProbCut move ordering — AGREE, easy win
+
+  Confirmed: lines 1128-1152 iterate captures in generation order after SEE filtering. No MVV-LVA, no captHist. Since ProbCut does a full negamax
+  search per capture, ordering matters — trying the best capture first cuts sooner. Even a simple MVV-LVA sort would help. Worth SPRT testing.
+
+  #6. Aspiration fail-high — WRONG
+
+  Looking at lines 484-493: alpha = beta; beta = score + delta. The analysis claims this is non-standard. But look at the fail-low side (475-477):
+   beta = (alpha+beta)/2; alpha = score - delta. It's symmetric — fail-low narrows beta and widens alpha, fail-high narrows alpha and widens beta.
+   Setting alpha = beta on fail-high is actually fine because we know the true score is >= beta, so we can safely move alpha up to the old beta.
+  This is a valid implementation. Not a bug, skip.
+
+  #7. QS evasion ordering — DUPLICATE
+
+  Already covered by our QSEvHist experiment running now.
+
+  #8. historyBonus cap tuning — AGREE, easy experiment
+
+  historyBonus(depth) = min(depth*depth, 1200) — testing 1600 or 2000 is a simple one-line change. Low risk. Queue for next batch.
+
+  #9. Null move verification depth — SKIP
+
+  Very minor tuning parameter. We already tested NMP extensively and it's well-calibrated.
+
+  #10. Fail-low history updates — AGREE in principle
+
+  Known technique but must be done carefully. Penalizing all quiets at fail-low nodes can add noise since the fail-low might be because the
+  position is genuinely bad, not because the moves are bad. Queue for later, needs careful implementation.
+
+  #11. IIR reduce by 2 at depth >= 10 — AGREE, easy experiment
+
+  One-line change: if depth >= 10 { depth -= 2 } else { depth-- }. Low risk. Queue for next batch.
+
+  #12. Multi-cut — SKIP for now
+
+  Significant implementation complexity, and our NMP is strong. Multi-cut is a well-known technique but adds ~30-40 lines and is hard to get
+  right. Backlog.
+
+  #13. contHistPtr2 in penalty loop — same as #1, AGREE
+
+  #14. Correction history fail-low updates — AGREE, worth trying
+
+  Testing with weighted fail-low updates could be beneficial. Needs care to avoid noise. Queue for later.
+
+  ---
+  Summary: What's actionable now vs. later
+
+  ┌────────────┬────────────────────────────────────────────┬─────────────────┬───────────────────────────────┐
+  │  Priority  │                    Idea                    │     Effort      │             Notes             │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Now        │ #1/#13 contHist2 updates on cutoff/penalty │ 1-line each     │ Completes learning loop       │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Now        │ #2 LMR reduction-- for checks              │ 1-line          │ Reclaims check benefit safely │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Now        │ #5 ProbCut MVV-LVA ordering                │ ~10 lines       │ Better cut ordering           │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Next batch │ #8 historyBonus cap 1600/2000              │ 1-line          │ Easy tuning                   │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Next batch │ #11 IIR reduce 2 at depth>=10              │ 1-line          │ Easy experiment               │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Later      │ #10 Fail-low history penalties             │ ~10 lines       │ Needs careful impl            │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Later      │ #14 CorrHist fail-low updates              │ ~5 lines        │ Risk of noise                 │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Skip       │ #3/#4 Pre-MakeMove futility/LMP            │ High complexity │ Small NPS, bug-prone          │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Skip       │ #6 Aspiration fail-high                    │ Not a bug       │ Current impl is valid         │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Skip       │ #9 NMP verification depth                  │ Marginal        │ NMP well-calibrated           │
+  ├────────────┼────────────────────────────────────────────┼─────────────────┼───────────────────────────────┤
+  │ Skip       │ #12 Multi-cut                              │ Complex         │ Backlog                       │
+  └────────────┴────────────────────────────────────────────┴─────────────────┴───────────────────────────────┘
+
+  The top 3 (contHist2 updates, LMR-for-checks, ProbCut ordering) could be our next batch once the current 4 experiments conclude. Want me to save
+   the backlog items (#8, #11, #10, #14) to memory?
+
+
+
+## Extensions
+
+  Problem 1: Extensions don't stack. If the TT move gives check AND is singular, we only get 1 ply (from check), wasting the singular verification
+   search. In Stockfish, extensions accumulate — a singular check-giving move would get +2.
+
+  Problem 2: No fractional extensions. Everything is integer plies. Modern engines use fractional extensions (e.g. Stockfish uses 1/16 ply units)
+  so that many small extensions can gradually deepen critical lines without the search explosion of full-ply extensions.
+
+  Problem 3: Singular extension was never ablation-tested. We don't know if it's even a net positive! The verification search at (depth-1)/2 is
+  expensive. If the signal-to-noise ratio is poor, we might be paying more in verification cost than we gain from the extensions.
+
+  Problem 4: The extension == 0 guard on recapture/passed pawn means these only fire when nothing else extends. A singular recapture or a singular
+   passed pawn push gets no extra benefit.
+
+  What would you like to tackle first? I'd suggest:
+  1. Ablation test: disable singular extensions entirely to measure their actual contribution
+  2. Additive extensions: let singular + check stack (capped at 2)
+  3. Longer term: fractional extension infrastructure
+
+## Some other ideas
+
+  Singular Extension — the depth >= 10 problem:
+
+  The issue is that depth >= 10 is a hard cutoff. At depth 9, we never do singular extensions. The attempt to lower to 8 was catastrophic (-68
+  Elo), but the reason noted was "verification search at half of depth 8 (=depth 4) is too expensive and unreliable."
+
+  But there's a subtler approach: instead of lowering the threshold, we could scale the verification search differently at lower depths. For
+  example:
+  - At depth 10+: current behavior (singularDepth = (depth-1)/2)
+  - At depth 8-9: use a shallower verification (singularDepth = depth/3) so the cost is lower
+
+  Or another angle: the depth-3 requirement on TT entry depth (ttEntry.Depth >= depth-3) could be the bottleneck — at depth 9, we'd need a depth-6
+   TT entry, which is very common. The real issue is the cost of the verification search at (9-1)/2 = 4, which is non-trivial.
+
+  Untested structural ideas from the notes:
+
+  1. Endgame-specific move ordering weights — TT move is 51.4% of EG cutoffs vs 13.9% MG. This means killer/counter/history are much less useful
+  in EG. Could we boost history weight in MG where it matters more?
+  2. Phase-dependent LMR — EG has higher re-search rates, suggesting different LMR calibration needed per phase (but flat EG LMR -1 was tested and
+   failed at -25 Elo)
+  3. Move ordering: main history weight amplification — cont hist went 1x→2x→3x with gains each time. Was main history 2x tested?
+
+
+---
+
+
+  Ready to test (code changes clear):
+  1. Singular extension as additive half-ply — if NoSingular confirms it's wasteful as-is, reimplement with fractional extension infrastructure
+  (1/16 ply units) so singular adds +8/16 ply additively with check/recapture extensions instead of the current mutex system. This is a bigger
+  code change but addresses the root cause.
+  2. Skip singular verification when check extension already applies — quick fix for the wasted-node problem. Only run the expensive verification
+  search when givesCheck is false. Saves ~all the wasted searches we measured.
+
+  Ideas discussed but not yet designed:
+  3. Endgame-specific move ordering weights — from the instrumentation data: TT move is 51.4% of EG cutoffs vs 13.9% MG. Killers/counter/history
+  are weaker in EG. Could try phase-scaled history weights, but previous EG-specific parameter changes have all failed. The EG loose check filter
+  worked because it was structural (skip useless work), not a parameter tweak.
+  4. Queen check extension filter — noted in experiments.md as untested. 86% of EG checks are queen shuffling. The EG loose check filter covers
+  escape squares, but we could also filter distant queen checks specifically.
+
+  Speculative/bigger lift:
+  5. Fractional extension infrastructure — convert all extensions to 1/16 ply. This would let us give partial credit to "almost singular" moves,
+  "almost tight" checks, etc. Modern Stockfish does this. Significant refactor though.
+  6. Threat-based extensions — extend when opponent's last move attacks a high-value piece. Genuinely new feature.
+  7. Better NNUE net — the last net was +28.6 Elo. More training data or architectural tweaks could yield another jump.
+
+  Ideas I'd avoid (parameter space exhausted):
+  - Any more margin/threshold tuning (RFP, futility, LMP, razoring, SEE, etc.)
+  - History divisor/gravity changes
+  - NMP/aspiration/singular margin tweaks
+
+  So realistically, after these 4 finish, the highest-value next steps are:
+  - #2 (skip singular verification when check extends) — quick, addresses a measured problem
+  - #5/#1 (fractional extensions) — bigger but addresses a fundamental limitation
+  - #7 (new NNUE net) — historically our biggest Elo source
+
+  What's your thinking? Any ideas from last night I'm missing?
+
+  ---
+
+
+
+
+Latest model train
+
+* Source: only combined2.bin 18.5M d10 positions. Some earlier ones were pre-titan, and pre-zobrist.
+* Clean build
+ + First 5 epochs at LR=0.001
+
+
+Training NNUE: epochs=5 lr=0.0010 batch=16384 lambda=0.00
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+1         0.02255914      0.01416757      5m26.686s
+2         0.01243009      0.01263581      5m38.378s
+3         0.01097123      0.01143943      5m41.94s
+4         0.00965837      0.01059070      5m37.604s
+5         0.00839774      0.00981129      5m42.232s
+
+Still falling quickly, so doing another 5 at the same rate.
+
+Training NNUE: epochs=5 lr=0.0010 batch=16384 lambda=0.00
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+1         0.00766500      0.00921715      5m16.426s
+2         0.00688493      0.00882596      5m28.612s
+3         0.00644808      0.00839734      5m35.469s
+4         0.00612716      0.00816344      5m35.862s
+5         0.00586852      0.00804489      5m40.896s
+
+Half LR, and do another 5 at lr = 0.0005
+
+Training NNUE: epochs=5 lr=0.0005 batch=16384 lambda=0.00
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+1         0.00534239      0.00758185      5m21.409s
+2         0.00517561      0.00751325      6m28.074s
+3         0.00506455      0.00739588      5m32.987s
+4         0.00496319      0.00734392      5m32.68s
+5         0.00487127      0.00729250      5m40.551s
+
+Reduincg to lr = 0.0002 for a further 5 epochs ... (in progress)
+
+Training NNUE: epochs=5 lr=0.0002 batch=16384 lambda=0.00
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+1         0.00461313      0.00709580      5m13.69s
+2         0.00455387      0.00708551      5m25.042s
+3         0.00451449      0.00702310      5m34.073s
+4         0.00447860      0.00702991      5m34.038s
+5         0.00444489      0.00699622      5m38.576s
+
 
 
 
@@ -39,976 +573,118 @@ Things to revisit.
 More Code Review Comments
 
 
-● A few things stood out that don't fit neatly into the NPS optimization
-  bucket:
-
-  Correctness / Subtle Bugs
-
-  1. IsLegal for non-king in-check falls back to full MakeMove/UnmakeMove
-   (movegen.go:575-579)
-
-  The comment says "rare (~5% of nodes)" but this isn't true — when in
-  check, the evasion generator produces fully legal moves and the search
-  path uses InitEvasion, which skips IsLegal entirely. The only time this
-   inCheck branch in IsLegal executes is when IsLegal is called directly
-  with inCheck=true outside the evasion path. Looking at the search, the
-  non-evasion path passes inCheck=false at search.go:1062. So this branch
-   is effectively dead in the search hot path — it's only reachable via
-  IsLegalSlow or external callers. Not a bug, but the comment is
-  misleading and the code could be simplified.
-
-  2. EnPassant legality check in IsLegal includes NNUE overhead
-
-  When IsLegal does MakeMove/UnmakeMove for EP validation, it pays the
-  full NNUE accumulator push/pop cost. This is wasted work since we only
-  need to know if the king is attacked. EP is rare enough that this
-  doesn't matter for NPS, but it's an example of the MakeMove path being
-  heavier than it needs to be for non-search uses.
-
-  Architectural Observations
-
-  3. Two parallel move generation code paths
-
-  The MoveGen struct (movegen.go:4-44) and its generateAllMoves method
-  produce moves via one code path. GenerateAllMovesAppend uses a
-  completely different path (GenerateCapturesAppend +
-  GenerateQuietsAppend). If a bug is fixed in one, the other won't get
-  it. The MoveGen path is only used by GenerateAllMoves(), which is
-  called from... ProbCut in search (GenerateCaptures wraps
-  GenerateCapturesAppend), tests, and CLI. The old MoveGen struct could
-  be deleted entirely and GenerateAllMoves rewritten as a one-liner
-  wrapping GenerateAllMovesAppend, eliminating ~300 lines and the
-  divergence risk.
-
-  4. The SearchInfo struct serves too many roles
-
-  At 1.4MB, SearchInfo bundles together:
-  - Hot per-node data (Nodes, Stopped, Deadline, StaticEvals,
-  ExcludedMove, Killers)
-  - Warm per-search data (History, CaptHistory, ContHistory)
-  - Cold configuration (TT pointer, OnDepth callback, ThreadIndex,
-  HelperInfos)
-  - Debug stats (LMR/LMP/SEE/Singular counters)
-  - Pre-allocated buffers (pickers, pvTable, pvLen)
-
-  Everything lives in one massive struct, so accessing info.Nodes (offset
-   0) and info.History (offset 368) and info.ContHistory (offset 18,416)
-  all touch different cache lines in the same allocation. The debug stats
-   (LMRAttempts etc.) at offset ~1,414,512 are interleaved between
-  CaptHistory and ExcludedMove — they're only ever written, never read
-  during search, but they force the compiler to keep them in memory.
-
-  Splitting into hot/cold structs (or at minimum, moving the debug
-  counters to the end / behind a build tag) would improve spatial
-  locality for the fields that actually matter per-node.
-
-  5. helperSearch duplication is a maintenance risk
-
-  The code review agents flagged this too. The aspiration window loop and
-   search table clearing are copy-pasted between SearchWithInfo and
-  helperSearch. Any future change to aspiration logic, search
-  initialization, or time management has to be applied in two places.
-  This is the kind of thing that silently diverges over time.
-
-  Strategic Considerations
-
-  6. Endgame scaling is applied inside NNUE eval — may fight the network
-
-  NNUEEvaluateRelative (eval.go:369-398) applies classical endgame scale
-  factors (endgameScale()) on top of the NNUE output. The NNUE network
-  was trained on positions with game results, so it should already have
-  learned drawish patterns like KNN, opposite bishops, etc. Applying
-  classical scaling on top may be double-counting drawishness, causing
-  the engine to undervalue winning positions that the network correctly
-  evaluates as difficult-but-winnable.
-
-  This is a common issue when transitioning from classical to NNUE.
-  Stockfish removed most classical scaling when they adopted NNUE. It
-  might be worth A/B testing with endgame scaling disabled when NNUE is
-  active.
-
-  7. No prefetch for TT probes
-
-  Stockfish issues a __builtin_prefetch for the TT bucket before the
-  position is needed — typically right after MakeMove, so the cache line
-  is loading while other work happens. Go doesn't have a direct prefetch
-  intrinsic, but you can approximate it with an unsafe load-and-discard
-  pattern, or via a small assembly stub. Given that TT probes are one of
-  the most cache-miss-prone operations (random access into a 16-64MB
-  table), prefetching could be worth 2-5% NPS. This would require a small
-   assembly function similar to your NNUE SIMD stubs.
-
-  8. The engine doesn't distinguish "root move ordering" from "interior
-  node ordering"
-
-  At the root, the cost of trying moves in suboptimal order is amplified
-  because every root move triggers a full subtree search. Many engines
-  maintain a separate root move list sorted by score from the previous
-  iteration, rather than relying on the generic MovePicker. Your
-  aspiration window + TT move handles the first move well, but moves 2-N
-  at the root could benefit from previous-iteration score sorting. This
-  is an Elo improvement more than NPS, but worth noting.
-
-  From the Code Review Agents (worth highlighting)
-
-  9. evaluateKingSafety returns (mg, eg) but eg is always 0
-
-  Similarly evaluateEndgameKings returns (mg, eg) with mg always 0. These
-   aren't performance issues but they make the code harder to reason
-  about — a reader sees a two-value return and assumes both matter.
-
-  10. abs() defined in movepicker.go but used from search.go
-
-  Minor, but indicative of organic growth without periodic cleanup. The
-  function should live somewhere shared, or use Go 1.21+ generics if
-  you're on a recent enough version (you're on 1.26+ based on the builtin
-   min usage).
 
   ---
-  The items I'd flag as most strategically important (beyond NPS) are #3
-  (unify movegen paths — reduces future bug surface), #5 (extract shared
-  search init — same reason), and #6 (NNUE endgame scaling — potential
-  Elo gain from removing the double-counting). Everything else is
-  optimization or cleanup.
-
- Summary of non-Eval performance improvements
-
-● Combining all three analyses:
-
-  ┌───────────────┬───────────────────────────────────────┬─────────┐
-  │               │                                       │  Est.   │
-  │   Category    │                 Items                 │  NPS    │
-  │               │                                       │  gain   │
-  ├───────────────┼───────────────────────────────────────┼─────────┤
-  │ Search hot    │ TT stats atomics, timer/stopped       │         │
-  │ path          │ checks, defer CheckData, ProbCut      │ 5-8%    │
-  │               │ alloc+reuse pinned                    │         │
-  ├───────────────┼───────────────────────────────────────┼─────────┤
-  │ Search data   │ ContHistory halving (piece-type       │         │
-  │ structures    │ indexing), repetition hash ring       │ 3-7%    │
-  │               │ buffer, don't zero-clear ContHistory  │         │
-  ├───────────────┼───────────────────────────────────────┼─────────┤
-  │               │ QSearch TT move, SEESign for capture  │         │
-  │ Move ordering │ partition, avoid double-SEE in        │ 5-10%*  │
-  │               │ qsearch                               │         │
-  ├───────────────┼───────────────────────────────────────┼─────────┤
-  │ Board         │ Castling rights table, packed MG/EG   │ 2-4%    │
-  │ mechanics     │ PST, pieceColor lookup                │         │
-  ├───────────────┼───────────────────────────────────────┼─────────┤
-  │ Move          │ Shrink Magic struct, index-based      │ 1-2%    │
-  │ generation    │ writes vs append                      │         │
-  └───────────────┴───────────────────────────────────────┴─────────┘
-
-  * Move ordering gains are partly NPS (less work per node) and partly
-  node reduction (better ordering = more cutoffs = fewer nodes searched).
-   The node reduction effect typically dominates and can be worth more
-  than the NPS numbers suggest.
-
-  Conservative aggregate: 15-25% effective throughput improvement (NPS +
-  node efficiency combined).
-
-  The breakdown by effort:
-
-  Quick wins (1-2 hours each, ~8-12% combined):
-  - Remove TT stats atomics from hot path
-  - Gate Stopped check inside timer check
-  - Defer CheckData past pruning
-  - Castling rights lookup table
-  - QSearch TT move ordering
-  - Use SEESign for capture partitioning
-
-  Medium effort (half-day each, ~8-12% combined):
-  - ContHistory piece-type indexing (halve 1.3MB table)
-  - Packed MG/EG PST scores   # ADAM: need to think about human readability and Texel tuning
-  - ProbCut stack buffer + reuse pinned
-  - Avoid double-SEE in qsearch
-
-  Larger refactors (exploratory):
-  - Repetition hash ring buffer
-  - Fixed-shift magics
-  - Second continuation history table (Elo gain, not NPS)
-
-  The quick wins alone should be measurable in a benchmark. Want me to
-  start implementing any of these?
-
-
-  Board Representation & Move Mechanics — NPS Analysis
-
-  1. Magic Struct is 32 bytes — Cache-Unfriendly for Lookups (~2-3% NPS)
-
-  Each Magic struct is 32 bytes (4 × 8-byte fields: Mask, Magic, Shift,
-  Offset). The RookMagics[64] and BishopMagics[64] arrays are 2KB each. A
-   sliding piece attack lookup (RookAttacksBB at attacks.go:384-388)
-  does:
-
-  m := &RookMagics[sq]                              // load 32 bytes
-  index := (uint64(occupied & m.Mask) * m.Magic) >> m.Shift  // use 3 of
-  4 fields
-  return RookAttacks[m.Offset + index]              // use 4th field
-
-  This touches all 32 bytes, but only Mask, Magic, Shift are needed for
-  the index computation, and Offset for the final lookup. Since Magic is
-  32 bytes, two Magic structs share a cache line — fine for sequential
-  access, but during search, square access is essentially random.
-
-  Optimization (Stockfish-style "fancy" magics): Stockfish stores magic
-  data as just 3 fields: magic, mask, and a direct pointer to the
-  sub-table instead of offset + index. This eliminates the addition and
-  the Offset field. More importantly, Shift can be folded into the magic
-  number by using "fixed-shift" magics (all rooks use shift=52, all
-  bishops use shift=55), eliminating the field entirely. This gets the
-  struct to 24 bytes (3 × uint64), with two fitting perfectly in one
-  cache line.
-
-  Even more aggressive: the Shift value is constant per piece type in
-  many implementations. If you use fixed-shift magics, you can drop Shift
-   entirely and hardcode it, bringing the struct to 16 bytes (Mask +
-  Magic), with Offset replaced by a pointer stored separately. Four
-  structs per cache line.
-
-  2. Castling Rights Update Uses Two Switch Statements (~1% NPS)
-
-  makemove.go:140-163: Every MakeMove executes two switch statements on
-  from and to squares, even when 95%+ of moves don't affect castling
-  rights. The Go compiler typically compiles this as a series of
-  comparisons (not a jump table, since the cases are sparse constants).
-
-  Fix — lookup table: A [64]CastlingRights table indexed by square,
-  containing the rights to preserve (mask AND'd with current rights):
-
-  var castlingRightsMask [64]CastlingRights // initialized to AllCastling
-   everywhere
-  // except: castlingRightsMask[e1] = ^(WhiteKingside|WhiteQueenside),
-  etc.
-
-  Then the entire switch block becomes:
-  b.Castling &= castlingRightsMask[from] & castlingRightsMask[to]
-
-  One table lookup (always L1 cache — 64 bytes = 1 cache line), two AND
-  operations. This is what Stockfish does. Eliminates ~10 branches from
-  every MakeMove.
-
-  3. piece.Color() Uses a Branch — Could Be Arithmetic (~0.5-1% NPS)
-
-  piece.Color() at board.go:28-33:
-  if p >= BlackPawn { return Black }
-  return White
-
-  Called from putPiece, removePiece, movePiece — i.e., multiple times per
-   MakeMove/UnmakeMove. Also inlined by the compiler in hot paths. The
-  branch is predictable but still executes.
-
-  Alternative: Color((p - 1) / 6) or equivalently Color((p >> 3) & 1) —
-  but the piece encoding (1-6 White, 7-12 Black) doesn't map cleanly to
-  bit operations. However, a lookup table var pieceColor [13]Color would
-  be branch-free and always L1-hot (13 bytes).
-
-  4. movePiece Does 5 Memory Updates + 2 PST Table Lookups
-
-  board.go:221-234: movePiece does:
-  - 2 Squares[] writes (from→Empty, to→piece)
-  - 1 Pieces[piece] XOR
-  - 1 Occupied[color] XOR
-  - 1 AllPieces XOR
-  - 2 pstCombinedMG lookups + 1 add
-  - 2 pstCombinedEG lookups + 1 add
-
-  The PST lookups access pstCombinedMG[piece][sq] — a 6656-byte table (13
-   × 64 × 8 bytes). Two random accesses per movePiece call. With piece
-  and square changing every call, these touch different cache lines each
-  time.
-
-  Observation: The PST lookup is probably the most expensive part of
-  movePiece, since Squares, Pieces, Occupied, and AllPieces are all
-  within the Board struct's first 4 cache lines (offsets 0-224) and stay
-  hot.
-
-  Micro-optimization: Combine MG and EG PST into a single lookup by
-  packing both into one int32 (16 bits each, or even using the full 32
-  bits for each and packing into int64). This halves the PST cache
-  footprint and turns two lookups into one:
-
-  var pstCombined [13][64]int64  // MG in upper 32, EG in lower 32
-
-  Then movePiece does one lookup per square instead of two. Stockfish
-  uses a Score type that packs MG+EG into a single int for exactly this
-  reason.
-
-  5. MakeMove Zobrist Hashing Does Many Conditional XORs
-
-  makemove.go:74-75: The core hash update is:
-  b.HashKey ^= Zobrist.Pieces[piece][from]
-  b.HashKey ^= Zobrist.Pieces[piece][to]
-
-  The Zobrist.Pieces table is 6760 bytes (~106 cache lines). With piece
-  and squares changing each move, this accesses 2 essentially random
-  cache lines per MakeMove. Not avoidable — it's the nature of Zobrist
-  hashing.
-
-  But the additional conditional hash updates add branching overhead:
-  - Pawn hash (makemove.go:78-81): 2 extra lookups + XORs for pawn moves
-  (~25% of moves)
-  - En passant (makemove.go:124-136): 2 branches + hash lookup
-  - Castling (makemove.go:166-180): 4 conditional XORs only when castling
-   changes
-
-  The castling rights hash update is sound. The en passant handling at
-  lines 124-136 first removes the old EP hash, then conditionally sets a
-  new one — this is correct and necessary.
-
-  Minor optimization: The Zobrist.Pieces[piece][from] ^
-  Zobrist.Pieces[piece][to] pattern could be precomputed as
-  Zobrist.PieceMoves[piece][from][to], but this would be a 13×64×64×8 =
-  416KB table — way too large. Not worthwhile.
-
-  6. UnmakeMove Restores Hash from Undo Stack — This is Already Optimal
-
-  makemove.go:321: b.HashKey = undo.HashKey — direct restore, no re-XOR.
-  This is the right approach; some engines re-XOR all the same keys in
-  reverse, which is slower. Your implementation is good here.
-
-  7. SquareBB(sq) Uses Lookup Table — Good
-
-  bitboard.go:56-58: squareBBTable[sq] is a 512-byte table (64 × 8 bytes)
-   = 8 cache lines. Always L1 hot during search. This is optimal; the
-  alternative (1 << sq) involves a variable shift which is typically the
-  same speed on modern x86 but slightly slower on some architectures.
-
-  8. Move Generation Append Pattern Creates Slice Overhead
-
-  Throughout movegen.go, moves are appended one at a time:
-  moves = append(moves, NewMove(from, to))
-
-  Go's append has overhead per call: it checks capacity, potentially
-  grows the backing array, updates the slice header. With ~30-50 moves
-  per position and the slice pre-allocated to sufficient capacity (so no
-  reallocation), the per-append cost is small but non-zero — a bounds
-  check + length increment + write.
-
-  Alternative (Stockfish-style): Use a Move* pointer (or in Go, an index)
-   and advance it directly:
-  moves[idx] = NewMove(from, to)
-  idx++
-
-  This eliminates the append bookkeeping. The challenge in Go is that
-  slices are the idiomatic way, and the compiler may not optimize append
-  to a simple index increment even when capacity is guaranteed.
-
-  Practical approach: Pre-size the slice to a known maximum (e.g., 218 —
-  theoretical max legal moves), use index-based writes, then slice to
-  actual count at the end. This would be a micro-optimization with ~1%
-  impact at most, but it applies to every single movegen call.
-
-  9. pieceOf Lookup Table is Well-Designed
-
-  board.go:37-51: pieceOfTable[p][c] is a 7×2 = 14 entries, 14 bytes.
-  Always L1 hot. Clean and fast. No issue here.
-
-  10. IsAttacked Early-Exit Order is Good
-
-  movegen.go:409-435: Checks pawns → knights → king → bishops/queens →
-  rooks/queens. This order prioritizes cheaper lookups (direct table
-  reads) before expensive ones (magic bitboard multiplies). The pawn
-  check is first since pawns are the most common pieces and pawn attacks
-  are a single table lookup.
-
-  11. Board.Squares[64] as Piece (int8) is Space-Efficient but Forces
-  Type Conversions
-
-  Squares is [64]Piece where Piece = int8. The array is 64 bytes = 1
-  cache line. Every access returns int8 which must be widened for array
-  indexing (Zobrist, PST, etc.). Go does this implicitly, but it adds
-  sign-extension instructions.
-
-  If Piece were uint8 instead of int8, the sign extension would be
-  eliminated. However, Empty = 0 and pieces are 1-12, so there's no sign
-  issue in practice — the compiler should optimize this away. Low
-  priority.
-
-  12. NewSquare(file, rank) in Castling Code is Computed at Call Time
-
-  makemove.go:101-119: Castling code calls NewSquare(6, 0), NewSquare(7,
-  0), etc. repeatedly. These are rank*8 + file = simple arithmetic. The
-  Go compiler should constant-fold these, but it's worth verifying. If
-  not constant-folded, replacing with named constants (const G1 =
-  Square(6), const F1 = Square(5), etc.) would ensure zero computation.
-
-  Summary — Prioritized by NPS Impact
-
-  ┌─────┬────────────────────────────────┬──────────────┬────────────┐
-  │  #  │             Issue              │  Est. NPS    │ Difficulty │
-  │     │                                │     gain     │            │
-  ├─────┼────────────────────────────────┼──────────────┼────────────┤
-  │ 1   │ Castling rights lookup table   │ 1-2%         │ Easy       │
-  │     │ (replace 2 switches)           │              │            │
-  ├─────┼────────────────────────────────┼──────────────┼────────────┤
-  │ 2   │ Pack MG+EG PST into single     │ 1-2%         │ Medium     │
-  │     │ int64 lookup                   │              │            │
-  ├─────┼────────────────────────────────┼──────────────┼────────────┤
-  │ 3   │ Shrink Magic struct (fixed     │ 1-2%         │ Medium     │
-  │     │ shift, pointer)                │              │            │
-  ├─────┼────────────────────────────────┼──────────────┼────────────┤
-  │ 4   │ pieceColor lookup table        │ 0.5-1%       │ Easy       │
-  │     │ (eliminate branch)             │              │            │
-  ├─────┼────────────────────────────────┼──────────────┼────────────┤
-  │ 5   │ Index-based movegen instead of │ 0.5-1%       │ Medium     │
-  │     │  append                        │              │            │
-  ├─────┼────────────────────────────────┼──────────────┼────────────┤
-  │     │ Named square constants in      │ ~0% if       │            │
-  │ 6   │ castling (verify               │ already      │ Easy       │
-  │     │ const-folding)                 │ folded       │            │
-  └─────┴────────────────────────────────┴──────────────┴────────────┘
-
-  Conservative aggregate: 4-8% NPS from board/move mechanics.
-
-  The single most impactful change is probably #2 (packed PST scores)
-  because it cuts in half the cache footprint of the most frequently
-  accessed lookup table, and the PST update is in the hottest code path
-  (movePiece, called 2-3× per MakeMove). Combined with #1 (castling
-  table), these two changes modernize the two weakest parts of the
-  MakeMove implementation with minimal risk.
-
-  The board layout itself (304 bytes, hot fields in first 4 cache lines)
-  and the magic bitboard implementation are solid. The move encoding (16
-  bits) is compact and efficient. The biggest structural limitation is
-  Go's lack of zero-cost abstractions for things like packed score types
-  — C++ engines get the packed MG/EG for free via operator overloading.
-
-
-
-  Search Speed Optimisations
-
-    Search NPS Analysis
-
-  1. TT Probe/Store Atomic Stats are Pure Overhead (~2-3% NPS)
-
-  tt.go:126: atomic.AddUint64(&tt.probes, 1) is called on every TT probe
-  — once per negamax node + once per qsearch node. That's 100% of nodes
-  paying an atomic increment. Then atomic.AddUint64(&tt.hits, 1) on hits
-  (~60-70% of probes), and atomic.AddUint64(&tt.writes, 1) on stores.
-
-  Atomic adds are ~5-15ns each on x86 (LOCK XADD forces cache line
-  ownership). At 1M NPS, that's 3 atomics × ~10ns × 1M = ~30ms/s, i.e.
-  ~3% overhead for stats nobody reads during search. Stats() is only
-  called from UCI info strings.
-
-  Fix: Remove the stats atomics from the hot path entirely. If you need
-  TT fill stats, compute Hashfull() on demand (which you already do by
-  sampling). Or count probes/hits as regular uint64 fields on SearchInfo
-  (per-thread, no atomics needed).
-
-  2. time.Now() Every 1024 Nodes (~1-2% NPS)
-
-  search.go:759-763 and search.go:1529-1534: time.Now().UnixNano() is
-  called every 1024 nodes in both negamax and qsearch. time.Now() in Go
-  involves a vDSO call (~20-30ns). At 1M NPS, that's ~1000 calls/sec ×
-  25ns = 25µs/sec — small individually, but this is compounded by the
-  fact that you check in both negamax and qsearch, so you're checking
-  roughly every 512 effective nodes.
-
-  More importantly, the node counter check itself (info.Nodes & 1023)
-  runs every single node. With the stopped check right after
-  (atomic.LoadInt32(&info.Stopped) at lines 766 and 1536), that's an
-  atomic load per node even when the timer isn't firing.
-
-  Fix: Increase the check interval to 4096 (your CLAUDE.md already says
-  4096 but the code says 1023). Also, the atomic.LoadInt32(&info.Stopped)
-   on lines 766/1536 could be gated inside the Nodes&mask == 0 block
-  rather than checked independently every node — if Stopped is set by the
-   timer check or by another thread's stop, a few hundred extra nodes
-  before noticing won't matter.
-
-  3. SearchInfo Struct is 1.4MB — ContHistory Dominates (~2-4% NPS)
-
-  ContHistory [13][64][13][64]int16 is 1,384,448 bytes (1.32MB) — 96% of
-  the SearchInfo struct. This is accessed per-node for quiet move scoring
-   and LMR adjustment (search.go:1321-1323). But the access pattern is:
-
-  contHistPtr = &info.ContHistory[prevPiece][prevTo]  // select sub-table
-   (once per node)
-  score += int(contHistPtr[piece][move.To()])           // per-move
-  lookup
-
-  The inner table is [13][64]int16 = 1,664 bytes = ~26 cache lines. The
-  outer indexing [prevPiece][prevTo] means you're jumping to a different
-  1.6KB sub-table every node (because prevPiece+prevTo changes). With
-  1.32MB total, this thrashes L1 (32KB) and puts pressure on L2 (256KB).
-
-  This is inherent to the data structure — Stockfish has the same issue.
-  But there's a subtle implementation difference: Stockfish stores
-  continuation history as a pointer to the sub-table on the stack,
-  resolved once per node. You do the same (contHistPtr), so the access
-  pattern is sound. However, the zero-initialization at search start
-  (search.go:279: info.ContHistory = [13][64][13][64]int16{}) writes
-  1.32MB of zeros, evicting hot cache lines. Consider memclr via for
-  range or just not clearing (Stockfish ages history between searches
-  rather than clearing).
-
-  Opportunity: Consider halving the table to [7][64][13][64]int16 (index
-  by piece type 1-6 instead of piece 1-12 — White and Black pieces of the
-   same type have the same tactical meaning). This halves the table to
-  ~660KB, improving cache utilization. Stockfish uses piece type indexing
-   for exactly this reason.
-
-  4. CheckData Called Unconditionally (~1-2% NPS)
-
-  search.go:874: checkSq, discoverers := b.CheckData(b.SideToMove) runs
-  at every non-leaf, non-check node. It computes:
-  - 5 attack bitboard lookups (pawn, knight, bishop, rook, queen to enemy
-   king)
-  - A sniper loop (BishopAttacks + RookAttacks with empty board, then
-  BetweenBB scan)
-
-  This is ~50-100ns per call. But the data is only consumed after
-  MakeMove at search.go:1165-1178, and only for non-special-flag moves.
-  Nodes that get pruned before reaching the move loop (NMP, RFP,
-  razoring, ProbCut) pay the CheckData cost for nothing.
-
-  Fix: Compute checkSq/discoverers lazily — either defer to first use, or
-   compute it after the pruning section (move it to just before line
-  1030).
-
-  5. ProbCut Allocates + Calls IsLegalSlow (~0.5-1% NPS)
-
-  search.go:984: b.GenerateCaptures() allocates a fresh []Move slice.
-  Then at line 993, b.IsLegalSlow(m) calls IsPseudoLegal +
-  PinnedAndCheckers per move. But PinnedAndCheckers was already computed
-  at line 872! And ProbCut only runs when !inCheck, so the pinned
-  bitboard from line 872 is valid.
-
-  Fix: Use a pre-allocated buffer (stack [64]Move array) and replace
-  IsLegalSlow with IsLegal(m, pinned, false) using the already-computed
-  pinned.
-
-  6. IsLegal for En Passant Does Full MakeMove/UnmakeMove
-
-  movegen.go:559-563: When flags == FlagEnPassant, IsLegal falls back to
-  full MakeMove + IsAttacked + UnmakeMove. This is correct (EP has rare
-  discovered check edge cases), but MakeMove includes the full NNUE
-  accumulator push/pop, undo stack append, hash update, etc. — all wasted
-   work since we only need to check if the king is attacked.
-
-  EP is rare (~1-2% of moves), so this is maybe 0.1% NPS overall. But if
-  you wanted to optimize it: a lightweight "EP legality check" that
-  temporarily removes both the moving pawn and captured pawn from the
-  occupancy bitboard, then checks if the king is attacked by sliders
-  along that rank, would be much cheaper.
-
-  7. Board Struct Layout is Decent but Could Be Tighter
-
-  Board is 304 bytes = ~5 cache lines. The hot fields in the inner search
-   loop are:
-  - Squares[64] (offset 0, 64 bytes) — accessed for every move's piece
-  lookup
-  - SideToMove (offset 64) — checked every node
-  - Pieces[13] (offset 96, 104 bytes) — accessed for attack generation
-  - Occupied[2] (offset 200, 16 bytes) — accessed for attack gen
-  - AllPieces (offset 216, 8 bytes) — accessed for magic bitboard lookups
-  - HashKey (offset 80) — accessed for TT probe/store
-
-  The first 3 cache lines (0-191) cover Squares, SideToMove, Castling,
-  EnPassant, HalfmoveClock, FullmoveNum, HashKey, PawnHashKey, and
-  Pieces[0..11]. This is reasonably good — the hottest fields are all
-  within 4 cache lines.
-
-  One layout concern: HashKey at offset 80 shares a cache line with
-  HalfmoveClock and FullmoveNum (offsets 68-79), which is fine. But
-  Pieces[13] at offset 96 starts on a new cache line (line 1: 64-127),
-  which means accessing Pieces[WhiteKnight] through Pieces[WhiteKing]
-  (indices 2-6, offsets 112-144) spans cache lines 1-2. Not easily
-  fixable without a major restructure.
-
-  8. UndoStack Append in MakeMove
-
-  makemove.go:44: b.UndoStack = append(b.UndoStack, undo) copies 24 bytes
-   of UndoInfo onto the slice. The slice is pre-allocated to 256
-  capacity, so no allocations, but the append still involves Go runtime
-  overhead (length check, update slice header). At ~2M MakeMove calls per
-   second, this adds up.
-
-  The UndoInfo is already well-packed at 24 bytes. No obvious improvement
-   here without moving to a fixed-size stack array, which would remove
-  the slice overhead but limit max depth.
-
-  9. IsRepetition Scans Undo Stack Every Node
-
-  board.go:597-609: Called at every node with ply > 0. Scans backward
-  through the undo stack by 2 (checking every other position). In the
-  worst case (long game with HalfmoveClock = 100), this scans 50 entries.
-   The access pattern is cache-friendly (sequential backward), but the
-  sheer frequency (every node) makes this significant.
-
-  Opportunity: Stockfish uses a compact hash history array instead of
-  scanning. Store recent position hashes in a fixed-size ring buffer
-  indexed by ply. Repetition check becomes a simple loop over a
-  contiguous array of uint64s rather than reaching into UndoInfo structs
-  (which have 24-byte stride, so you're skipping 16 bytes of non-hash
-  data per iteration).
-
-  10. Dual Stopped Checks Per Node
-
-  search.go:759-768: Every negamax node does:
-  if info.Nodes&1023 == 0 {    // branch 1
-      if time check ...         // rare
-  }
-  if atomic.LoadInt32(&info.Stopped) != 0 {  // branch 2 — EVERY node
-      return 0
-  }
-
-  The atomic.LoadInt32 on line 766 runs unconditionally every single
-  node. With single-threaded search, this is just a regular memory load
-  (no contention), but it's still a branch that the branch predictor must
-   track. In multi-threaded mode, this becomes a real atomic load with
-  cache-line ping-pong potential if multiple threads are checking.
-
-  Fix: Move the Stopped check inside the Nodes&mask block. The search
-  will run at most 1023 extra nodes before stopping — completely
-  unnoticeable.
-
-  Summary — Estimated NPS Gains
-
-  ┌─────┬──────────────────────────────────┬────────────┬────────────┐
-  │  #  │              Issue               │ Est. NPS   │ Difficulty │
-  │     │                                  │    gain    │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 1   │ Remove TT stats atomics from hot │ 2-3%       │ Easy       │
-  │     │  path                            │            │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 2   │ Increase timer check to 4096,    │ 1-2%       │ Easy       │
-  │     │ gate Stopped inside              │            │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 3   │ ContHistory piece-type indexing  │ 2-4%       │ Medium     │
-  │     │ (halve table)                    │            │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 4   │ Defer CheckData past pruning     │ 1-2%       │ Easy       │
-  │     │ section                          │            │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 5   │ ProbCut: stack buffer + reuse    │ 0.5-1%     │ Easy       │
-  │     │ pinned                           │            │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 6   │ Repetition check via hash ring   │ 1-2%       │ Medium     │
-  │     │ buffer                           │            │            │
-  ├─────┼──────────────────────────────────┼────────────┼────────────┤
-  │ 9   │ Don't zero-clear ContHistory     │ 0.5-1%     │ Medium     │
-  │     │ (age instead)                    │            │            │
-  └─────┴──────────────────────────────────┴────────────┴────────────┘
-
-  Conservative aggregate: 8-15% NPS, with items 1-4 being quick wins
-  totaling ~6-10% alone.
-
-  The big-ticket item is #3 (ContHistory table halving). Going from
-  1.32MB to 660KB puts much more of the table within L2, reducing cache
-  misses on the hottest data structure in the engine. This is the single
-  change most likely to yield a measurable NPS improvement.
-
-
-  Move Ordering Analysis
-
-  Issues with Current Implementation
-
-  1. Qsearch doesn't use TT move for ordering (HIGH impact)
-
-  search.go:1655 — InitQuiescence(b, &info.CaptHistory) doesn't pass the
-  ttMove. The TT move is probed (search.go:1548) but never used for move
-  ordering. In most engines, trying the TT move first in qsearch is a
-  significant win — it's the move from a previous deeper search that was
-  best, so it often produces an instant cutoff without generating/scoring
-   all captures.
-
-  Fix: Add a InitQuiescenceWithTT(b, ttMove, captHist) variant or modify
-  InitQuiescence to accept an optional TT move and start at stageTTMove
-  when one exists.
-
-  2. ProbCut allocates a fresh slice every node (search.go:984)
-
-  b.GenerateCaptures() calls make([]Move, 0, 32) internally. ProbCut runs
-   at every node with depth >= 5 where the eval condition is met. This
-  creates GC pressure. Should use a pre-allocated buffer (e.g. a
-  stack-local [64]Move array with slice header, or a pre-allocated field
-  on SearchInfo).
-
-  3. SEE called for every capture during scoring (movepicker.go:237)
-
-  generateAndScoreCaptures calls b.SEE(m) for every capture to partition
-  into good/bad. Full SEE is expensive (~100-200ns per call due to
-  leastValuableAttacker loop). Stockfish uses SEESign(m, threshold) with
-  early exits instead of full SEE for partitioning. You already have
-  SEESign — the partition only needs to know if SEE >= 0, so use
-  SEESign(m, 0) instead of SEE(m).
-
-  For bad captures, you'd lose the exact SEE value for scoring, but bad
-  captures are the lowest priority stage anyway — their exact ordering
-  rarely matters. You could score bad captures by -MVV-LVA + captHist
-  instead.
-
-  Estimated impact: ~5-10% reduction in time spent on capture scoring.
-
-  4. Selection sort is O(n^2) worst case, scans full remaining list each
-  call
-
-  pickBest() (movepicker.go:331-355) scans from mp.index to len(mp.moves)
-   every time. For quiet moves (typically 30-50 per position), this means
-   the first call scans ~40 moves, second scans ~39, etc. With beta
-  cutoffs typically happening in the first 1-5 moves, most scans are
-  wasted. This is the standard approach (Stockfish does the same), but...
-
-  Opportunity: For the quiet move stage specifically, if there are many
-  moves and cutoff typically happens early, the selection sort is fine.
-  But consider: if you have >30 quiets and LMP will prune after 3 +
-  depth*depth (e.g., 7 at depth 2), you're scoring and scanning 30+ moves
-   but only ever using 7. Lazy generation of quiet scores could help —
-  only score the next batch when needed.
-
-  5. IsPseudoLegal is called redundantly for killers/counter-move
-
-  At movepicker.go:150,158,169, killer and counter-move validation calls
-  IsPseudoLegal, which does a full piece type switch including pawn
-  direction checks, castling validation, etc. This is ~20-30 array
-  lookups per call. For killers and counter-move (3 calls per node), this
-   adds up.
-
-  Opportunity: A lighter validation could be used for killers — e.g.,
-  just check the from-square has the right piece and the to-square isn't
-  our piece. The full movegen validation is only needed for exotic cases
-  (castling, en passant, double pawn push). Since killers were legal
-  moves from sibling nodes, a lighter check suffices.
-
-  6. isCapture check for killers/counter-move is redundant
-
-  movepicker.go:150,158,169 — After IsPseudoLegal, there's an
-  !mp.isCapture() check. Killers should never be captures (they're stored
-   only for quiet moves on beta cutoff). The counter-move similarly
-  should be quiet. If you enforce this at store time (which you do —
-  search.go:1412 only stores quiet cutoff moves as killers), the capture
-  check is wasted work.
-
-  However: The IsPseudoLegal + isCapture overhead is only 3 calls per
-  node, so the absolute impact is small.
-
-  Missing Optimizations Found in Top Engines
-
-  7. No TT move in qsearch evasions
-
-  search.go:1583 — InitEvasion in qsearch passes ttMove, which is good.
-  But looking more carefully, it passes nil for history and contHist, so
-  evasion quiet moves in qsearch have no history-based ordering. This is
-  probably fine since qsearch evasions are rare.
-
-  8. No "countermove history" (second continuation history table)
-
-  Stockfish uses two continuation history tables: one for the move 1 ply
-  ago, another for the move 2 plies ago. Your engine uses one
-  (contHistPtr from the immediate parent). Adding a second contHist from
-  2 plies ago is a proven ~5-10 Elo gain in Stockfish. The memory cost is
-   another ~1.3MB per thread, and the scoring/update code is nearly
-  identical to what you already have.
-
-  9. No "pawn history" table
-
-  Modern Stockfish (since ~2023) uses
-  PawnHistory[pawnStructureHash][piece][to] which captures positional
-  patterns tied to the pawn structure. This is a significant Elo
-  improvement in Stockfish. It's more complex to implement but could be
-  worth exploring.
-
-  10. CheckData called unconditionally (search.go:874)
-
-  checkSq, discoverers := b.CheckData(b.SideToMove) is called at every
-  non-leaf node, even when in check (where it's not used — evasion mode
-  doesn't need check detection for child moves). When inCheck, this work
-  is wasted since the evasion path doesn't use checkSq/discoverers.
-
-  Fix: Move the CheckData call inside the !inCheck branch, or defer it
-  until the move loop actually needs it (after MakeMove). The data is
-  only used at search.go:1165-1178 for post-MakeMove check detection.
-
-  11. No SEE-based ordering in qsearch captures
-
-  InitQuiescence uses stageGenerateCaptures directly, which calls
-  generateAndScoreCaptures(). This runs full SEE for partitioning. But in
-   qsearch, you already call SEESign(move, 0) at line 1678 to filter bad
-  captures. This means captures are SEE-evaluated twice: once during
-  scoring (full SEE), and again during the search loop (SEESign).
-
-  Fix: In qsearch, skip the SEE partition and just score captures by
-  MVV-LVA+captHist, then use the existing SEESign call in the search loop
-   as the filter. This avoids the double-SEE cost.
-
-  Summary — Prioritized by NPS Impact
-
-  ┌──────────┬───────────────────────────────────┬───────────────────┐
-  │ Priority │               Issue               │  Est. NPS impact  │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 1        │ QSearch TT move ordering (#1)     │ 3-5% (fewer       │
-  │          │                                   │ nodes)            │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 2        │ Use SEESign for capture partition │ 2-5%              │
-  │          │  (#3)                             │                   │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 3        │ Avoid double-SEE in qsearch (#11) │ 2-4%              │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 4        │ Defer CheckData when in check     │ 1-2%              │
-  │          │ (#10)                             │                   │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 5        │ ProbCut allocation (#2)           │ 1% (reduces GC)   │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 6        │ Second continuation history (#8)  │ ~5-10 Elo (same   │
-  │          │                                   │ NPS)              │
-  ├──────────┼───────────────────────────────────┼───────────────────┤
-  │ 7        │ Lighter killer validation (#5)    │ <1%               │
-  └──────────┴───────────────────────────────────┴───────────────────┘
-
-  Items 1-3 are the quickest wins. Item 6 (second contHist) is a proven
-  Elo gain that doesn't affect NPS. Items 1 and 3 combined could
-  meaningfully reduce node counts and per-node cost.
-
-
-Codebase Review/Cleanup
-
-
-● All three reviews are in. Here's the consolidated summary across the
-  entire codebase:
-
-  ---
-  Codebase Review — Consolidated Findings
-
-  Dead Code (remove with confidence)
-
-  ┌──────────────────────────────────┬──────────────────────┬────────┐
-  │             Finding              │      File:Line       │ Lines  │
-  │                                  │                      │ saved  │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ PawnStormEnabled +               │ eval.go:159-160,     │        │
-  │ PawnStormUnits block (hardcoded  │ 791-808              │ ~25    │
-  │ false)                           │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ MoveGen struct, NewMoveGen,      │                      │        │
-  │ Reset, Next (superseded by       │ movegen.go:4-44      │ ~40    │
-  │ MovePicker)                      │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ TuneNNUEK function (never        │ nnue_train.go:1117   │ ~50    │
-  │ called)                          │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ clippedReLU int16 function       │ nnue.go:392          │ ~9     │
-  │ (never called)                   │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ NNUEEvalScale = 1 (no-op         │ nnue.go:33           │ ~2     │
-  │ multiply)                        │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ polyglotPieceOffset = 0 (never   │ polyglot.go:338      │ ~1     │
-  │ referenced)                      │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ totalPositions in selfplay       │ selfplay.go:368      │ ~3     │
-  │ (tracked but never read)         │                      │        │
-  ├──────────────────────────────────┼──────────────────────┼────────┤
-  │ NewMovePicker /                  │                      │        │
-  │ NewMovePickerQuiescence (only    │ movepicker.go:50-61  │ ~12    │
-  │ used in tests)                   │                      │        │
-  └──────────────────────────────────┴──────────────────────┴────────┘
-
-  Duplicate Code (consolidate)
-
-  ┌─────────────────────────┬───────────────────────────┬────────────┐
-  │         Finding         │         Location          │   Impact   │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ PushEmpty is identical  │ nnue.go:121 vs 132        │ Delete one │
-  │ to Push                 │                           │            │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ Castling generation     │ movegen.go:299-399,       │ ~50 lines  │
-  │ duplicated 3x           │ movepicker.go:550-616     │            │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ Promotion emission      │                           │ Helper     │
-  │ copy-pasted ~15x        │ movegen.go throughout     │ saves ~60  │
-  │                         │                           │ lines      │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ helperSearch duplicates │ search.go:600-698 vs      │            │
-  │  search init +          │ 252-483                   │ ~70 lines  │
-  │ aspiration window       │                           │            │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ TT mate score           │ search.go:1499, 1618,     │ Small      │
-  │ adjustment repeated 3x  │ 1704                      │ helper     │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ NNUE target computation │ nnue_train.go:270, 858,   │ Extract    │
-  │  repeated 4x            │ 1074, 1290                │ helper     │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ splitFEN reimplements   │ board.go:394-406          │ ~12 lines  │
-  │ strings.Fields          │                           │            │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ joinStrings             │                           │            │
-  │ reimplements            │ benchmark.go:239          │ ~8 lines   │
-  │ strings.Join            │                           │            │
-  ├─────────────────────────┼───────────────────────────┼────────────┤
-  │ min in tt.go duplicates │ tt.go:239                 │ ~5 lines   │
-  │  Go 1.21+ builtin       │                           │            │
-  └─────────────────────────┴───────────────────────────┴────────────┘
-
-  Simplification
-
-  ┌──────────────────────────────┬───────────────────────┬───────────┐
-  │           Finding            │       Location        │   Note    │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ evaluateEndgameKings returns │ eval.go:1057          │ Return    │
-  │  (mg, eg) but mg always 0    │                       │ just eg   │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ evaluateKingSafety returns   │ pawns.go:387          │ Return    │
-  │ (mg, eg) but eg always 0     │                       │ just mg   │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ quiescence is a trivial      │ search.go:1513-1515   │ Inline    │
-  │ 1-line wrapper               │                       │           │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ IsPseudoLegal manually       │                       │ Use       │
-  │ computes Piece.Color()       │ movepicker.go:417-422 │ existing  │
-  │                              │                       │ method    │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ centerDistance has           │                       │ Remove    │
-  │ unreachable clamp            │ eval.go:860           │ dead      │
-  │                              │                       │ branch    │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ Redundant & ^ourPieces after │ movegen.go:810        │ Remove    │
-  │  & theirPieces               │                       │ no-op     │
-  ├──────────────────────────────┼───────────────────────┼───────────┤
-  │ GenerateAllMoves vs          │                       │ Unify     │
-  │ GenerateAllMovesAppend are   │ movegen.go:47-58      │ code      │
-  │ parallel implementations     │                       │ paths     │
-  └──────────────────────────────┴───────────────────────┴───────────┘
-
-  Readability
-
-  ┌──────────────────────────────┬────────────────┬──────────────────┐
-  │           Finding            │    Location    │       Note       │
-  ├──────────────────────────────┼────────────────┼──────────────────┤
-  │ ply >= 64 should use MaxPly  │ search.go:182  │ Consistency      │
-  ├──────────────────────────────┼────────────────┼──────────────────┤
-  │ Misleading comment           │                │                  │
-  │ "attackerCount >= 2" (code   │ eval.go:715    │ Fix comment      │
-  │ checks >= 1)                 │                │                  │
-  ├──────────────────────────────┼────────────────┼──────────────────┤
-  │ PST scale factors all 100 —  │ pst.go:159-166 │ Consider         │
-  │ dead indirection             │                │ removing         │
-  ├──────────────────────────────┼────────────────┼──────────────────┤
-  │ interface{} → any            │ uci.go:101     │ Go 1.18+ style   │
-  ├──────────────────────────────┼────────────────┼──────────────────┤
-  │ Fragile raw offsets in tuner │ tuner.go       │ Named constants  │
-  │  computeTrace                │                │ would help       │
-  └──────────────────────────────┴────────────────┴──────────────────┘
-
-  Notable Non-Issues
-
-  The review agents flagged evaluatePST as "verification-only" — this is
-  intentional (used in tests). The abs() in movepicker.go is needed (no
-  generic int abs in Go). PST scale factors, while always 100, are
-  referenced by the tuner infrastructure so removing them requires
-  coordinated changes.
-
-  ---
-  Estimated total: ~250-300 lines removable with minimal risk. The
-  highest-value quick wins are the dead code items (zero behavioral
-  change) and the stdlib replacements (strings.Fields, strings.Join,
-  builtin min).
-
-  Want me to start tackling any of these? I'd suggest starting with the
-  dead code removal since it's zero-risk.
-
+  Current State
+
+  You've done a lot of the "standard" search improvements already — NMP,
+  RFP, futility, LMP, SEE pruning, ProbCut, capture LMR, aspiration
+  windows, IIR, history gravity, singular extensions. The todo.txt shows
+  ~171 Elo of cumulative search gains. NNUE is running with int8
+  quantization, Syzygy tablebases work, time management has effort-based
+  scaling. The engine is past the "low-hanging fruit" phase for search.
+
+  Highest-Impact Opportunities
+
+  1. NNUE retraining on 10M+ data (est. 30-80 Elo)
+
+  Your current net was trained on 2M positions. Going to 10M at d10 is
+  probably the single biggest Elo gain available right now. The network
+  is almost certainly undertrained — 2M is barely enough for a 256-neuron
+   accumulator to learn fine-grained positional patterns. This is free
+  Elo once the data is ready tonight.
+
+  2. Search re-tuning for NNUE (est. 20-50 Elo)
+
+  This is the one I want to flag most strongly as underappreciated. Every
+   pruning margin in the engine was tuned against classical eval. NNUE
+  outputs have different centipawn distributions — typically smoother,
+  more compressed in equal positions, potentially larger in decisive
+  ones. This means:
+
+  - RFP/futility margins may be too loose or too tight for NNUE's scale
+  - NMP reduction formula (eval-beta)/200 assumes classical eval
+  calibration
+  - LMR history divisor (5000) was tuned for classical history patterns
+  - ProbCut beta margin (200) may not match NNUE's centipawn scale
+
+  The right approach: after retraining NNUE on the larger dataset, do a
+  systematic parameter sweep using SPRT. Pick one parameter at a time,
+  try 3-4 values, 1000+ game matches. This is tedious but is literally
+  how Stockfish gains Elo — fishtest runs thousands of parameter patches.
+
+  3. Correction history (est. 15-30 Elo)
+
+  This is the biggest modern search technique you're missing. The idea:
+  when search reveals the true value differs from static eval, store the
+  correction indexed by position features (pawn hash, material key).
+  Future positions with similar features get their eval pre-adjusted.
+
+  This improves every pruning decision that depends on static eval (RFP,
+  futility, NMP, razoring) because the eval is closer to the search
+  value. Stockfish has 5 correction history types; even implementing just
+   pawn-hash-based correction would be meaningful.
+
+  4. Wider NNUE accumulator: 256→512 (est. 50-100 Elo, longer term)
+
+  Proven in every engine that's tried it. Doubles the feature
+  transformer's capacity to represent positional knowledge. But this
+  needs much more data to be useful — a 512-neuron accumulator with 2M
+  positions will just overfit. With 50M+ positions this becomes the
+  biggest single architectural win. Worth planning for when you have
+  enough data.
+
+  5. NNUE data quality and diversity
+
+  Not just quantity — quality matters too. Some things to consider when
+  you do the next training run:
+
+  - Endgame representation: Your Eigenmann endgame score was 8%. If the
+  selfplay games mostly end by adjudication at ±1000cp, the network sees
+  very few deep endgame positions. Consider generating a supplementary
+  endgame dataset at higher depth (d12-14) from tabulated endgame
+  positions.
+  - Score vs result weighting (lambda): Your current lambda=0.5 blends
+  score and result. With better data, you might experiment — some engines
+   find lambda=0.7 (more result-oriented) trains stronger nets once data
+  quality is good enough.
+  - Filter quality: Skip positions where the search score is a mate
+  score, positions with very few pieces (tablebases handle those), and
+  positions in the first 8 plies (book territory).
+
+  6. Endgame scaling vs NNUE (est. 5-15 Elo, easy A/B test)
+
+  NNUEEvaluateRelative applies classical endgameScale() on top of NNUE
+  output. The NNUE should learn drawishness from training data, so the
+  classical scaling might be double-counting. This is a trivial A/B test
+  — just disable endgameScale when NNUE is active and run a gauntlet. If
+  it's positive, free Elo. If negative, the network hasn't learned
+  endgame patterns well enough yet (which would improve with more data).
+
+  What I'd Deprioritize
+
+  - NPS micro-optimizations (ContHistory halving, packed PST, Magic
+  struct shrinking) — these are 1-3% NPS each, which is ~1-2 Elo per
+  change. The effort-to-Elo ratio is poor compared to the items above.
+  - 2-ply continuation history — already tested at +3.5 Elo on a branch.
+  Could revisit after search re-tuning but not high priority.
+  - Code cleanup (dead code removal, movegen unification) — good hygiene
+  but zero Elo. Do it when you have downtime.
+
+  Suggested Order
+
+  1. Tonight: Train new NNUE net on 10M positions, test vs current net
+  2. This week: A/B test endgame scaling with NNUE; start systematic
+  search parameter re-tuning (RFP margin, NMP formula, futility margin —
+  one at a time, SPRT)
+  3. Next: Implement pawn-hash correction history, SPRT test
+  4. Ongoing: Keep generating data toward 50M+, plan 512-accumulator
+  architecture
+
+  The common thread is: NNUE quality and search-NNUE calibration are
+  where the biggest gains are now. The search framework is solid; the
+  bottleneck has shifted to eval quality and making sure the search
+  parameters are tuned for the eval you actually have.
 
 NNUE 7th March
 
@@ -1420,16 +1096,16 @@ Recent changes
   lost. Want me to dig into that next?
 
 
-Qsearch is a bug.
 
 
-# elo
 
-##  Rules of thumb I find handy:
+#  Rules of thumb I find handy:
+
+## elo
 
   - 100 Elo ≈ 2:1 odds — the most useful anchor point
-  - 400 Elo ≈ 10:1 odds — a full piece advantage in "engine class"
   - 200 Elo ≈ 3:1 — a clearly dominant engine but the weaker one still wins occasionally
+  - 400 Elo ≈ 10:1 odds — a full piece advantage in "engine class"
   - Every 70-80 Elo roughly doubles the win:loss ratio (ignoring draws)
   - Doubling time control is worth roughly 50-70 Elo for most engines
   - Doubling hash size is worth roughly 5-15 Elo (diminishing returns)
@@ -1442,6 +1118,17 @@ So a 2x increase in NPS is only worth 70 ELO.
 A 10% performance increase is worth 10 ELO.
 
 Given more data, and some Texel/NNUE training has often found us 50+ ELO, that's like a 70% speed increase.
+
+## Self-play vs other engines
+
+Search/movegen improvements in self play are only worth about 50% of that in matches against other engines. As against other engines they don't have the same eval blindpots
+
+## Training Data
+
+Effective information ≈ positions × sqrt(search_depth)
+
+But value of positions decays after a while.
+
 
 
 # Bugs
@@ -1827,16 +1514,27 @@ SPRT: llr 0 (0.0%), lbound -inf, ubound inf
     -tournament gauntlet \
     -engine name=GoChess cmd=./chess arg=-syzygy arg=/tablebases proto=uci \
     -engine name=GoChess-classic cmd=./chess arg=-classical proto=uci arg=-syzygy arg=/tablebases \
+    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
     -engine name=Rodent3 cmd=rodentIII  proto=uci \
     -engine name=Crafty cmd=./crafty dir=/home/adam/chess/engines/crafty proto=xboard \
     -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
     -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
     -each tc=0/10+0.1  \
-    -rounds 100 -concurrency 8 \
+    -rounds 100 -concurrency 16 \
     -openings file=testdata/noob_3moves.epd format=epd order=random \
     -pgnout gauntlet.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
  
+  cutechess-cli \
+    -tournament gauntlet \
+    -engine name=GoChess-new2 cmd=./chess arg=-syzygy arg=/tablebases arg=-nnue arg=~/code/gochess/net-new2.nnue proto=uci \
+    -engine name=GoChess cmd=./chess arg=-syzygy arg=/tablebases arg=-nnue arg=~/code/gochess/net-new.nnue proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 8 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+
 
 ## Round Robin
 
@@ -1849,7 +1547,7 @@ cutechess-cli \
     -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
     -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
     -each tc=0/10+0.1  \
-    -rounds 20 -concurrency 8 \
+    -rounds 20 -concurrency 16 \
     -openings file=testdata/noob_3moves.epd format=epd order=random \
     -pgnout gauntlet.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
@@ -1995,15 +1693,25 @@ Rank Name                          Elo     +/-   Games   Score    Draw
 
 RR  8th March 11am
 
-Rank Name                          Elo     +/-   Games   Score    Draw
-   1 ExChess                       120      57     120   66.7%   23.3%
-   2 Rodent3                       117      55     120   66.3%   27.5%
-   3 Crafty                         80      56     120   61.3%   24.2%
-   4 Greko                         -17      57     120   47.5%   16.7%
-   5 GoChess                       -29      56     120   45.8%   20.0%
-   6 GoChess-NNUE                  -41      56     120   44.2%   20.0%
-   7 GnuChess                     -260      72     120   18.3%   15.0%
+  Rank Name                          Elo     +/-   Games   Score    Draw
+    1 ExChess                       120      57     120   66.7%   23.3%
+    2 Rodent3                       117      55     120   66.3%   27.5%
+    3 Crafty                         80      56     120   61.3%   24.2%
+    4 Greko                         -17      57     120   47.5%   16.7%
+    5 GoChess                       -29      56     120   45.8%   20.0%
+    6 GoChess-NNUE                  -41      56     120   44.2%   20.0%
+    7 GnuChess                     -260      72     120   18.3%   15.0%
 
+Gauntlet 10th March 8am - beating everyone!
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                       127      26     600   67.5%   19.0%
+   1 Crafty                         -7      60     100   49.0%   24.0%
+   2 ExChess                       -42      60     100   44.0%   24.0%
+   3 Rodent3                       -92      61     100   37.0%   24.0%
+   4 Greko                        -164      69     100   28.0%   16.0%
+   5 GoChess-classic              -252      77     100   19.0%   16.0%
+   6 GnuChess                     -263      84     100   18.0%   10.0%
 
 
 ## H2H comparisons versus other engines 
@@ -2011,10 +1719,10 @@ Rank Name                          Elo     +/-   Games   Score    Draw
 Ratings of other engines are based on CCRL (40 moves in 15 mins). Ponder off
 
 Wasp 3460          # We get hammered!
-Rodent 3107        # H2H we score about -130  ->  2970
-Crafty 3040        # H2H we score about -100  ->  2940
-ExChess 2994       # H2H we score about -100  ->  2890
-GoChess ~2850
-Greko  2787        # H2H we score about +20    -> 2820
-GNU chess  2824    # H2H we score about +200   -> 3024
+GoChess (3120)           
+Rodent 3107        # H2H we score about +92    -> 3199
+Crafty 3040        # H2H we score about +7     ->  3047
+ExChess 2994       # H2H we score about +42    ->  3036
+Greko  2787        # H2H we score about +164   -> 2970
+GNU chess  2824    # H2H we score about +263   -> 3100
 Osprey XXXX        # H2H we were about +800
