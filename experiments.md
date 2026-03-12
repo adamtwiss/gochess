@@ -540,3 +540,127 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 20. **Persist history tables is critical** — Bug: SearchInfo was recreated fresh every `go` command, zeroing all history. Fix gained +19.2 Elo. Always verify infrastructure correctness before tuning parameters.
 21. **History divisor 5000 is robust to persist-history** — Tested 3500 (strengthen) and 7000 (dampen). Gravity formula naturally bounds values; persistent data doesn't change optimal divisor. History pruning threshold (-2000*depth) also robust.
 22. **Investigate anomalies** — The persist-history fix was found by investigating why experiments regressed from early positive to zero. Sometimes the root cause of a symptom is unrelated to the symptom itself.
+23. **History decay hurts with persist-history** — 50% decay between searches, clearing killers, and combinations all tested neutral-to-negative. The gravity formula in history updates naturally bounds staleness.
+24. **Counter-move EG boost was captured by persist-history** — Gained +15.4 vs old baseline but only +3.5 vs new baseline with persist-history. Infrastructure fixes can subsume parameter tuning.
+
+---
+
+## 2026-03-12: History Decay (50% all tables between searches)
+- **Change**: Apply 50% multiplicative decay to all history tables (main, capture, continuation, pawn, correction) between UCI `go` commands.
+- **Result**: 0 Elo, LLR 0.5 (17%) after 820 games — converging to zero, killed
+- **Baseline**: c19645d (persist-history + EG loose check)
+- **Notes**: The gravity formula already bounds history values; forced decay adds no benefit.
+
+## 2026-03-12: Counter-Move EG Boost v2 (re-test on new baseline)
+- **Change**: Double counter-move score in endgame (non-pawn-king < 10) move ordering.
+- **Result**: -2.5 Elo, LLR -0.007 after 828 games — flat/negative, killed
+- **Baseline**: c19645d (persist-history + EG loose check)
+- **Notes**: Previously gained +15.4 vs pre-persist baseline. Persist-history fix already preserves counter-move knowledge, making the boost redundant.
+
+## 2026-03-12: Mate Distance Pruning
+- **Change**: Tighten alpha/beta bounds using theoretical best/worst mate distance. `alpha = max(alpha, -MateScore+ply)`, `beta = min(beta, MateScore-ply-1)`. Prune if window is empty.
+- **Result**: **-19.1 Elo** (H0 rejected, 837 games)
+- **Baseline**: c19645d (persist-history + EG loose check)
+- **Notes**: Started very strong (+37 Elo at 165 games, 95% LOS) but regressed to clearly negative. The pruning fires rarely in normal play (mates are uncommon at root-relative distances) but when it does fire at deep nodes, it can miss forced mates via longer paths. Classic case of early SPRT optimism.
+
+## 2026-03-12: History-Aware Futility Margin
+- **Change**: Adjust futility pruning margin by move history score (÷200). Good-history moves get wider margin (harder to prune), bad-history moves get tighter margin (easier to prune).
+- **Result**: -6.0 Elo, LLR -1.2 (41%) after 1572 games — killed (clearly negative)
+- **Baseline**: c19645d (persist-history + EG loose check)
+- **Notes**: Adding noise to futility margins doesn't help. History is already used in LMR and history pruning; double-dipping in futility is redundant.
+
+## 2026-03-12: Castling Extension
+- **Change**: Extend castling moves by 1 ply (same as check/recapture/passed pawn extensions).
+- **Result**: **-30.8 Elo** (killed at 271 games, clearly negative)
+- **Baseline**: c19645d (persist-history + EG loose check)
+- **Notes**: Castling is a quiet positional move, not a tactical forcing move. Extending it wastes search depth on moves that don't resolve tactical uncertainty. Extensions should be reserved for forcing moves (checks, recaptures, advanced pawns).
+
+## 2026-03-12: QS Correction History
+- **Change**: Apply correction history to stand-pat score in quiescence search (instead of raw EvaluateRelative).
+- **Result**: ~0 Elo after 1865 games, LLR 0.60 — killed (flat)
+- **Baseline**: c19645d
+- **Notes**: Correction history adjustments are small (~±30 cp typical), and QS stand-pat decisions are dominated by material captures, not subtle eval differences. The correction helps in main search where pruning decisions depend on eval accuracy at specific thresholds (RFP, futility) but doesn't change QS meaningfully.
+
+## 2026-03-12: TT PV Entry Preservation (depth +3 bonus)
+- **Change**: In TT replacement scoring, give TTExact (PV node) entries a +3 depth bonus to make them harder to evict.
+- **Result**: ~-3 Elo after 1847 games, LLR -0.13 — killed (flat/negative)
+- **Baseline**: c19645d
+- **Notes**: 5-slot buckets with age-based replacement already do a good job preserving useful entries. Over-preserving PV entries can crowd out useful non-PV entries (fail-high/fail-low bounds from cut/all nodes).
+
+## 2026-03-12: ProbCut TT Move Priority
+- **Change**: In ProbCut, try TT move first (if it's a capture with SEE >= 0) before generating all captures. Skip TT move in the subsequent capture loop.
+- **Result**: ~-1.7 Elo after 1265 games, LLR 0.22 — killed (flat)
+- **Baseline**: c19645d
+- **Notes**: In theory, trying TT move first saves move generation time when ProbCut succeeds. In practice, ProbCut fires rarely and the TT move is often already in the capture list, so the savings are minimal.
+
+## 2026-03-12: Negative Singular Extension Margin d*2 (was d*3)
+- **Change**: Lower negative singular extension threshold from `ttScore + depth*3` to `ttScore + depth*2` (fire negative extensions more often).
+- **Result**: -14.9 Elo after 295 games, LLR -0.69 — killed (clearly negative)
+- **Baseline**: c19645d
+- **Notes**: More negative extensions = more depth reductions on non-singular TT moves. This hurts because many TT moves that aren't overwhelmingly singular are still the best move — reducing them loses accuracy. The current d*3 threshold correctly identifies only moves where alternatives are truly competitive.
+
+## 2026-03-12: Double Singular Extension Threshold d*2 (was d*3)
+- **Change**: Lower double singular extension threshold from `singularBeta - depth*3` to `singularBeta - depth*2` (fire more double extensions).
+- **Result**: +2.4 Elo after 584 games, LLR 0.58 — killed (fading to zero)
+- **Baseline**: c19645d
+- **Notes**: Started at +12 (305 games) but regressed to +2.4. More double extensions don't help — the current threshold correctly identifies overwhelmingly singular moves. Lowering the threshold doubles-extends too many moves that aren't truly singular, wasting search depth.
+
+## 2026-03-12: TT Age Weight 6 (was 4)
+- **Change**: Increase TT replacement age penalty from `depth - 4*age` to `depth - 6*age` (evict old entries more aggressively).
+- **Result**: **-70.4 Elo** after 124 games, LLR -1.53 — killed (catastrophic)
+- **Baseline**: c19645d
+- **Notes**: Over-aggressive eviction of old TT entries destroys search efficiency. Old entries from earlier iterations still contain valuable move ordering and bound information. The current 4*age factor balances freshness vs information preservation. Age 6 evicts too much useful data.
+
+## 2026-03-12: 4-Ply Continuation History in LMR/Pruning
+- **Change**: Add 4-ply continuation history (our move from 4 plies ago) to LMR reduction adjustment (÷4 weight) and history pruning score (÷4 weight). Indexed by current piece/to-square against the move 4 plies back.
+- **Result**: +1.2 Elo after 909 games, LLR 0.72 — killed (fading to zero)
+- **Baseline**: c19645d
+- **Notes**: Started very strong (+21 Elo at 369 games, LLR 1.90) but steadily regressed: +16→+8→+3→+1. Classic early SPRT optimism. The 4-ply-ago move is too distant to provide reliable signal — the position has changed too much. 2-ply continuation history at half weight is the sweet spot; 4-ply adds noise.
+
+## 2026-03-12: Capture History Gravity 8192 (was 16384)
+- **Change**: Halve capture history gravity divisor from 16384 to 8192, making capture history adapt faster (scores bounded to ±8192 instead of ±16384).
+- **Result**: -20.9 Elo after 212 games, LLR -0.70 — killed (clearly negative)
+- **Baseline**: c19645d
+- **Notes**: Faster adaptation means capture history overreacts to recent games, losing the stability that larger gravity provides. With persistent history across searches, the current 16384 divisor lets capture history build up reliable patterns over many positions. Halving it makes the history too volatile.
+
+## 2026-03-12: IIR Depth Threshold 5 (was >= 6)
+- **Change**: Lower IIR depth threshold from `depth >= 6` to `depth >= 5`.
+- **Result**: +0.6 Elo after 567 games, LLR 0.38 — killed (flat zero)
+- **Baseline**: c19645d
+- **Notes**: IIR at depth 5 doesn't help. At depth 5, the savings from reducing to depth 4 are too small to matter, and losing the extra depth when the TT miss is a false alarm costs more than it saves. Depth >= 6 is correct.
+
+## 2026-03-12: LMP Depth 10 (was depth <= 8)
+- **Change**: Extend LMP from `depth <= 8` to `depth <= 10`. At depth 9, lmpLimit = 3+81=84; depth 10, lmpLimit = 3+100=103.
+- **Result**: 0.0 Elo after 408 games, LLR 0.21 — killed (dead flat)
+- **Baseline**: c19645d
+- **Notes**: At depth 9-10, the move count required for LMP (84-103) is rarely reached in practice — most nodes have far fewer legal moves. The extension is harmless but pointless. LMP depth <= 8 already covers the relevant range.
+
+## 2026-03-12: History Pruning Depth 4 (was depth <= 3)
+- **Change**: Extend history-based pruning from `depth <= 3` to `depth <= 4`.
+- **Result**: -22.6 Elo after 206 games, LLR -0.81 — killed (clearly negative)
+- **Baseline**: c19645d
+- **Notes**: Depth 4 has too many important quiet moves to prune based on history alone. At depth 3, history pruning safely eliminates bad moves; at depth 4, the threshold (-2000*depth = -8000) is high enough to clip moves that could still be relevant. History pruning depth 3 is well-calibrated.
+
+## 2026-03-12: NMP Base Reduction R=4 (was R=3)
+- **Change**: Increase NMP base reduction from `R = 3 + depth/3` to `R = 4 + depth/3`.
+- **Result**: **-66.8 Elo** (killed at 107 games, LLR -1.43, clearly negative)
+- **Baseline**: c19645d
+- **Notes**: NMP R=3 base was already confirmed well-calibrated. R=4 is far too aggressive — it skips too much search depth on the null move verification, allowing the engine to be tactically unsound. The eval-based NMP bonus (`eval/200`) already dynamically increases R for clearly winning positions; the base of 3 provides a safe floor.
+
+## 2026-03-12: Disable Singular Extensions (ablation test)
+- **Change**: Set `SingularExtEnabled = false`, `DoubleSingularExtEnabled = false`, `NegativeSingularExtEnabled = false`. Complete ablation of singular extension verification searches.
+- **Result**: **+28.6 Elo** (SPRT H1 accepted, 426 games, LLR 3.0, 99% LOS)
+- **Baseline**: 4bbcb7d
+- **Notes**: Singular extensions were 97-100% wasted — verification searches at depth (depth-1)/2 almost never found the TT move to be singular (0-6 extensions out of 134-178 tests). The wasted nodes from verification searches cost more than the rare extensions gained. Biggest single improvement found. Code preserved (just disabled) for potential fractional extension rework. **MERGED**.
+
+## 2026-03-12: TT Age Weight 3 (was 4)
+- **Change**: TT replacement scoring: `slotScore = depth - 3*age` (was `- 4*age`). Less aggressive age-out.
+- **Result**: +1.7 Elo after 411 games, LLR 0.21 — killed (converged to zero from early -20)
+- **Baseline**: c19645d (4bbcb7d)
+- **Notes**: TTAge-6 was catastrophic (-70 Elo), TTAge-3 converges to zero. Age weight 4 is bracketed as optimal. Neither more nor less aggressive eviction helps.
+
+## 2026-03-12: Futility Pruning Depth 10 (was depth <= 8)
+- **Change**: Extend futility pruning from `depth <= 8` to `depth <= 10`.
+- **Result**: +2.5 Elo after 843 games, LLR 0.82 — killed (faded from early +7, heading to zero)
+- **Baseline**: c19645d (4bbcb7d)
+- **Notes**: Had the most persistent positive signal of the batch (+7.2 at 689 games) but ultimately faded. At depth 9-10, the futility margin (1000-1100cp) is so wide that it rarely triggers, making the extension nearly a no-op. Futility depth 8 is well-calibrated.

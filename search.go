@@ -37,16 +37,19 @@ var LMREnabled = true
 // LMPEnabled controls whether Late Move Pruning is used
 var LMPEnabled = true
 
-// SingularExtEnabled controls whether Singular Extensions are used
-var SingularExtEnabled = true
+// SingularExtEnabled controls whether Singular Extensions are used.
+// Disabled: ablation test showed +28.6 Elo without singular extensions (SPRT H1, 426 games).
+// The verification search was 97-100% wasted (producing no extension), costing nodes.
+// Code preserved for potential fractional extension rework.
+var SingularExtEnabled = false
 
 // DoubleSingularExtEnabled controls whether double singular extensions are used
 // (extend by 2 when TT move is overwhelmingly better than alternatives)
-var DoubleSingularExtEnabled = true
+var DoubleSingularExtEnabled = false
 
 // NegativeSingularExtEnabled controls whether negative singular extensions are used
 // (reduce by 1 when alternatives are just as good as TT move)
-var NegativeSingularExtEnabled = true
+var NegativeSingularExtEnabled = false
 
 // SEEQuietPruneEnabled controls whether SEE-based quiet move pruning is used
 var SEEQuietPruneEnabled = true
