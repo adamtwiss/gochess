@@ -664,3 +664,141 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: +2.5 Elo after 843 games, LLR 0.82 — killed (faded from early +7, heading to zero)
 - **Baseline**: c19645d (4bbcb7d)
 - **Notes**: Had the most persistent positive signal of the batch (+7.2 at 689 games) but ultimately faded. At depth 9-10, the futility margin (1000-1100cp) is so wide that it rarely triggers, making the extension nearly a no-op. Futility depth 8 is well-calibrated.
+
+## 2026-03-12: Fractional Extensions (singular=half ply, additive stacking)
+- **Change**: Extensions use 1/16 ply units. Singular extension gives half-ply (was full ply). Extensions stack additively (check+singular+recapture can combine). Depth limiting: halve extensions when ply > 2*rootDepth. Removed mutual exclusivity between extension types.
+- **Result**: +11.2 Elo after 556 games vs OLD baseline (with singular enabled) — NOT retested against new baseline. Likely zero or negative vs no-singular since it re-enables costly verification searches.
+- **Baseline**: 4bbcb7d (old, singular enabled)
+- **Notes**: The fractional infrastructure is sound, but singular verification searches are fundamentally wasteful in our engine (97-100% produce no extension). The half-ply additive approach doesn't fix the core problem. Infrastructure preserved in frac-ext worktree for future use if we find a less wasteful trigger condition.
+
+## 2026-03-12: Passed Pawn Push Ordering in Endgame
+- **Change**: In quiet move scoring, add bonus for passed pawn pushes to 5th+ rank in endgame (<10 non-pawn pieces). Bonus scales by rank: 5th=2000, 6th=4000, 7th=6000.
+- **Result**: **-36.2 Elo** (SPRT H0 accepted, 385 games vs new baseline)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Strongly negative. The static ordering bonus overrides learned history signals that NNUE-guided search has built up. With NNUE, the eval already knows about passed pawn advancement — adding a crude rank-based bonus to move ordering fights the history tables. Lesson: don't add static heuristic bonuses to move ordering when history tables already capture the pattern.
+
+## 2026-03-12: King Centralization Ordering in Endgame
+- **Change**: In quiet move scoring, add bonus for king moves toward center in endgame. Bonus = (centerDist(from) - centerDist(to)) * 3000.
+- **Result**: -11.6 Elo after 546 games, LLR -1.13 — killed (clearly negative)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Same problem as PPOrder — static king centralization bonus conflicts with learned history. NNUE already evaluates king placement; the search's history tables learn which king moves cause cutoffs. Overriding with a distance heuristic adds noise. Static move ordering heuristics don't help when NNUE+history already captures the pattern.
+
+## 2026-03-12: Pawn History in LMR Adjustment
+- **Change**: Add pawn history score to the LMR history adjustment (alongside main history and cont history).
+- **Result**: +1.9 Elo after 544 games — killed (dead flat)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Pawn history adds noise to the LMR adjustment. The main+cont history signals already capture move quality well enough. Consistent with earlier finding that pawn history helps ordering but not LMR/pruning.
+
+## 2026-03-12: Deeper IIR (reduce by 2 at depth >= 12)
+- **Change**: When no TT move at depth >= 12, reduce by 2 plies instead of 1.
+- **Result**: -25.4 Elo after 279 games, LLR -1.24 — killed (clearly negative)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Reducing by 2 plies loses too much information at deep nodes. Even without a TT move, the full-depth search at these depths finds important tactical sequences that a 2-ply reduction misses. IIR by 1 at depth >= 6 is well-calibrated.
+
+## 2026-03-12: NMP skip when not improving (depth 3-7)
+- **Change**: Add `(improving || depth >= 8)` condition to NMP. Skips null move at shallow depths when eval is declining.
+- **Result**: -12.6 Elo after 598 games, LLR -1.27 — killed (clearly negative)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: NMP is valuable even when position is declining — the null move hypothesis (standing pat is OK) is about absolute eval, not the trend. Restricting NMP removes a critical pruning tool at exactly the depths where it saves the most relative work. NMP at depth 3-7 is well-calibrated.
+
+## 2026-03-12: TT score refines static eval for pruning
+- **Change**: After computing corrected static eval, adjust toward TT score using bound information (exact→replace, lower→max, upper→min). Required `entry.Depth >= depth-3`.
+- **Result**: **-77.1 Elo** (SPRT H0 accepted, 174 games — catastrophic)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: TT scores are minimax scores from search, not static evaluations. Using them as static eval for pruning decisions (RFP, NMP, futility) breaks the assumptions those techniques rely on. A TT score of +500 at depth 8 might reflect a forcing sequence that doesn't apply when we're making a different move. Static eval must remain a position-only estimate. Stockfish does a milder version (only adjusting improving flag, not the eval itself).
+
+## 2026-03-12: MainHist-2x v2 (double main history weight in move ordering)
+- **Change**: `score = 2 * int(mp.history[m.From()][m.To()])` — doubles main history weight relative to cont history.
+- **Result**: +3.0 Elo after 1792 games, LLR 1.88 — killed (fading from early +8.5, converging to zero)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Initially promising but faded over 1800 games. Main history weight 1x is well-calibrated relative to continuation history. Doubling main history doesn't improve move ordering quality.
+
+## 2026-03-12: Razor-D3 (extend razoring to depth 3)
+- **Change**: `depth <= 2` → `depth <= 3` for razoring. Margin at depth 3: 400+300=700cp.
+- **Result**: -0.3 Elo after 1398 games — killed (dead flat)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Razoring at depth 3 with a 700cp margin rarely fires (most positions aren't 7 pawns behind), making it a no-op in practice. Confirms razoring depth 2 is well-calibrated. Pattern #10.
+
+## 2026-03-12: Disable Recapture Extensions (ablation test)
+- **Change**: Set `RecaptureExtEnabled = false`. Tests whether recapture extensions are earning their cost.
+- **Result**: **-18.2 Elo** after 737 games — killed (clearly negative, recapture extensions ARE useful)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Opposite of the singular ablation result. Recapture extensions successfully resolve tactical exchanges — extending when recapturing on the same square prevents the search from cutting off mid-exchange. Unlike singular extensions (97% wasted verification searches), recapture extensions fire on genuinely forcing moves. Do not reduce or remove.
+
+## 2026-03-12: Disable Passed Pawn Extensions (ablation test)
+- **Change**: Set `PassedPawnExtEnabled = false`. Tests whether PP push extensions are earning their cost.
+- **Result**: 0.0 Elo after 1095 games, LLR 0.51 — killed (conclusively neutral)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: PP extensions on 6th+7th rank passed pawns are pure noise. Full-ply extension on these moves wastes as much search depth as it gains. Confirms PP extensions should be removed or significantly reduced.
+
+## 2026-03-12: MainHist-2x v2 (double main history weight in move ordering)
+- **Change**: `score = 2 * int(mp.history[m.From()][m.To()])` — doubles main history weight relative to cont history.
+- **Result**: +3.0 Elo after 1792 games, LLR 1.88 — killed (fading from early +8.5, converging to zero)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Initially promising but faded over 1800 games. Main history weight 1x is well-calibrated relative to continuation history.
+
+## 2026-03-12: Razor-D3 (extend razoring to depth 3)
+- **Change**: `depth <= 2` → `depth <= 3` for razoring. Margin at depth 3: 400+300=700cp.
+- **Result**: -0.3 Elo after 1398 games — killed (dead flat)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Razoring at depth 3 with 700cp margin rarely fires. Confirms razoring depth 2 is well-calibrated. Pattern #10.
+
+## 2026-03-12: Check Extension 12/16 ply (fractional, MERGED)
+- **Change**: Fractional extension infrastructure (OnePly=16, additive stacking, depth limiting). Check extension reduced from full ply (16/16) to 12/16 (3/4 ply). Includes EG loose check filter (undoes 12/16 for loose checks).
+- **Result**: **+11.2 Elo**, H1 accepted. W298-L266-D431 (995 games). LOS 91.1%.
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Reducing check extension saves search depth on checks that don't need full resolution, while still extending enough to find tactical threats. The "waste removal" pattern continues — full-ply extensions are too generous for most checks. Fractional extensions unlock further tuning of individual extension amounts.
+
+## 2026-03-12: Fractional Extensions Infrastructure (additive stacking, all full ply)
+- **Change**: OnePly=16, additive extensions (check+recap can stack), depth limiting (halve when ply > 2*rootDepth). All extensions remain at full ply.
+- **Result**: 0.0 Elo after 1140 games, LLR 1.20 — killed (flat zero, contaminated by Check12 merge)
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: The infrastructure itself is neutral — additive stacking and depth limiting don't change behavior when extensions are mutually rare. Value is as a platform for tuning individual extension amounts. Merged as part of Check12.
+
+## 2026-03-12: Recapture Extension 12/16 ply
+- **Change**: Recapture ext reduced from full ply to 12/16 (3/4 ply). Frac-ext infrastructure.
+- **Result**: +0.4 Elo after 743 games — killed (flat, contaminated by Check12 merge). Relaunching vs new baseline.
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: 12/16 recapture is indistinguishable from full ply at this sample size. Relaunching on new baseline (with check 12/16).
+
+## 2026-03-12: PP Extension 12/16, 7th rank only
+- **Change**: PP ext restricted to 7th rank only, reduced to 12/16 (3/4 ply). Frac-ext infrastructure.
+- **Result**: -3.1 Elo after 730 games — killed (mildly negative, contaminated by Check12 merge). Relaunching vs new baseline.
+- **Baseline**: 9051739 (singular disabled)
+- **Notes**: Even restricted to the most critical rank at reduced extension, PP extensions trend negative. Relaunching to confirm on new baseline.
+
+## 2026-03-12: Recapture Extension 14/16 ply
+- **Change**: Recapture ext reduced from full ply to 14/16 (7/8 ply). Bracket test above 12/16.
+- **Result**: **-49.8 Elo** (SPRT H0 accepted, 295 games). Catastrophic.
+- **Baseline**: 8ea8a81 (check 12/16 + frac-ext)
+- **Notes**: Even a small reduction from full ply to 14/16 destroys recapture extension effectiveness. Recapture extensions need the full ply to properly resolve tactical exchanges. Combined with NoRecap (-18 Elo) and Recap12 (flat), this confirms: recapture must stay at full ply (16/16). Do not reduce.
+
+## 2026-03-12: Check Extension 14/16 ply
+- **Change**: Check extension at 14/16 (7/8 ply) instead of 12/16 (3/4 ply). Frac-ext infrastructure.
+- **Result**: +2.8 Elo after 968 games — killed (inconclusive, fractional extensions removed)
+- **Baseline**: 8ea8a81 (check 12/16 + frac-ext)
+- **Notes**: Not enough games to conclude. Moot point — check extensions removed entirely (see below).
+
+## 2026-03-12: Recapture Extension 12/16 ply v2
+- **Change**: Recapture ext reduced from full ply to 12/16. Relaunched on new baseline.
+- **Result**: -5.6 Elo after 1311 games — killed (trending H0, fractional extensions removed)
+- **Baseline**: 8ea8a81 (check 12/16 + frac-ext)
+- **Notes**: Confirms recap must stay at full ply. Consistent with Recap14 (-49.8) and original Recap12 (+0.4 flat).
+
+## 2026-03-12: PP Extension 12/16, 7th rank only v2
+- **Change**: PP ext restricted to 7th rank only, 12/16 ply. Relaunched on new baseline.
+- **Result**: -9.1 Elo after 1312 games — killed (trending H0, fractional extensions removed)
+- **Baseline**: 8ea8a81 (check 12/16 + frac-ext)
+- **Notes**: PP extensions at any amount continue to trend negative. Confirms removal is correct.
+
+## 2026-03-12: Extension Simplification (MERGED)
+- **Change**: Remove fractional extension infrastructure entirely. Remove check extensions (harmful, -11.2 Elo). Remove PP extensions (noise, 0.0 Elo). Keep only recapture at integer 1 ply. Removes ~46 lines, replaces with ~10.
+- **Result**: Non-regression expected (effectively equivalent to Check12 baseline where check 12/16 truncated to 0 anyway).
+- **Baseline**: 8ea8a81 (check 12/16 + frac-ext)
+- **Key insight**: Check extension at 12/16 was `12/16 = 0` in integer division — the +11.2 Elo gain was from *disabling* check extensions, not from fractional precision. Fractional depth is a dead end (Stockfish abandoned it after 5 years due to TT consistency issues). Modern approach: integer extensions, fractional reductions only.
+- **Evidence summary**:
+  - Check ext: -11.2 Elo when enabled (SPRT H1 for "disabling"), harmful
+  - PP ext: 0.0 Elo ablation (1095 games), noise
+  - Recapture ext: -18.2 Elo when disabled, essential at full ply
+  - Recap 14/16: -49.8 Elo, cannot reduce even slightly
+  - Recap 12/16: -5.6 Elo trending, cannot reduce
