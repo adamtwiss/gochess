@@ -468,12 +468,51 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: chess-persist-history
 - **Notes**: History pruning threshold is well-calibrated. The gravity formula in history updates naturally bounds values, so persistent history doesn't drastically change score magnitudes. Both directions (tighter and looser) of history-related parameters lose Elo — confirms pattern #3 (well-tuned).
 
+## 2026-03-12: History Divisor 5000→3500 (Killed ~600 games, vs new baseline)
+- **Change**: Decrease LMR history divisor from 5000 to 3500, strengthening history influence.
+- **Result**: -3 Elo at 600 games (flat, killed).
+- **Baseline**: c19645d (persist-history + EG loose check)
+- **Notes**: Both directions tested (3500 and 7000). Confirms divisor 5000 is optimal even with persistent history.
+
+## 2026-03-12: Pawn History in LMR (Killed ~400 games, vs new baseline)
+- **Change**: Add pawn history (÷2 weight) to LMR reduction adjustment histScore.
+- **Result**: -10 Elo at 400 games (killed, negative).
+- **Baseline**: c19645d
+- **Notes**: Consistent with pre-persist-history result (-7.8). Pawn history doesn't help LMR regardless of persistence. Pattern holds.
+
+## 2026-03-12: Counter-Move Before Killers in EG (H1 vs old, flat vs new)
+- **Change**: In endgame (non-pawn-king < 10), try counter-move before killer moves in move ordering.
+- **Result**: H1 at +15.4 Elo vs old baseline (698 games). Flat at +3.5 vs new baseline (618 games).
+- **Baseline**: 4bbcb7d (old) / c19645d (new)
+- **Notes**: The persist-history fix already makes counter-moves effective since they persist across searches. The ordering change adds no further benefit — counter-moves are already strong with persistence.
+
+## 2026-03-12: Clear Killers Between Searches (Killed ~272 games)
+- **Change**: Clear killer move table in `resetForSearch()`. Theory: stale killers from previous search at same ply could hurt.
+- **Result**: -23 Elo at 272 games (killed).
+- **Baseline**: c19645d
+- **Notes**: Persistent killers ARE useful. Ply-indexed killers remain relevant across searches at similar depths.
+
+## 2026-03-12: History Decay 50% + Clear Killers (converging to 0, ~800 games)
+- **Change**: Halve all history tables and clear killers between searches. Favors recent data.
+- **Result**: Peaked at +15 Elo early, regressed to 0 at 800 games. Still running.
+- **Baseline**: c19645d
+- **Notes**: Early promise was noise. Decay hurts as much as it helps. History gravity formula already handles staleness.
+
+## 2026-03-12: History Decay 50% Only (Killed ~100 games)
+- **Change**: Halve all history tables between searches (keep killers).
+- **Result**: -44 Elo at ~100 games (killed).
+- **Baseline**: c19645d
+- **Notes**: Pure decay without killer clearing is clearly bad. Confirms history decay is not useful — the gravity formula in history updates already prevents saturation.
+
+## 2026-03-12: TM Fail-Low Extension (Killed ~250 games)
+- **Change**: Extend search time by 1.3x when score drops >30cp from previous iteration.
+- **Result**: -39 Elo at ~250 games (killed).
+- **Baseline**: c19645d
+- **Notes**: Extra time on fail-low doesn't help — the existing instability scaling (1.2-1.4x for scoreDelta > 25-50) already handles this. Additional extension wastes time on hopeless positions.
+
 ---
 
 ## Ideas Not Yet Tested
-- **Counter-move before killers in EG**: SPRT at 79% LLR vs old baseline, needs re-test on new baseline with persist-history.
-- **History divisor 3500** (in progress vs new baseline): Strengthening history influence. 7000 (dampening) lost badly.
-- **Pawn history in LMR** (in progress vs new baseline): Retest with persistent pawn history data.
 - **Endgame-specific move ordering**: TT move dominates EG cutoffs (51.4% vs 13.9% MG), suggesting other ordering signals need different weights.
 - **Queen check extension filter**: Queen checks are 86% of EG checks but mostly shuffling. Could selectively reduce extension for distant queen checks (EG loose check already handles the escape-square case).
 
