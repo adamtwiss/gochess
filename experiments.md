@@ -448,15 +448,34 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: chess-persist-history (history tables persist across searches)
 - **Notes**: Dampening history influence is wrong direction. With persistent history providing richer/higher-magnitude data, the current divisor of 5000 may already be correct or even too high. Don't increase further; consider testing lower (4000 or 3500).
 
+## 2026-03-12: Persist History Tables Across Searches (MERGED)
+- **Change**: Bug fix — SearchInfo (history, killers, counter-moves, continuation history, pawn history, correction history) now persists across searches within the same game via `persistInfo` on UCIEngine. Previously every `go` command created a fresh SearchInfo, discarding all learned move ordering data. `ucinewgame` properly clears everything.
+- **Result**: **+19.2 Elo**, H1 accepted. W198-L163-D272 (633 games). LOS 96.7%.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Commit**: c19645d (combined with EG loose check)
+- **Notes**: Major bug fix discovered by investigating why experiments regressed from early positive to zero. All history tables were being zeroed every move — the engine was starting cold for move ordering on every search. This affects every history-dependent feature (move ordering, LMR, history pruning, correction history).
+
+## 2026-03-12: EG Loose Check Filter (MERGED)
+- **Change**: Skip check extension in endgame (<10 non-pawn-king pieces) when checked king has 4+ escape squares. Based on instrumentation showing 98% of EG checks are loose with only 7.2% cutoff rate.
+- **Result**: **+21.7 Elo**, H1 accepted. W167-L133-D244 (544 games). LOS 97.5%.
+- **Baseline**: net.nnue @ 4bbcb7d
+- **Commit**: c19645d (combined with persist history)
+- **Notes**: Data-driven experiment. Phase instrumentation revealed 86% of EG checks are queen shuffling with 4+ king escapes. Filtering these saves ~2.9M wasted search nodes. Tight checks (0-3 escapes) retained at 25-35% cutoff rate.
+
+## 2026-03-12: History Pruning -2000→-3000 (Killed ~120 games, vs PersistHistory baseline)
+- **Change**: Loosen history pruning threshold from `-2000*depth` to `-3000*depth`. Theory: with persistent history, scores are larger, so threshold needs widening.
+- **Result**: -35 Elo at ~120 games (killed).
+- **Baseline**: chess-persist-history
+- **Notes**: History pruning threshold is well-calibrated. The gravity formula in history updates naturally bounds values, so persistent history doesn't drastically change score magnitudes. Both directions (tighter and looser) of history-related parameters lose Elo — confirms pattern #3 (well-tuned).
+
 ---
 
 ## Ideas Not Yet Tested
-- **Singular extension margin widening**: Tested, no gain. Do not revisit.
-- **EG loose check filter** (in progress): Skip check extension when endgame AND king has 4+ escape squares. Data: 98% of EG checks are loose (4+ escapes) with only 7.2% cutoff rate vs 25-35% for tight checks. Targets 2.9M wasted nodes.
-- **Counter-move before killers in EG** (in progress): Data shows counter-move is 23% effective in EG vs 15% MG.
-- **LMR reduction -1 in EG** (in progress): EG has 1.5% LMR re-search rate vs 1.1% MG, suggesting reductions are slightly too aggressive.
+- **Counter-move before killers in EG**: SPRT at 79% LLR vs old baseline, needs re-test on new baseline with persist-history.
+- **History divisor 3500** (in progress vs new baseline): Strengthening history influence. 7000 (dampening) lost badly.
+- **Pawn history in LMR** (in progress vs new baseline): Retest with persistent pawn history data.
 - **Endgame-specific move ordering**: TT move dominates EG cutoffs (51.4% vs 13.9% MG), suggesting other ordering signals need different weights.
-- **Queen check extension filter**: Queen checks are 86% of EG checks but mostly shuffling. Could selectively reduce extension for distant queen checks.
+- **Queen check extension filter**: Queen checks are 86% of EG checks but mostly shuffling. Could selectively reduce extension for distant queen checks (EG loose check already handles the escape-square case).
 
 ## Key Patterns Observed
 
@@ -479,3 +498,6 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 17. **Pawn history doesn't transfer to LMR** — useful for ordering (-7.8 Elo in LMR). Ordering signals don't always work for pruning/reduction.
 18. **EG-specific search parameters lose Elo** — Tested EG futility (75% margin), NMP +1 with rooks, check ext SEE filter. All negative. The existing "one size fits all" parameters are well-calibrated across phases. History tables naturally adapt during gradual MG→EG transition.
 19. **Check extension quality varies dramatically by phase** — MG: 35% loose (4+ escapes, 10% cutoff), EG: 98% loose (7% cutoff). 86% of EG checks are queen shuffling. Structural check quality filters > phase-specific parameter tweaks.
+20. **Persist history tables is critical** — Bug: SearchInfo was recreated fresh every `go` command, zeroing all history. Fix gained +19.2 Elo. Always verify infrastructure correctness before tuning parameters.
+21. **History divisor 5000 is robust to persist-history** — Tested 3500 (strengthen) and 7000 (dampen). Gravity formula naturally bounds values; persistent data doesn't change optimal divisor. History pruning threshold (-2000*depth) also robust.
+22. **Investigate anomalies** — The persist-history fix was found by investigating why experiments regressed from early positive to zero. Sometimes the root cause of a symptom is unrelated to the symptom itself.
