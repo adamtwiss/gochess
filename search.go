@@ -20,6 +20,10 @@ const (
 	// MaxQSDepth is the maximum quiescence search depth
 	MaxQSDepth = 32
 
+	// Fractional extension units: 1 ply = 16 fractional units.
+	// Allows fine-grained extensions (e.g. half-ply) and additive stacking.
+	OnePly = 16
+
 	// Correction history constants
 	corrHistSize  = 16384 // entries per color
 	corrHistGrain = 256   // fixed-point scaling / gravity denominator
@@ -1297,6 +1301,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				}
 			}
 		}
+		_ = singularExtension // currently disabled; will use when re-enabling as fractional
 
 		// Save moved piece before MakeMove for consistent history indexing
 		movedPiece := b.Squares[move.From()]
@@ -1397,9 +1402,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			continue
 		}
 
-		extension := 0
+		// Fractional extensions: accumulate in 1/16 ply units, then convert.
+		// Extensions are additive (check + recapture can stack).
+		extFrac := 0
+
 		if givesCheck {
-			extension = 1
+			extFrac += OnePly * 3 / 4 // 12/16 check extension
 			// Skip loose check extensions in endgame: checks where the king
 			// has 4+ escape squares are mostly futile shuffling (98% of EG checks,
 			// only 7.2% cutoff rate vs 25-35% for tight checks).
@@ -1411,27 +1419,24 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				kingSq := b.Pieces[pieceOf(WhiteKing, checkedColor)].LSB()
 				escapes := (KingAttacks[kingSq] &^ b.Occupied[checkedColor]).Count()
 				if escapes >= 4 {
-					extension = 0
+					extFrac -= OnePly * 3 / 4 // undo the 12/16 check extension
 				}
 			}
-		}
-		if singularExtension != 0 && extension == 0 {
-			extension = singularExtension
 		}
 
 		// Recapture extension: extend when recapturing on the same square
 		// the opponent just captured on, to resolve tactical exchanges fully.
-		if RecaptureExtEnabled && extension == 0 && isCap && len(b.UndoStack) >= 2 {
+		if RecaptureExtEnabled && isCap && len(b.UndoStack) >= 2 {
 			prevUndo := b.UndoStack[len(b.UndoStack)-2] // opponent's move (current move is at top)
 			if prevUndo.Captured != Empty && move.To() == prevUndo.Move.To() {
-				extension = 1
+				extFrac += OnePly
 				info.RecaptureExtensions++
 			}
 		}
 
 		// Passed pawn push extension: extend pawn pushes to 6th or 7th rank
 		// to help resolve critical promotion races and endgame tactics.
-		if PassedPawnExtEnabled && extension == 0 && !isCap {
+		if PassedPawnExtEnabled && !isCap {
 			movedPiece := b.Squares[move.To()]
 			moverColor := b.SideToMove ^ 1 // side that just moved (MakeMove flips SideToMove)
 			if movedPiece == pieceOf(WhitePawn, moverColor) {
@@ -1444,14 +1449,20 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					// Check if it's actually a passed pawn
 					enemyPawns := b.Pieces[pieceOf(WhitePawn, moverColor^1)]
 					if PassedPawnMask[moverColor][move.To()]&enemyPawns == 0 {
-						extension = 1
+						extFrac += OnePly
 						info.PassedPawnExtensions++
 					}
 				}
 			}
 		}
 
-		newDepth := depth - 1 + extension
+		// Depth limiting: when search has extended far beyond root depth,
+		// halve extensions to prevent explosion on forced lines.
+		if ply > info.Depth*2 && extFrac > 0 {
+			extFrac /= 2
+		}
+
+		newDepth := depth - 1 + extFrac/OnePly
 
 		var score int
 
