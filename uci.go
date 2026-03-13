@@ -27,7 +27,6 @@ type UCIEngine struct {
 	threads      int // number of search threads (Lazy SMP)
 	moveOverhead int // ms safety margin for UCI communication + OS scheduling
 	searchInfo   *SearchInfo
-	persistInfo  SearchInfo // persistent SearchInfo: history, killers, counter-moves survive across searches
 	searchMu     sync.Mutex
 	searchWg     sync.WaitGroup
 	input        *bufio.Scanner
@@ -40,7 +39,6 @@ type UCIEngine struct {
 	ponderOpt      bool
 	ponderBookMove string // set by cmdPonderhit when book has a move
 	nnueNet        *NNUENet // loaded NNUE network (nil when not loaded)
-	searchBounded  bool     // true if current search has a depth/time limit
 }
 
 // NewUCIEngine creates a UCI engine reading from stdin and writing to stdout.
@@ -67,17 +65,7 @@ func NewUCIEngineWithIO(in io.Reader, out io.Writer) *UCIEngine {
 
 // Run enters the UCI command loop, reading and dispatching commands until "quit".
 func (e *UCIEngine) Run() {
-	defer func() {
-		// On stdin EOF (e.g. piped input), wait for bounded searches
-		// (depth/movetime/clock) to finish naturally. Without this,
-		// cmdStop aborts the search before it outputs bestmove.
-		// Unbounded searches (go infinite/ponder) are stopped immediately.
-		if e.searchBounded {
-			e.searchWg.Wait()
-		} else {
-			e.cmdStop()
-		}
-	}()
+	defer e.cmdStop()
 	for e.input.Scan() {
 		line := strings.TrimSpace(e.input.Text())
 		if line == "" {
@@ -158,8 +146,6 @@ func (e *UCIEngine) cmdNewGame() {
 	e.cmdStop()
 	e.tt.Clear()
 	e.board.Reset()
-	// Clear all persistent search state (history, killers, counter-moves, etc.)
-	e.persistInfo = SearchInfo{}
 	// Recompute NNUE accumulator after board reset
 	if e.nnueNet != nil && e.board.NNUENet != nil && e.board.NNUEAcc != nil {
 		e.board.NNUENet.RecomputeAccumulator(e.board.NNUEAcc.Current(), &e.board)
@@ -286,9 +272,6 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 		softMS, hardMS = computeSearchTime(params.movetime, params.wtime, params.btime,
 			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove, e.moveOverhead)
 	}
-	// Track whether search is bounded (has depth limit or time limit).
-	// Used on stdin EOF to decide whether to wait or stop immediately.
-	e.searchBounded = params.depth > 0 || hardMS > 0
 
 	// Copy board for search goroutine (preserve game history for repetition detection)
 	var searchBoard Board
@@ -304,12 +287,11 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 
 	e.searchMu.Lock()
 	now := time.Now()
-	// Reuse persistent SearchInfo to preserve history tables across searches
-	info := &e.persistInfo
-	info.resetForSearch()
-	info.StartTime = now
-	info.MaxTime = time.Duration(hardMS) * time.Millisecond
-	info.TT = e.tt
+	info := &SearchInfo{
+		StartTime: now,
+		MaxTime:   time.Duration(hardMS) * time.Millisecond,
+		TT:        e.tt,
+	}
 	if hardMS > 0 {
 		atomic.StoreInt64(&info.Deadline, now.Add(time.Duration(hardMS)*time.Millisecond).UnixNano())
 	}
