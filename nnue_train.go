@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // NNUETrainNet holds float32 weights for training (higher precision than int16 inference).
@@ -1017,7 +1018,57 @@ func addGradients(dst, src *NNUETrainGradients) {
 }
 
 func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
+	trainer.applyAdamUpdatesParallel(grads, scale, lr, runtime.NumCPU())
+}
+
+func (trainer *NNUETrainer) applyAdamUpdatesParallel(grads *NNUETrainGradients, scale, lr float64, numWorkers int) {
 	step := trainer.step
+
+	// Small layers (output, hidden2, hidden1 biases) are fast — do them on main thread
+	// while goroutines handle the large layers.
+	var wg sync.WaitGroup
+
+	// Input layer sparse updates (dominant cost: up to ~12K rows × 256 weights)
+	dirtyRows := grads.dirtyInputs
+	if len(dirtyRows) > 0 {
+		perWorker := (len(dirtyRows) + numWorkers - 1) / numWorkers
+		for w := 0; w < numWorkers; w++ {
+			start := w * perWorker
+			if start >= len(dirtyRows) {
+				break
+			}
+			end := start + perWorker
+			if end > len(dirtyRows) {
+				end = len(dirtyRows)
+			}
+			wg.Add(1)
+			go func(rows []int) {
+				defer wg.Done()
+				for _, idx := range rows {
+					for j := 0; j < NNUEHiddenSize; j++ {
+						if grads.InputWeights[idx][j] != 0 {
+							adamUpdate(&trainer.Net.InputWeights[idx][j], float64(grads.InputWeights[idx][j])*scale,
+								&trainer.adam.inputWeights[idx][j], lr, step)
+						}
+					}
+				}
+			}(dirtyRows[start:end])
+		}
+	}
+
+	// Hidden layer 1 weights (512×32 = 16K updates) — parallel
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < NNUEHiddenSize*2; i++ {
+			for j := 0; j < NNUEHidden2Size; j++ {
+				adamUpdate(&trainer.Net.HiddenWeights[i][j], float64(grads.HiddenWeights[i][j])*scale,
+					&trainer.adam.hiddenWeights[i][j], lr, step)
+			}
+		}
+	}()
+
+	// Small layers on main thread (runs concurrently with goroutines above)
 
 	// Output layer (hidden3 -> output), per bucket
 	for b := 0; b < NNUEOutputBuckets; b++ {
@@ -1041,26 +1092,10 @@ func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, l
 		}
 	}
 
-	// Hidden layer (concat accum -> hidden2)
+	// Hidden layer biases
 	for j := 0; j < NNUEHidden2Size; j++ {
 		adamUpdate(&trainer.Net.HiddenBiases[j], float64(grads.HiddenBiases[j])*scale,
 			&trainer.adam.hiddenBiases[j], lr, step)
-	}
-	for i := 0; i < NNUEHiddenSize*2; i++ {
-		for j := 0; j < NNUEHidden2Size; j++ {
-			adamUpdate(&trainer.Net.HiddenWeights[i][j], float64(grads.HiddenWeights[i][j])*scale,
-				&trainer.adam.hiddenWeights[i][j], lr, step)
-		}
-	}
-
-	// Input layer (sparse — only dirty rows)
-	for _, idx := range grads.dirtyInputs {
-		for j := 0; j < NNUEHiddenSize; j++ {
-			if grads.InputWeights[idx][j] != 0 {
-				adamUpdate(&trainer.Net.InputWeights[idx][j], float64(grads.InputWeights[idx][j])*scale,
-					&trainer.adam.inputWeights[idx][j], lr, step)
-			}
-		}
 	}
 
 	// Input biases
@@ -1068,6 +1103,8 @@ func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, l
 		adamUpdate(&trainer.Net.InputBiases[j], float64(grads.InputBiases[j])*scale,
 			&trainer.adam.inputBiases[j], lr, step)
 	}
+
+	wg.Wait()
 }
 
 func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainConfig) float64 {
@@ -1342,6 +1379,9 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 
 	rng := rand.New(rand.NewSource(42))
 
+	// Pre-load validation samples once (reused across all epochs)
+	valSamples, _ := bf.ValidationSamples(trainFraction)
+
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		// Check for early stop signal
 		if cfg.Stop != nil {
@@ -1362,6 +1402,9 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 		numSamples := 0
 		processed := 0
 
+		// Timing accumulators
+		var tRead, tFwdBwd, tAgg, tAdam time.Duration
+
 		// Pre-allocate sample buffer for batches
 		sampleBuf := make([]*NNUETrainSample, 0, cfg.BatchSize)
 
@@ -1372,16 +1415,19 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 			}
 
 			// Read batch via block-shuffled reader
+			t0 := time.Now()
 			batch, err := reader.NextBatch(batchSize, sampleBuf)
 			if err != nil || batch == nil {
 				break
 			}
 			actualBatch := len(batch)
 			processed += actualBatch
+			tRead += time.Since(t0)
 
 			// Parallel forward + backward
 			perWorker := (actualBatch + numWorkers - 1) / numWorkers
 
+			t0 = time.Now()
 			var wg sync.WaitGroup
 			for w := 0; w < numWorkers; w++ {
 				wg.Add(1)
@@ -1429,19 +1475,24 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 				}(w)
 			}
 			wg.Wait()
+			tFwdBwd += time.Since(t0)
 
 			// Aggregate gradients and loss
+			t0 = time.Now()
 			zeroGradients(&totalGrads)
 			for w := 0; w < numWorkers; w++ {
 				totalLoss += workerLoss[w]
 				numSamples += workerCount[w]
 				addGradients(&totalGrads, &workerGrads[w])
 			}
+			tAgg += time.Since(t0)
 
 			// Scale gradients and apply Adam updates
+			t0 = time.Now()
 			scale := 1.0 / float64(actualBatch)
 			trainer.step++
 			trainer.applyAdamUpdates(&totalGrads, scale, cfg.LR)
+			tAdam += time.Since(t0)
 		}
 
 		// Compute losses
@@ -1450,7 +1501,15 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 			trainLoss = totalLoss / float64(numSamples)
 		}
 
-		valLoss := trainer.computeValidationLossBinpack(bf, cfg, trainFraction)
+		t0 := time.Now()
+		valLoss := trainer.computeValidationLossFromSamples(valSamples, cfg)
+		tVal := time.Since(t0)
+
+		tTotal := tRead + tFwdBwd + tAgg + tAdam + tVal
+		fmt.Fprintf(os.Stderr, "  Epoch %d timing: read=%v fwd+bwd=%v aggregate=%v adam=%v val=%v total=%v\n",
+			epoch, tRead.Round(time.Millisecond), tFwdBwd.Round(time.Millisecond),
+			tAgg.Round(time.Millisecond), tAdam.Round(time.Millisecond),
+			tVal.Round(time.Millisecond), tTotal.Round(time.Millisecond))
 
 		if onEpoch != nil {
 			onEpoch(epoch, trainLoss, valLoss)
@@ -1458,11 +1517,9 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 	}
 }
 
-// computeValidationLossBinpack computes validation loss from binpack files.
-func (trainer *NNUETrainer) computeValidationLossBinpack(bf *BinpackFile, cfg NNUETrainConfig, trainFraction float64) float64 {
-	// Read validation samples
-	valSamples, err := bf.ValidationSamples(trainFraction)
-	if err != nil || len(valSamples) == 0 {
+// computeValidationLossFromSamples computes validation loss from pre-loaded samples.
+func (trainer *NNUETrainer) computeValidationLossFromSamples(valSamples []*NNUETrainSample, cfg NNUETrainConfig) float64 {
+	if len(valSamples) == 0 {
 		return 0
 	}
 
