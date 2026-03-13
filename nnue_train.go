@@ -249,7 +249,8 @@ func computeSampleLoss(output float32, s *NNUETrainSample, cfg NNUETrainConfig) 
 	}
 
 	if cfg.Lambda == 0 && s.HasScore {
-		// Direct MSE on centipawn scores
+		// Direct MSE on centipawn scores — scale anchoring is implicit
+		// (the MSE term IS the scale-preserving loss, no sigmoid to collapse)
 		diff := (float64(output) - score) / cfg.K
 		return diff * diff
 	}
@@ -303,6 +304,7 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 	if cfg.Lambda == 0 && sample.HasScore {
 		// Direct MSE on centipawn scores: loss = ((output - target) / K)²
 		// Gradient: d(loss)/d(output) = 2 * (output - target) / K²
+		// Scale anchoring is implicit — MSE on cp scores IS the scale-preserving loss
 		dOutput = float32(2.0 * (float64(output) - score) / (cfg.K * cfg.K))
 	} else {
 		// Sigmoid loss (needed for game outcome blending)
@@ -332,7 +334,7 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 			dOutput = float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
 		}
 
-		// Scale anchoring gradient (only relevant with sigmoid)
+		// Scale anchoring gradient (only needed with sigmoid — MSE path has implicit scale preservation)
 		if cfg.ScaleWeight > 0 && sample.HasScore {
 			dScale := float32(2.0 * cfg.ScaleWeight * (float64(output) - score) / (cfg.K * cfg.K))
 			dOutput += dScale

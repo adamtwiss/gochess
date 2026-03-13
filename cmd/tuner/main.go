@@ -760,8 +760,6 @@ func runCheckNet(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	net.PrepareWeights()
-
 	type testPos struct {
 		name    string
 		fen     string
