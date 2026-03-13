@@ -346,6 +346,7 @@ func runNNUETrain(args []string) {
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
 	scaleWeight := fs.Float64("scale-weight", 0.0, "weight for centipawn scale anchoring loss (0=disabled)")
+	crossEntropy := fs.Bool("cross-entropy", false, "use cross-entropy loss instead of MSE on sigmoid (stronger gradients)")
 	useLAMB := fs.Bool("lamb", false, "use LAMB optimizer instead of plain Adam")
 	freezeHidden := fs.Bool("freeze-hidden", false, "only train output bucket weights (freeze input + hidden layers)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
@@ -406,6 +407,7 @@ func runNNUETrain(args []string) {
 		K:            actualK,
 		MaxPositions: *positions,
 		ScaleWeight:  *scaleWeight,
+		CrossEntropy: *crossEntropy,
 		UseLAMB:      *useLAMB,
 		FreezeHidden: *freezeHidden,
 	}
@@ -452,8 +454,11 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 		fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n", actualK)
 	}
 
-	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f\n",
-		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda)
+	lossType := "MSE"
+	if cfg.CrossEntropy { lossType = "cross-entropy" }
+	if cfg.Lambda == 0 && !cfg.CrossEntropy { lossType = "MSE-cp" }
+	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f loss=%s\n",
+		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda, lossType)
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "Epoch", "Train Loss", "Val Loss", "Time")
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "-----", "----------", "--------", "----")
 
@@ -526,8 +531,11 @@ func runNNUETrainLegacy(trainer *chess.NNUETrainer, dataFile string, cfg chess.N
 		fmt.Printf("\nUsing K = %.2f (sigmoid scaling)\n", actualK)
 	}
 
-	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f\n",
-		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda)
+	lossType := "MSE"
+	if cfg.CrossEntropy { lossType = "cross-entropy" }
+	if cfg.Lambda == 0 && !cfg.CrossEntropy { lossType = "MSE-cp" }
+	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f loss=%s\n",
+		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda, lossType)
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "Epoch", "Train Loss", "Val Loss", "Time")
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "-----", "----------", "--------", "----")
 

@@ -35,6 +35,7 @@ type NNUETrainConfig struct {
 	Lambda       float64 // weight for result vs score: loss = lambda*MSE(result) + (1-lambda)*MSE(score)
 	K            float64 // sigmoid scaling constant
 	ScaleWeight  float64 // weight for centipawn scale anchoring term (0=disabled)
+	CrossEntropy bool    // use cross-entropy loss instead of MSE on sigmoid (stronger gradients)
 	MaxPositions int             // limit training positions per epoch (0=use all)
 	FreezeHidden bool            // if true, only train output bucket weights (freeze input + hidden layers)
 	UseLAMB      bool            // use LAMB optimizer instead of plain Adam
@@ -297,8 +298,16 @@ func computeSampleLoss(output float32, s *NNUETrainSample, cfg NNUETrainConfig) 
 			target = 1.0 - target
 		}
 	}
-	diff := pred - target
-	loss := diff * diff
+	var loss float64
+	if cfg.CrossEntropy {
+		// Binary cross-entropy: -target*log(pred) - (1-target)*log(1-pred)
+		// Clamp pred to avoid log(0)
+		p := math.Max(1e-12, math.Min(1-1e-12, pred))
+		loss = -target*math.Log(p) - (1-target)*math.Log(1-p)
+	} else {
+		diff := pred - target
+		loss = diff * diff
+	}
 	if cfg.ScaleWeight > 0 && s.HasScore {
 		scaleDiff := (float64(output) - score) / cfg.K
 		loss += cfg.ScaleWeight * scaleDiff * scaleDiff
@@ -342,8 +351,14 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 			}
 		}
 
-		// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
-		dOutput = float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
+		if cfg.CrossEntropy {
+			// Cross-entropy gradient: d(BCE)/d(output) = (pred - target) * ln(10) / K
+			// The sigmoid derivative cancels with the log derivative, giving a clean gradient
+			dOutput = float32((pred - target) * math.Ln10 / cfg.K)
+		} else {
+			// MSE sigmoid gradient: d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
+			dOutput = float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
+		}
 
 		// Scale anchoring gradient (only relevant with sigmoid)
 		if cfg.ScaleWeight > 0 && sample.HasScore {
