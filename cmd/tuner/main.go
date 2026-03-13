@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -31,6 +32,8 @@ func main() {
 		runConvert(os.Args[2:])
 	case "convert-net":
 		runConvertNet(os.Args[2:])
+	case "compare-nets":
+		runCompareNets(os.Args[2:])
 	case "rescore":
 		runRescore(os.Args[2:])
 	default:
@@ -339,6 +342,7 @@ func runNNUETrain(args []string) {
 	kValue := fs.Float64("K", 400, "sigmoid scaling constant (0=auto-tune from data)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
+	freezeHidden := fs.Bool("freeze-hidden", false, "only train output bucket weights (freeze input + hidden layers)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
 
 	fs.Usage = func() {
@@ -396,6 +400,7 @@ func runNNUETrain(args []string) {
 		Lambda:       *lambda,
 		K:            actualK,
 		MaxPositions: *positions,
+		FreezeHidden: *freezeHidden,
 	}
 
 	// Set up SIGINT handler for graceful early stop
@@ -787,4 +792,144 @@ func runConvertNet(args []string) {
 	fi, _ := os.Stat(*to)
 	fmt.Printf("Converted %s → %s (v4 with %d output buckets, %.1f KB)\n",
 		*from, *to, chess.NNUEOutputBuckets, float64(fi.Size())/1024)
+}
+
+func runCompareNets(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintf(os.Stderr, "Usage: tuner compare-nets <baseline.nnue> <trained.nnue>\n")
+		fmt.Fprintf(os.Stderr, "\nCompares output bucket weights between two v4 NNUE nets.\n")
+		os.Exit(1)
+	}
+
+	net1, err := chess.LoadNNUEAnyVersion(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", args[0], err)
+		os.Exit(1)
+	}
+	net2, err := chess.LoadNNUEAnyVersion(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading %s: %v\n", args[1], err)
+		os.Exit(1)
+	}
+
+	pieceRanges := [8]string{"2-5", "6-9", "10-13", "14-17", "18-21", "22-25", "26-29", "30-32"}
+
+	fmt.Printf("\n=== Output Bucket Weight Comparison ===\n")
+	fmt.Printf("%-8s  %-8s  %-10s  %-10s  %-10s  %-10s  %-8s  %-8s\n",
+		"Bucket", "Pieces", "|w| base", "|w| train", "Δ mean", "Δ RMS", "Bias Δ", "Flipped")
+	fmt.Printf("%-8s  %-8s  %-10s  %-10s  %-10s  %-10s  %-8s  %-8s\n",
+		"------", "------", "--------", "---------", "------", "-----", "------", "-------")
+
+	for b := 0; b < chess.NNUEOutputBuckets; b++ {
+		var sumAbs1, sumAbs2, sumDiff, sumDiffSq float64
+		flipped := 0
+		for j := 0; j < chess.NNUEHidden3Size; j++ {
+			w1 := float64(net1.OutputWeights[b][j])
+			w2 := float64(net2.OutputWeights[b][j])
+			sumAbs1 += math.Abs(w1)
+			sumAbs2 += math.Abs(w2)
+			d := w2 - w1
+			sumDiff += d
+			sumDiffSq += d * d
+			if (w1 > 0 && w2 < 0) || (w1 < 0 && w2 > 0) {
+				flipped++
+			}
+		}
+		n := float64(chess.NNUEHidden3Size)
+		biasD := int64(net2.OutputBias[b]) - int64(net1.OutputBias[b])
+		fmt.Printf("%-8d  %-8s  %-10.1f  %-10.1f  %+-10.1f  %-10.2f  %+-8d  %d/%d\n",
+			b, pieceRanges[b], sumAbs1/n, sumAbs2/n,
+			sumDiff/n, math.Sqrt(sumDiffSq/n), biasD, flipped, chess.NNUEHidden3Size)
+	}
+
+	// Per-bucket weight distribution
+	fmt.Printf("\n=== Output Bucket Weight Distributions (trained net) ===\n")
+	fmt.Printf("%-8s  %-8s  %-8s  %-8s  %-8s  %-8s\n",
+		"Bucket", "Pieces", "Min", "Max", "Mean", "StdDev")
+	fmt.Printf("%-8s  %-8s  %-8s  %-8s  %-8s  %-8s\n",
+		"------", "------", "---", "---", "----", "------")
+	for b := 0; b < chess.NNUEOutputBuckets; b++ {
+		minW, maxW := int16(math.MaxInt16), int16(math.MinInt16)
+		var sum float64
+		for j := 0; j < chess.NNUEHidden3Size; j++ {
+			w := net2.OutputWeights[b][j]
+			if w < minW {
+				minW = w
+			}
+			if w > maxW {
+				maxW = w
+			}
+			sum += float64(w)
+		}
+		mean := sum / float64(chess.NNUEHidden3Size)
+		var varSum float64
+		for j := 0; j < chess.NNUEHidden3Size; j++ {
+			d := float64(net2.OutputWeights[b][j]) - mean
+			varSum += d * d
+		}
+		stdDev := math.Sqrt(varSum / float64(chess.NNUEHidden3Size))
+		fmt.Printf("%-8d  %-8s  %-8d  %-8d  %+-8.1f  %-8.1f\n",
+			b, pieceRanges[b], minW, maxW, mean, stdDev)
+	}
+
+	// Bucket divergence: how different are buckets from each other?
+	fmt.Printf("\n=== Inter-Bucket Divergence (RMS between bucket pairs, trained net) ===\n")
+	fmt.Printf("%-8s", "")
+	for b := 0; b < chess.NNUEOutputBuckets; b++ {
+		fmt.Printf("  B%-5d", b)
+	}
+	fmt.Printf("\n")
+	for b1 := 0; b1 < chess.NNUEOutputBuckets; b1++ {
+		fmt.Printf("B%-7d", b1)
+		for b2 := 0; b2 < chess.NNUEOutputBuckets; b2++ {
+			if b2 <= b1 {
+				fmt.Printf("  %-6s", "-")
+				continue
+			}
+			var diffSq float64
+			for j := 0; j < chess.NNUEHidden3Size; j++ {
+				d := float64(net2.OutputWeights[b1][j]) - float64(net2.OutputWeights[b2][j])
+				diffSq += d * d
+			}
+			fmt.Printf("  %-6.1f", math.Sqrt(diffSq/float64(chess.NNUEHidden3Size)))
+		}
+		fmt.Printf("\n")
+	}
+
+	// Also show hidden layer drift summary
+	fmt.Printf("\n=== Hidden Layer Drift (RMS of weight differences) ===\n")
+
+	// Hidden2 weights
+	var h2DiffSq float64
+	for i := range net1.Hidden2Weights {
+		for j := range net1.Hidden2Weights[i] {
+			d := float64(net2.Hidden2Weights[i][j]) - float64(net1.Hidden2Weights[i][j])
+			h2DiffSq += d * d
+		}
+	}
+	h2N := float64(chess.NNUEHidden2Size * chess.NNUEHidden3Size)
+	fmt.Printf("Hidden2 weights:  RMS Δ = %.2f\n", math.Sqrt(h2DiffSq/h2N))
+
+	// Hidden1 weights
+	var h1DiffSq float64
+	for i := range net1.HiddenWeights {
+		for j := range net1.HiddenWeights[i] {
+			d := float64(net2.HiddenWeights[i][j]) - float64(net1.HiddenWeights[i][j])
+			h1DiffSq += d * d
+		}
+	}
+	h1N := float64(chess.NNUEHiddenSize * 2 * chess.NNUEHidden2Size)
+	fmt.Printf("Hidden1 weights:  RMS Δ = %.2f\n", math.Sqrt(h1DiffSq/h1N))
+
+	// Input weights (sample first 1000)
+	var inDiffSq float64
+	inN := 0
+	for i := 0; i < chess.NNUEInputSize && i < 1000; i++ {
+		for j := range net1.InputWeights[i] {
+			d := float64(net2.InputWeights[i][j]) - float64(net1.InputWeights[i][j])
+			inDiffSq += d * d
+			inN++
+		}
+	}
+	fmt.Printf("Input weights:    RMS Δ = %.2f (sampled first 1000 rows)\n", math.Sqrt(inDiffSq/float64(inN)))
 }

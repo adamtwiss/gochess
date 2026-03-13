@@ -35,6 +35,7 @@ type NNUETrainConfig struct {
 	Lambda       float64 // weight for result vs score: loss = lambda*MSE(result) + (1-lambda)*MSE(score)
 	K            float64 // sigmoid scaling constant
 	MaxPositions int             // limit training positions per epoch (0=use all)
+	FreezeHidden bool            // if true, only train output bucket weights (freeze input + hidden layers)
 	Stop         <-chan struct{} // if non-nil, checked each epoch; close to stop early
 }
 
@@ -298,10 +299,19 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 	// Output layer gradients: output = bias + sum(ReLU(hidden3) * weights), using material bucket
 	bucket := OutputBucket(sample.PieceCount)
 	grads.OutputBias[bucket] += dOutput
-	var dHidden3 [NNUEHidden3Size]float32
 	for k := 0; k < NNUEHidden3Size; k++ {
 		h3 := reluF(hidden3[k])
 		grads.OutputWeights[bucket][k] += dOutput * h3
+	}
+
+	// When FreezeHidden is set, only output layer is trained — skip all backprop
+	if cfg.FreezeHidden {
+		return
+	}
+
+	// Backprop through output to hidden3
+	var dHidden3 [NNUEHidden3Size]float32
+	for k := 0; k < NNUEHidden3Size; k++ {
 		dHidden3[k] = dOutput * net.OutputWeights[bucket][k] * reluGrad(hidden3[k])
 	}
 
@@ -786,6 +796,33 @@ func adamUpdate(param *float32, grad float64, state *nnueAdamState, lr float64, 
 	*param -= float32(lr * mHat / (math.Sqrt(vHat) + eps))
 }
 
+// adamComputeUpdate computes the Adam update for a parameter without applying it.
+// Returns the raw update value (before LR scaling). Also updates momentum state.
+func adamComputeUpdate(grad float64, state *nnueAdamState, step int) float64 {
+	const (
+		beta1 = 0.9
+		beta2 = 0.999
+		eps   = 1e-8
+	)
+
+	state.m = beta1*state.m + (1-beta1)*grad
+	state.v = beta2*state.v + (1-beta2)*grad*grad
+
+	mHat := state.m / (1 - math.Pow(beta1, float64(step)))
+	vHat := state.v / (1 - math.Pow(beta2, float64(step)))
+
+	return mHat / (math.Sqrt(vHat) + eps)
+}
+
+// lambTrustRatio computes the LAMB trust ratio: ||weights|| / ||updates||.
+// Returns 1.0 if either norm is zero (fallback to plain Adam).
+func lambTrustRatio(weightNormSq, updateNormSq float64) float64 {
+	if weightNormSq == 0 || updateNormSq == 0 {
+		return 1.0
+	}
+	return math.Sqrt(weightNormSq) / math.Sqrt(updateNormSq)
+}
+
 // Train runs the NNUE training loop.
 func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 	onEpoch func(epoch int, trainLoss, valLoss float64)) {
@@ -1093,18 +1130,165 @@ func aggregateGradientsParallel(dst *NNUETrainGradients, workers []NNUETrainGrad
 }
 
 func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
-	trainer.applyAdamUpdatesParallel(grads, scale, lr, runtime.NumCPU())
+	trainer.applyLAMBUpdatesParallel(grads, scale, lr, runtime.NumCPU())
 }
 
-func (trainer *NNUETrainer) applyAdamUpdatesParallel(grads *NNUETrainGradients, scale, lr float64, numWorkers int) {
+// applyLAMBUpdatesParallel applies LAMB (Layer-wise Adaptive Moments) optimizer.
+// Like Adam, but each layer's update is scaled by ||weights|| / ||adam_update||
+// (the "trust ratio"), preventing any layer from drifting disproportionately.
+func (trainer *NNUETrainer) applyLAMBUpdatesParallel(grads *NNUETrainGradients, scale, lr float64, numWorkers int) {
 	step := trainer.step
 
-	// Small layers (output, hidden2, hidden1 biases) are fast — do them on main thread
-	// while goroutines handle the large layers.
 	var wg sync.WaitGroup
 
-	// Input layer sparse updates (dominant cost: up to ~12K rows × 256 weights)
+	// --- Output layer: per-bucket LAMB (each bucket is its own "layer") ---
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		var wNormSq, uNormSq float64
+		biasUpdate := adamComputeUpdate(float64(grads.OutputBias[b])*scale, &trainer.adam.outputBias[b], step)
+		wNormSq += float64(trainer.Net.OutputBias[b]) * float64(trainer.Net.OutputBias[b])
+		uNormSq += biasUpdate * biasUpdate
+
+		var updates [NNUEHidden3Size]float64
+		for j := 0; j < NNUEHidden3Size; j++ {
+			updates[j] = adamComputeUpdate(float64(grads.OutputWeights[b][j])*scale, &trainer.adam.outputWeights[b][j], step)
+			wNormSq += float64(trainer.Net.OutputWeights[b][j]) * float64(trainer.Net.OutputWeights[b][j])
+			uNormSq += updates[j] * updates[j]
+		}
+
+		tr := lambTrustRatio(wNormSq, uNormSq)
+		trainer.Net.OutputBias[b] -= float32(lr * tr * biasUpdate)
+		for j := 0; j < NNUEHidden3Size; j++ {
+			trainer.Net.OutputWeights[b][j] -= float32(lr * tr * updates[j])
+		}
+	}
+
+	// --- Hidden2 layer: LAMB ---
+	{
+		var wNormSq, uNormSq float64
+		var biasUpdates [NNUEHidden3Size]float64
+		for j := 0; j < NNUEHidden3Size; j++ {
+			biasUpdates[j] = adamComputeUpdate(float64(grads.Hidden2Biases[j])*scale, &trainer.adam.hidden2Biases[j], step)
+			wNormSq += float64(trainer.Net.Hidden2Biases[j]) * float64(trainer.Net.Hidden2Biases[j])
+			uNormSq += biasUpdates[j] * biasUpdates[j]
+		}
+		var weightUpdates [NNUEHidden2Size][NNUEHidden3Size]float64
+		for i := 0; i < NNUEHidden2Size; i++ {
+			for j := 0; j < NNUEHidden3Size; j++ {
+				weightUpdates[i][j] = adamComputeUpdate(float64(grads.Hidden2Weights[i][j])*scale, &trainer.adam.hidden2Weights[i][j], step)
+				wNormSq += float64(trainer.Net.Hidden2Weights[i][j]) * float64(trainer.Net.Hidden2Weights[i][j])
+				uNormSq += weightUpdates[i][j] * weightUpdates[i][j]
+			}
+		}
+		tr := lambTrustRatio(wNormSq, uNormSq)
+		for j := 0; j < NNUEHidden3Size; j++ {
+			trainer.Net.Hidden2Biases[j] -= float32(lr * tr * biasUpdates[j])
+		}
+		for i := 0; i < NNUEHidden2Size; i++ {
+			for j := 0; j < NNUEHidden3Size; j++ {
+				trainer.Net.Hidden2Weights[i][j] -= float32(lr * tr * weightUpdates[i][j])
+			}
+		}
+	}
+
+	// --- Hidden1 layer: LAMB (parallel, 512×32 = 16K weights) ---
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var wNormSq, uNormSq float64
+		var biasUpdates [NNUEHidden2Size]float64
+		for j := 0; j < NNUEHidden2Size; j++ {
+			biasUpdates[j] = adamComputeUpdate(float64(grads.HiddenBiases[j])*scale, &trainer.adam.hiddenBiases[j], step)
+			wNormSq += float64(trainer.Net.HiddenBiases[j]) * float64(trainer.Net.HiddenBiases[j])
+			uNormSq += biasUpdates[j] * biasUpdates[j]
+		}
+		var weightUpdates [NNUEHiddenSize * 2][NNUEHidden2Size]float64
+		for i := 0; i < NNUEHiddenSize*2; i++ {
+			for j := 0; j < NNUEHidden2Size; j++ {
+				weightUpdates[i][j] = adamComputeUpdate(float64(grads.HiddenWeights[i][j])*scale, &trainer.adam.hiddenWeights[i][j], step)
+				wNormSq += float64(trainer.Net.HiddenWeights[i][j]) * float64(trainer.Net.HiddenWeights[i][j])
+				uNormSq += weightUpdates[i][j] * weightUpdates[i][j]
+			}
+		}
+		tr := lambTrustRatio(wNormSq, uNormSq)
+		for j := 0; j < NNUEHidden2Size; j++ {
+			trainer.Net.HiddenBiases[j] -= float32(lr * tr * biasUpdates[j])
+		}
+		for i := 0; i < NNUEHiddenSize*2; i++ {
+			for j := 0; j < NNUEHidden2Size; j++ {
+				trainer.Net.HiddenWeights[i][j] -= float32(lr * tr * weightUpdates[i][j])
+			}
+		}
+	}()
+
+	// --- Input layer: LAMB with parallel row processing ---
+	// For the input layer, we treat each dirty row as part of one big "input layer"
+	// and compute a single trust ratio across all active rows + biases.
+	// Phase 1: compute Adam updates and partial norms (parallel per row)
 	dirtyRows := grads.dirtyInputs
+	type rowNorms struct {
+		wNormSq, uNormSq float64
+	}
+	rowNormResults := make([]rowNorms, numWorkers)
+
+	// Pre-compute input bias updates (small, on main thread)
+	var inputBiasUpdates [NNUEHiddenSize]float64
+	var biasWNorm, biasUNorm float64
+	for j := 0; j < NNUEHiddenSize; j++ {
+		inputBiasUpdates[j] = adamComputeUpdate(float64(grads.InputBiases[j])*scale, &trainer.adam.inputBiases[j], step)
+		biasWNorm += float64(trainer.Net.InputBiases[j]) * float64(trainer.Net.InputBiases[j])
+		biasUNorm += inputBiasUpdates[j] * inputBiasUpdates[j]
+	}
+
+	if len(dirtyRows) > 0 {
+		perWorker := (len(dirtyRows) + numWorkers - 1) / numWorkers
+		for w := 0; w < numWorkers; w++ {
+			start := w * perWorker
+			if start >= len(dirtyRows) {
+				break
+			}
+			end := start + perWorker
+			if end > len(dirtyRows) {
+				end = len(dirtyRows)
+			}
+			wg.Add(1)
+			go func(workerIdx int, rows []int) {
+				defer wg.Done()
+				var wn, un float64
+				for _, idx := range rows {
+					for j := 0; j < NNUEHiddenSize; j++ {
+						if grads.InputWeights[idx][j] != 0 {
+							u := adamComputeUpdate(float64(grads.InputWeights[idx][j])*scale, &trainer.adam.inputWeights[idx][j], step)
+							// Store update temporarily in the gradient slot (reused, won't be read again)
+							grads.InputWeights[idx][j] = float32(u)
+							wn += float64(trainer.Net.InputWeights[idx][j]) * float64(trainer.Net.InputWeights[idx][j])
+							un += u * u
+						}
+					}
+				}
+				rowNormResults[workerIdx] = rowNorms{wn, un}
+			}(w, dirtyRows[start:end])
+		}
+	}
+
+	// Wait for all parallel work (hidden1 + input phase 1)
+	wg.Wait()
+
+	// Phase 2: aggregate input layer norms and apply with trust ratio
+	var totalWNorm, totalUNorm float64
+	totalWNorm += biasWNorm
+	totalUNorm += biasUNorm
+	for w := 0; w < numWorkers; w++ {
+		totalWNorm += rowNormResults[w].wNormSq
+		totalUNorm += rowNormResults[w].uNormSq
+	}
+	inputTR := lambTrustRatio(totalWNorm, totalUNorm)
+
+	// Apply input bias updates
+	for j := 0; j < NNUEHiddenSize; j++ {
+		trainer.Net.InputBiases[j] -= float32(lr * inputTR * inputBiasUpdates[j])
+	}
+
+	// Apply input weight updates (parallel)
 	if len(dirtyRows) > 0 {
 		perWorker := (len(dirtyRows) + numWorkers - 1) / numWorkers
 		for w := 0; w < numWorkers; w++ {
@@ -1121,65 +1305,16 @@ func (trainer *NNUETrainer) applyAdamUpdatesParallel(grads *NNUETrainGradients, 
 				defer wg.Done()
 				for _, idx := range rows {
 					for j := 0; j < NNUEHiddenSize; j++ {
-						if grads.InputWeights[idx][j] != 0 {
-							adamUpdate(&trainer.Net.InputWeights[idx][j], float64(grads.InputWeights[idx][j])*scale,
-								&trainer.adam.inputWeights[idx][j], lr, step)
+						u := grads.InputWeights[idx][j] // stored update from phase 1
+						if u != 0 {
+							trainer.Net.InputWeights[idx][j] -= float32(lr * inputTR * float64(u))
 						}
 					}
 				}
 			}(dirtyRows[start:end])
 		}
+		wg.Wait()
 	}
-
-	// Hidden layer 1 weights (512×32 = 16K updates) — parallel
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < NNUEHiddenSize*2; i++ {
-			for j := 0; j < NNUEHidden2Size; j++ {
-				adamUpdate(&trainer.Net.HiddenWeights[i][j], float64(grads.HiddenWeights[i][j])*scale,
-					&trainer.adam.hiddenWeights[i][j], lr, step)
-			}
-		}
-	}()
-
-	// Small layers on main thread (runs concurrently with goroutines above)
-
-	// Output layer (hidden3 -> output), per bucket
-	for b := 0; b < NNUEOutputBuckets; b++ {
-		adamUpdate(&trainer.Net.OutputBias[b], float64(grads.OutputBias[b])*scale,
-			&trainer.adam.outputBias[b], lr, step)
-		for j := 0; j < NNUEHidden3Size; j++ {
-			adamUpdate(&trainer.Net.OutputWeights[b][j], float64(grads.OutputWeights[b][j])*scale,
-				&trainer.adam.outputWeights[b][j], lr, step)
-		}
-	}
-
-	// Hidden2 layer (hidden2 -> hidden3)
-	for j := 0; j < NNUEHidden3Size; j++ {
-		adamUpdate(&trainer.Net.Hidden2Biases[j], float64(grads.Hidden2Biases[j])*scale,
-			&trainer.adam.hidden2Biases[j], lr, step)
-	}
-	for i := 0; i < NNUEHidden2Size; i++ {
-		for j := 0; j < NNUEHidden3Size; j++ {
-			adamUpdate(&trainer.Net.Hidden2Weights[i][j], float64(grads.Hidden2Weights[i][j])*scale,
-				&trainer.adam.hidden2Weights[i][j], lr, step)
-		}
-	}
-
-	// Hidden layer biases
-	for j := 0; j < NNUEHidden2Size; j++ {
-		adamUpdate(&trainer.Net.HiddenBiases[j], float64(grads.HiddenBiases[j])*scale,
-			&trainer.adam.hiddenBiases[j], lr, step)
-	}
-
-	// Input biases
-	for j := 0; j < NNUEHiddenSize; j++ {
-		adamUpdate(&trainer.Net.InputBiases[j], float64(grads.InputBiases[j])*scale,
-			&trainer.adam.inputBiases[j], lr, step)
-	}
-
-	wg.Wait()
 }
 
 func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainConfig) float64 {
