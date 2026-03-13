@@ -501,8 +501,9 @@ func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 
 	// Pre-gather all feature indices, then do a tight SIMD loop.
 	// Separates index computation from memory-heavy SIMD work for better ILP.
-	var wIndices [32]int
-	var bIndices [32]int
+	// Buffer is 64 to handle illegal FENs with >32 pieces without crashing.
+	var wIndices [64]int
+	var bIndices [64]int
 	count := 0
 
 	for piece := WhitePawn; piece <= BlackKing; piece++ {

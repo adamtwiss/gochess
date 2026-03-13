@@ -40,6 +40,7 @@ type UCIEngine struct {
 	ponderOpt      bool
 	ponderBookMove string // set by cmdPonderhit when book has a move
 	nnueNet        *NNUENet // loaded NNUE network (nil when not loaded)
+	searchBounded  bool     // true if current search has a depth/time limit
 }
 
 // NewUCIEngine creates a UCI engine reading from stdin and writing to stdout.
@@ -66,7 +67,17 @@ func NewUCIEngineWithIO(in io.Reader, out io.Writer) *UCIEngine {
 
 // Run enters the UCI command loop, reading and dispatching commands until "quit".
 func (e *UCIEngine) Run() {
-	defer e.cmdStop()
+	defer func() {
+		// On stdin EOF (e.g. piped input), wait for bounded searches
+		// (depth/movetime/clock) to finish naturally. Without this,
+		// cmdStop aborts the search before it outputs bestmove.
+		// Unbounded searches (go infinite/ponder) are stopped immediately.
+		if e.searchBounded {
+			e.searchWg.Wait()
+		} else {
+			e.cmdStop()
+		}
+	}()
 	for e.input.Scan() {
 		line := strings.TrimSpace(e.input.Text())
 		if line == "" {
@@ -275,6 +286,9 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 		softMS, hardMS = computeSearchTime(params.movetime, params.wtime, params.btime,
 			params.winc, params.binc, params.movestogo, params.infinite, e.board.SideToMove, e.moveOverhead)
 	}
+	// Track whether search is bounded (has depth limit or time limit).
+	// Used on stdin EOF to decide whether to wait or stop immediately.
+	e.searchBounded = params.depth > 0 || hardMS > 0
 
 	// Copy board for search goroutine (preserve game history for repetition detection)
 	var searchBoard Board
