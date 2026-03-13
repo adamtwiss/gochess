@@ -34,6 +34,8 @@ func main() {
 		runConvertNet(os.Args[2:])
 	case "compare-nets":
 		runCompareNets(os.Args[2:])
+	case "check-net":
+		runCheckNet(os.Args[2:])
 	case "rescore":
 		runRescore(os.Args[2:])
 	default:
@@ -51,6 +53,7 @@ Commands:
   nnue-train   Train an NNUE network from training data
   convert      Convert between .dat (text) and .bin (binary) formats
   convert-net  Convert NNUE net between versions (e.g. v3 single-output → v4 output buckets)
+  check-net    Health check: evaluate test positions and flag scale issues
   rescore      Re-search positions in a .bin file and update scores in-place
 
 Run 'tuner <command> -h' for command-specific options.
@@ -936,4 +939,79 @@ func runCompareNets(args []string) {
 		}
 	}
 	fmt.Printf("Input weights:    RMS Δ = %.2f (sampled first 1000 rows)\n", math.Sqrt(inDiffSq/float64(inN)))
+}
+
+func runCheckNet(args []string) {
+	fs := flag.NewFlagSet("check-net", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: tuner check-net <net.nnue>\n")
+	}
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	netPath := fs.Arg(0)
+	net, err := chess.LoadNNUEAnyVersion(netPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	net.PrepareWeights()
+
+	type testPos struct {
+		name    string
+		fen     string
+		expectMin int // minimum reasonable score (negative = losing side)
+		expectMax int // maximum reasonable score
+	}
+
+	positions := []testPos{
+		{"startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", -50, 50},
+		{"miss pawn", "rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1", -200, -20},
+		{"miss knight", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1", -500, -80},
+		{"miss bishop", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RN1QKBNR w KQkq - 0 1", -500, -80},
+		{"miss rook", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBN1 w Qkq - 0 1", -800, -120},
+		{"miss queen", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNB1KBNR w KQkq - 0 1", -1500, -200},
+		{"EG rook up", "4k3/8/8/8/8/8/4PPPP/4K2R w K - 0 1", 400, 2500},
+		{"EG queen up", "4k3/8/8/8/8/8/4PPPP/3QK3 w - - 0 1", 500, 3000},
+	}
+
+	evalPos := func(fen string) int {
+		var b chess.Board
+		b.Reset()
+		b.SetFEN(fen)
+		accStack := chess.NewNNUEAccumulatorStack(8)
+		b.NNUEAcc = accStack
+		b.NNUENet = net
+		net.RecomputeAccumulator(accStack.Current(), &b)
+		return net.Evaluate(accStack.Current(), b.SideToMove, b.AllPieces.Count())
+	}
+
+	fmt.Printf("NNUE Health Check: %s\n\n", netPath)
+	fmt.Printf("%-14s  %8s  %8s  %8s  %s\n", "Position", "Score", "Min", "Max", "Status")
+	fmt.Printf("%-14s  %8s  %8s  %8s  %s\n", "--------", "--------", "--------", "--------", "------")
+
+	issues := 0
+	for _, pos := range positions {
+		score := evalPos(pos.fen)
+		status := "OK"
+		if score < pos.expectMin {
+			status = "LOW"
+			issues++
+		} else if score > pos.expectMax {
+			status = "HIGH"
+			issues++
+		}
+		fmt.Printf("%-14s  %8d  %8d  %8d  %s\n", pos.name, score, pos.expectMin, pos.expectMax, status)
+	}
+
+	fmt.Println()
+	if issues == 0 {
+		fmt.Println("All checks passed.")
+	} else {
+		fmt.Printf("%d issue(s) found — eval scale may be collapsed or miscalibrated.\n", issues)
+	}
 }
