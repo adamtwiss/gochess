@@ -73,8 +73,12 @@ func TestNNUEGradientFlow(t *testing.T) {
 	// Output layer
 	{
 		fmt.Println("--- Output Layer ---")
-		fmt.Printf("  OutputBias gradient: %.8e\n", grads.OutputBias)
-		analyzeGradArray1D("OutputWeights", grads.OutputWeights[:], NNUEHidden3Size)
+		fmt.Printf("  OutputBias gradient (bucket 0): %.8e\n", grads.OutputBias[0])
+		var outFlat []float32
+		for b := 0; b < NNUEOutputBuckets; b++ {
+			outFlat = append(outFlat, grads.OutputWeights[b][:]...)
+		}
+		analyzeGradArray1D("OutputWeights", outFlat, len(outFlat))
 	}
 
 	// Hidden2 layer (Hidden2Weights, Hidden2Biases)
@@ -175,7 +179,11 @@ func TestNNUEGradientFlow(t *testing.T) {
 	fmt.Println()
 	fmt.Println("=== Layer-to-Layer Gradient Ratio ===")
 
-	outputMean := meanAbsGrad(grads.OutputWeights[:])
+	var outputFlat []float32
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		outputFlat = append(outputFlat, grads.OutputWeights[b][:]...)
+	}
+	outputMean := meanAbsGrad(outputFlat)
 	var h2flat []float32
 	for j := 0; j < NNUEHidden2Size; j++ {
 		h2flat = append(h2flat, grads.Hidden2Weights[j][:]...)

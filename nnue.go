@@ -19,7 +19,8 @@ const (
 	NNUEHiddenSize  = 256   // per perspective
 	NNUEHidden2Size = 32    // second hidden layer
 	NNUEHidden3Size = 32    // third hidden layer
-	NNUEOutputSize  = 1
+	NNUEOutputSize  = 1     // legacy (unused, kept for reference)
+	NNUEOutputBuckets = 8   // material-based output buckets
 
 	// HalfKA piece indexing: 12 piece types (including kings)
 	// 0=WhitePawn, 1=WhiteKnight, 2=WhiteBishop, 3=WhiteRook, 4=WhiteQueen, 5=WhiteKing
@@ -41,7 +42,7 @@ const (
 
 	// File magic and version
 	nnueMagic   = uint32(0x4E4E5545) // "NNUE"
-	nnueVersion = uint32(3)          // v3: HalfKA with king buckets (12288 inputs)
+	nnueVersion = uint32(4)          // v4: output buckets (v3 was HalfKA without buckets)
 )
 
 // kingBucketTable maps each of the 64 squares to one of 16 king buckets.
@@ -82,6 +83,21 @@ func KingBucket(sq Square) int {
 	return kingBucketTable[sq]
 }
 
+// OutputBucket maps piece count (2-32) to an output bucket index (0-7).
+// Bucket boundaries: pieces are divided into 8 roughly equal ranges.
+// Minimum 2 pieces (both kings). Maximum 32 (all pieces).
+func OutputBucket(pieceCount int) int {
+	// (pieceCount - 2) maps to 0-30, divide by 4 to get 0-7, clamp
+	bucket := (pieceCount - 2) / 4
+	if bucket < 0 {
+		bucket = 0
+	}
+	if bucket >= NNUEOutputBuckets {
+		bucket = NNUEOutputBuckets - 1
+	}
+	return bucket
+}
+
 // NNUENet holds all network weights (shared read-only across threads).
 type NNUENet struct {
 	// Input layer: [feature_index][hidden_neuron]
@@ -96,9 +112,9 @@ type NNUENet struct {
 	Hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]int16
 	Hidden2Biases  [NNUEHidden3Size]int32
 
-	// Output layer: [hidden3_neuron]
-	OutputWeights [NNUEHidden3Size]int16
-	OutputBias    int32
+	// Output layer: [bucket][hidden3_neuron] — material-based output buckets
+	OutputWeights [NNUEOutputBuckets][NNUEHidden3Size]int16
+	OutputBias    [NNUEOutputBuckets]int32
 
 	// Transposed hidden weights for SIMD forward pass: [output][input]
 	// Layout: HWT[j*(HiddenSize*2)+i] = HiddenWeights[i][j]
@@ -546,10 +562,11 @@ func (net *NNUENet) RecomputeAccumulator(acc *NNUEAccumulator, b *Board) {
 
 // Evaluate runs the NNUE forward pass and returns a score in centipawns
 // relative to the side to move.
-func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
+func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color, pieceCount int) int {
+	bucket := OutputBucket(pieceCount)
 	// SIMD fast path
 	if nnueUseSIMD && net.HWT != nil {
-		return net.evaluateSIMD(acc, sideToMove)
+		return net.evaluateSIMD(acc, sideToMove, bucket)
 	}
 
 	// Concatenate accumulators: [stm_perspective | opponent_perspective]
@@ -626,14 +643,14 @@ func (net *NNUENet) Evaluate(acc *NNUEAccumulator, sideToMove Color) int {
 		}
 	}
 
-	// Output layer: ReLU(hidden3) -> output (no upper clamp)
-	output := int32(net.OutputBias)
+	// Output layer: ReLU(hidden3) -> output (no upper clamp), using material bucket
+	output := net.OutputBias[bucket]
 	for k := 0; k < NNUEHidden3Size; k++ {
 		scaled := hidden3[k] >> 6 // / 64 (nnueHiddenScale)
 		if scaled <= 0 {
 			continue
 		}
-		output += scaled * int32(net.OutputWeights[k])
+		output += scaled * int32(net.OutputWeights[bucket][k])
 	}
 
 	// Scale output to centipawns
@@ -683,7 +700,7 @@ func (net *NNUENet) PrepareWeights() {
 }
 
 // evaluateSIMD runs the NNUE forward pass using SIMD instructions (AVX2 or NEON).
-func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
+func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color, bucket int) int {
 	var stm, opp *[NNUEHiddenSize]int16
 	if sideToMove == White {
 		stm = &acc.White
@@ -706,8 +723,8 @@ func (net *NNUENet) evaluateSIMD(acc *NNUEAccumulator, sideToMove Color) int {
 	var hidden3 [NNUEHidden3Size]int32
 	nnueMatMul32x32ReLU(&hidden2[0], &net.Hidden2WT[0], &net.Hidden2Biases[0], &hidden3[0])
 
-	// Output layer: SIMD dot product with ReLU activation
-	output := net.OutputBias + nnueDotReLU32(&hidden3[0], &net.OutputWeights[0])
+	// Output layer: SIMD dot product with ReLU activation, using material bucket
+	output := net.OutputBias[bucket] + nnueDotReLU32(&hidden3[0], &net.OutputWeights[bucket][0])
 
 	return int(output) / nnueOutputScale * NNUEEvalScale
 }
@@ -774,7 +791,7 @@ func (net *NNUENet) Fingerprint() string {
 	for i := 0; i < 256 && i < len(net.InputWeights[0]); i++ {
 		h = h*31 + uint64(uint16(net.InputWeights[0][i]))
 	}
-	h = h*31 + uint64(uint32(net.OutputBias))
+	h = h*31 + uint64(uint32(net.OutputBias[0]))
 	return fmt.Sprintf("%016x", h)
 }
 

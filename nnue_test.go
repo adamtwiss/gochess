@@ -204,9 +204,12 @@ func makeTestNet() *NNUENet {
 	}
 	for j := 0; j < NNUEHidden2Size; j++ {
 		net.HiddenBiases[j] = 0
-		net.OutputWeights[j] = 1
 	}
-	net.OutputBias = 0
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			net.OutputWeights[b][j] = 1
+		}
+	}
 	return net
 }
 
@@ -220,7 +223,7 @@ func TestNNUEForwardPass(t *testing.T) {
 	acc.Computed = true
 
 	// Evaluate — should produce a non-zero score from the biases alone
-	score := net.Evaluate(acc, White)
+	score := net.Evaluate(acc, White, 32)
 
 	// With all biases = 1, ClippedReLU(1) = 1
 	// hidden2[j] = 0 + 256*1*1 + 256*1*1 = 512 for each j
@@ -395,13 +398,15 @@ func TestNNUESaveLoad(t *testing.T) {
 	}
 
 	// Compare output
-	if net.OutputBias != loaded.OutputBias {
-		t.Errorf("OutputBias mismatch: %d vs %d", net.OutputBias, loaded.OutputBias)
-	}
-	for j := 0; j < NNUEHidden2Size; j++ {
-		if net.OutputWeights[j] != loaded.OutputWeights[j] {
-			t.Errorf("OutputWeights[%d] mismatch: %d vs %d", j, net.OutputWeights[j], loaded.OutputWeights[j])
-			break
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		if net.OutputBias[b] != loaded.OutputBias[b] {
+			t.Errorf("OutputBias[%d] mismatch: %d vs %d", b, net.OutputBias[b], loaded.OutputBias[b])
+		}
+		for j := 0; j < NNUEHidden3Size; j++ {
+			if net.OutputWeights[b][j] != loaded.OutputWeights[b][j] {
+				t.Errorf("OutputWeights[%d][%d] mismatch: %d vs %d", b, j, net.OutputWeights[b][j], loaded.OutputWeights[b][j])
+				break
+			}
 		}
 	}
 }
@@ -422,8 +427,10 @@ func TestNNUEEvaluateSymmetry(t *testing.T) {
 			net.HiddenWeights[i][j] = 1
 		}
 	}
-	for j := 0; j < NNUEHidden2Size; j++ {
-		net.OutputWeights[j] = 1
+	for bk := 0; bk < NNUEOutputBuckets; bk++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			net.OutputWeights[bk][j] = 1
+		}
 	}
 
 	var b Board
@@ -434,8 +441,8 @@ func TestNNUEEvaluateSymmetry(t *testing.T) {
 
 	// In the starting position, White's evaluation and Black's evaluation
 	// should be symmetric (same magnitude, side-to-move adjusted)
-	scoreW := net.Evaluate(acc, White)
-	scoreB := net.Evaluate(acc, Black)
+	scoreW := net.Evaluate(acc, White, 32)
+	scoreB := net.Evaluate(acc, Black, 32)
 
 	// Starting position is perfectly symmetric, so both perspectives
 	// should give the same score
@@ -612,24 +619,28 @@ func TestNNUESIMDvsGeneric(t *testing.T) {
 	}
 	for j := 0; j < NNUEHidden2Size; j++ {
 		net.HiddenBiases[j] = int32(j*100 - 1600)
-		net.OutputWeights[j] = int16(j*5 - 80)
 	}
-	net.OutputBias = 42
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			net.OutputWeights[b][j] = int16(j*5 - 80)
+		}
+		net.OutputBias[b] = 42
+	}
 	net.PrepareWeights()
 
-	var b Board
-	b.Reset()
+	var board Board
+	board.Reset()
 	acc := &NNUEAccumulator{}
-	net.RecomputeAccumulator(acc, &b)
+	net.RecomputeAccumulator(acc, &board)
 
 	// Force generic path
 	origFlag := nnueUseSIMD
 	nnueUseSIMD = false
-	genericScore := net.Evaluate(acc, White)
+	genericScore := net.Evaluate(acc, White, 32)
 
 	// Force SIMD path
 	nnueUseSIMD = true
-	simdScore := net.Evaluate(acc, White)
+	simdScore := net.Evaluate(acc, White, 32)
 
 	nnueUseSIMD = origFlag
 
@@ -640,9 +651,9 @@ func TestNNUESIMDvsGeneric(t *testing.T) {
 
 	// Also test Black perspective
 	nnueUseSIMD = false
-	genericB := net.Evaluate(acc, Black)
+	genericB := net.Evaluate(acc, Black, 32)
 	nnueUseSIMD = true
-	simdB := net.Evaluate(acc, Black)
+	simdB := net.Evaluate(acc, Black, 32)
 	nnueUseSIMD = origFlag
 
 	if genericB != simdB {
@@ -667,9 +678,13 @@ func BenchmarkNNUEForwardGeneric(b *testing.B) {
 	}
 	for j := 0; j < NNUEHidden2Size; j++ {
 		net.HiddenBiases[j] = int32(j*100 - 1600)
-		net.OutputWeights[j] = int16(j*5 - 80)
 	}
-	net.OutputBias = 42
+	for bk := 0; bk < NNUEOutputBuckets; bk++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			net.OutputWeights[bk][j] = int16(j*5 - 80)
+		}
+		net.OutputBias[bk] = 42
+	}
 
 	var board Board
 	board.Reset()
@@ -680,7 +695,7 @@ func BenchmarkNNUEForwardGeneric(b *testing.B) {
 	nnueUseSIMD = false
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		net.Evaluate(acc, White)
+		net.Evaluate(acc, White, 32)
 	}
 	nnueUseSIMD = origFlag
 }
@@ -706,9 +721,13 @@ func BenchmarkNNUEForwardSIMD(b *testing.B) {
 	}
 	for j := 0; j < NNUEHidden2Size; j++ {
 		net.HiddenBiases[j] = int32(j*100 - 1600)
-		net.OutputWeights[j] = int16(j*5 - 80)
 	}
-	net.OutputBias = 42
+	for bk := 0; bk < NNUEOutputBuckets; bk++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			net.OutputWeights[bk][j] = int16(j*5 - 80)
+		}
+		net.OutputBias[bk] = 42
+	}
 	net.PrepareWeights()
 
 	var board Board
@@ -718,7 +737,7 @@ func BenchmarkNNUEForwardSIMD(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		net.Evaluate(acc, White)
+		net.Evaluate(acc, White, 32)
 	}
 }
 

@@ -575,8 +575,9 @@ func (c *CLIEngine) cmdNNUE(args []string) {
 		}
 		c.board.NNUEAcc.Materialize(c.board.NNUENet, &c.board)
 		acc := c.board.NNUEAcc.Current()
-		scoreW := c.nnueNet.Evaluate(acc, White)
-		scoreB := c.nnueNet.Evaluate(acc, Black)
+		pieceCount := c.board.AllPieces.Count()
+		scoreW := c.nnueNet.Evaluate(acc, White, pieceCount)
+		scoreB := c.nnueNet.Evaluate(acc, Black, pieceCount)
 		stmStr := "White"
 		stmScore := scoreW
 		if c.board.SideToMove == Black {

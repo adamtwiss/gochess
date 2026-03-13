@@ -368,7 +368,7 @@ func (b *Board) NNUEEvaluateRelative() int {
 	b.NNUEAcc.Materialize(b.NNUENet, b)
 	acc := b.NNUEAcc.Current()
 
-	score := b.NNUENet.Evaluate(acc, b.SideToMove)
+	score := b.NNUENet.Evaluate(acc, b.SideToMove, b.AllPieces.Count())
 
 	// Endgame scale factors
 	wScale, bScale := b.endgameScale()

@@ -230,7 +230,7 @@ func TestQuantizeRoundTrip(t *testing.T) {
 	// Evaluate with inference net
 	acc := &NNUEAccumulator{}
 	infNet.RecomputeAccumulator(acc, &b)
-	infOutput := infNet.Evaluate(acc, White)
+	infOutput := infNet.Evaluate(acc, White, b.AllPieces.Count())
 
 	// They should be roughly similar (quantization error)
 	diff := math.Abs(float64(trainOutput) - float64(infOutput))
@@ -264,8 +264,10 @@ func TestQuantizeRoundTripLargeWeights(t *testing.T) {
 			trainNet.HiddenWeights[i][j] *= 10
 		}
 	}
-	for j := range trainNet.OutputWeights {
-		trainNet.OutputWeights[j] *= 10
+	for bk := 0; bk < NNUEOutputBuckets; bk++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			trainNet.OutputWeights[bk][j] *= 10
+		}
 	}
 
 	var b Board
@@ -279,7 +281,7 @@ func TestQuantizeRoundTripLargeWeights(t *testing.T) {
 	infNet := QuantizeNetwork(trainNet)
 	acc := &NNUEAccumulator{}
 	infNet.RecomputeAccumulator(acc, &b)
-	infOutput := infNet.Evaluate(acc, White)
+	infOutput := infNet.Evaluate(acc, White, b.AllPieces.Count())
 	t.Logf("Inference output: %d", infOutput)
 
 	diff := math.Abs(float64(trainOutput) - float64(infOutput))
@@ -322,13 +324,15 @@ func TestDequantizeRoundTrip(t *testing.T) {
 
 	// Check output weights round-trip
 	maxOutputDiff := float32(0)
-	for j := range original.OutputWeights {
-		diff := original.OutputWeights[j] - restored.OutputWeights[j]
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > maxOutputDiff {
-			maxOutputDiff = diff
+	for bk := 0; bk < NNUEOutputBuckets; bk++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			diff := original.OutputWeights[bk][j] - restored.OutputWeights[bk][j]
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > maxOutputDiff {
+				maxOutputDiff = diff
+			}
 		}
 	}
 	// Quantization error should be < 1/64 ≈ 0.016
@@ -345,6 +349,7 @@ func makeSampleFromBoard(b *Board, stm Color) *NNUETrainSample {
 	sample := &NNUETrainSample{
 		SideToMove: stm,
 		Result:     0.5,
+		PieceCount: b.AllPieces.Count(),
 	}
 	for piece := WhitePawn; piece <= BlackKing; piece++ {
 		bb := b.Pieces[piece]

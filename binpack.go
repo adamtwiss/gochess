@@ -255,6 +255,7 @@ func ExtractFeaturesFromBinpack(rec [BinpackRecordSize]byte) *NNUETrainSample {
 		Result:        ResultToFloat(result),
 		Score:         float32(score),
 		HasScore:      true,
+		PieceCount:    nPieces,
 		WhiteFeatures: make([]int, 0, nPieces),
 		BlackFeatures: make([]int, 0, nPieces),
 	}

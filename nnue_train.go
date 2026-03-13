@@ -22,8 +22,8 @@ type NNUETrainNet struct {
 	HiddenBiases   [NNUEHidden2Size]float32
 	Hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]float32
 	Hidden2Biases  [NNUEHidden3Size]float32
-	OutputWeights  [NNUEHidden3Size]float32
-	OutputBias     float32
+	OutputWeights  [NNUEOutputBuckets][NNUEHidden3Size]float32
+	OutputBias     [NNUEOutputBuckets]float32
 }
 
 // NNUETrainConfig holds training hyperparameters.
@@ -56,6 +56,7 @@ type NNUETrainSample struct {
 	Result        float32   // game result from White's perspective (1.0, 0.5, 0.0)
 	Score         float32   // search score in centipawns (White-relative)
 	HasScore      bool      // whether Score is valid
+	PieceCount    int       // total pieces on board (for output bucket selection)
 }
 
 // nnbin file format constants
@@ -126,12 +127,14 @@ func NewNNUETrainNet(rng *rand.Rand) *NNUETrainNet {
 		net.Hidden2Biases[i] = 0.1
 	}
 
-	// Output layer: fan_in = 32
+	// Output layer: fan_in = 32, one set per output bucket
 	outputScale := float32(math.Sqrt(2.0 / 32.0))
-	for i := range net.OutputWeights {
-		net.OutputWeights[i] = float32(rng.NormFloat64()) * outputScale
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		for i := range net.OutputWeights[b] {
+			net.OutputWeights[b][i] = float32(rng.NormFloat64()) * outputScale
+		}
+		net.OutputBias[b] = 0
 	}
-	net.OutputBias = 0
 
 	return net
 }
@@ -193,10 +196,11 @@ func (net *NNUETrainNet) Forward(sample *NNUETrainSample) (output float32, hidde
 		hidden3[k] = sum
 	}
 
-	// Output layer with ReLU on hidden3 (no upper clamp)
-	output = net.OutputBias
+	// Output layer with ReLU on hidden3 (no upper clamp), using material bucket
+	bucket := OutputBucket(sample.PieceCount)
+	output = net.OutputBias[bucket]
 	for k := 0; k < NNUEHidden3Size; k++ {
-		output += reluF(hidden3[k]) * net.OutputWeights[k]
+		output += reluF(hidden3[k]) * net.OutputWeights[bucket][k]
 	}
 
 	return output, hidden1, hidden2, hidden3
@@ -252,8 +256,8 @@ type NNUETrainGradients struct {
 	HiddenBiases   [NNUEHidden2Size]float32
 	Hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]float32
 	Hidden2Biases  [NNUEHidden3Size]float32
-	OutputWeights  [NNUEHidden3Size]float32
-	OutputBias     float32
+	OutputWeights  [NNUEOutputBuckets][NNUEHidden3Size]float32
+	OutputBias     [NNUEOutputBuckets]float32
 
 	// Sparse tracking for InputWeights — only zero/aggregate touched rows
 	dirtyInputs []int  // which InputWeights rows were modified
@@ -290,13 +294,14 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 	// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
 	dOutput := float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
 
-	// Output layer gradients: output = bias + sum(ReLU(hidden3) * weights)
-	grads.OutputBias += dOutput
+	// Output layer gradients: output = bias + sum(ReLU(hidden3) * weights), using material bucket
+	bucket := OutputBucket(sample.PieceCount)
+	grads.OutputBias[bucket] += dOutput
 	var dHidden3 [NNUEHidden3Size]float32
 	for k := 0; k < NNUEHidden3Size; k++ {
 		h3 := reluF(hidden3[k])
-		grads.OutputWeights[k] += dOutput * h3
-		dHidden3[k] = dOutput * net.OutputWeights[k] * reluGrad(hidden3[k])
+		grads.OutputWeights[bucket][k] += dOutput * h3
+		dHidden3[k] = dOutput * net.OutputWeights[bucket][k] * reluGrad(hidden3[k])
 	}
 
 	// Hidden layer 2 gradients: hidden3 = bias + sum(ReLU(hidden2) * weights)
@@ -423,6 +428,7 @@ func ParseNNUETrainData(line string) (*NNUETrainSample, error) {
 		Result:     result,
 		Score:      score,
 		HasScore:   hasScore,
+		PieceCount: b.AllPieces.Count(),
 	}
 
 	// Extract active features (HalfKA: all pieces including kings)
@@ -681,6 +687,7 @@ func (bf *NNBinFile) readRecordAt(index int, sample *NNUETrainSample) (*NNUETrai
 	sample.Result = result
 	sample.Score = score
 	sample.HasScore = hasScore != 0
+	sample.PieceCount = numWhite // each piece generates one feature per perspective
 
 	// Read feature indices in one ReadAt call
 	numFeatures := numWhite + numBlack
@@ -747,8 +754,8 @@ type NNUETrainer struct {
 		hiddenBiases   [NNUEHidden2Size]nnueAdamState
 		hidden2Weights [NNUEHidden2Size][NNUEHidden3Size]nnueAdamState
 		hidden2Biases  [NNUEHidden3Size]nnueAdamState
-		outputWeights  [NNUEHidden3Size]nnueAdamState
-		outputBias     nnueAdamState
+		outputWeights  [NNUEOutputBuckets][NNUEHidden3Size]nnueAdamState
+		outputBias     [NNUEOutputBuckets]nnueAdamState
 	}
 	step int
 }
@@ -936,9 +943,13 @@ func initGradientTracking(g *NNUETrainGradients) {
 // zeroGradients resets all gradient accumulators to zero.
 // InputWeights uses sparse zeroing — only rows touched since last zero are cleared.
 func zeroGradients(g *NNUETrainGradients) {
-	g.OutputBias = 0
-	for k := range g.OutputWeights {
-		g.OutputWeights[k] = 0
+	for b := range g.OutputBias {
+		g.OutputBias[b] = 0
+	}
+	for b := range g.OutputWeights {
+		for k := range g.OutputWeights[b] {
+			g.OutputWeights[b][k] = 0
+		}
 	}
 	for k := range g.Hidden2Biases {
 		g.Hidden2Biases[k] = 0
@@ -970,9 +981,13 @@ func zeroGradients(g *NNUETrainGradients) {
 }
 
 func addGradients(dst, src *NNUETrainGradients) {
-	dst.OutputBias += src.OutputBias
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		dst.OutputBias[b] += src.OutputBias[b]
+		for k := 0; k < NNUEHidden3Size; k++ {
+			dst.OutputWeights[b][k] += src.OutputWeights[b][k]
+		}
+	}
 	for k := 0; k < NNUEHidden3Size; k++ {
-		dst.OutputWeights[k] += src.OutputWeights[k]
 		dst.Hidden2Biases[k] += src.Hidden2Biases[k]
 	}
 	for j := 0; j < NNUEHidden2Size; j++ {
@@ -1004,12 +1019,14 @@ func addGradients(dst, src *NNUETrainGradients) {
 func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
 	step := trainer.step
 
-	// Output layer (hidden3 -> output)
-	adamUpdate(&trainer.Net.OutputBias, float64(grads.OutputBias)*scale,
-		&trainer.adam.outputBias, lr, step)
-	for j := 0; j < NNUEHidden3Size; j++ {
-		adamUpdate(&trainer.Net.OutputWeights[j], float64(grads.OutputWeights[j])*scale,
-			&trainer.adam.outputWeights[j], lr, step)
+	// Output layer (hidden3 -> output), per bucket
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		adamUpdate(&trainer.Net.OutputBias[b], float64(grads.OutputBias[b])*scale,
+			&trainer.adam.outputBias[b], lr, step)
+		for j := 0; j < NNUEHidden3Size; j++ {
+			adamUpdate(&trainer.Net.OutputWeights[b][j], float64(grads.OutputWeights[b][j])*scale,
+				&trainer.adam.outputWeights[b][j], lr, step)
+		}
 	}
 
 	// Hidden2 layer (hidden2 -> hidden3)
@@ -1166,10 +1183,12 @@ func QuantizeNetwork(train *NNUETrainNet) *NNUENet {
 	// Weights are int16 at scale nnueHiddenScale (64), NOT nnueOutputScale,
 	// because the CReLU activation (after >>6) is at scale nnueInputScale (127).
 	// Product: activation(127) * weight(64) = scale 8128 = nnueOutputScale, matching bias.
-	for j := range train.OutputWeights {
-		net.OutputWeights[j] = int16(math.Round(float64(train.OutputWeights[j]) * float64(nnueHiddenScale)))
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		for j := range train.OutputWeights[b] {
+			net.OutputWeights[b][j] = int16(math.Round(float64(train.OutputWeights[b][j]) * float64(nnueHiddenScale)))
+		}
+		net.OutputBias[b] = int32(math.Round(float64(train.OutputBias[b]) * float64(nnueOutputScale)))
 	}
-	net.OutputBias = int32(math.Round(float64(train.OutputBias) * float64(nnueOutputScale)))
 
 	net.PrepareWeights()
 	return net
@@ -1214,11 +1233,13 @@ func DequantizeNetwork(net *NNUENet) *NNUETrainNet {
 	}
 
 	// Output weights: divide by nnueHiddenScale (64), matching QuantizeNetwork
-	for j := range net.OutputWeights {
-		train.OutputWeights[j] = float32(net.OutputWeights[j]) / nnueHiddenScale
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		for j := range net.OutputWeights[b] {
+			train.OutputWeights[b][j] = float32(net.OutputWeights[b][j]) / nnueHiddenScale
+		}
+		// Output bias: divide by nnueOutputScale (8128)
+		train.OutputBias[b] = float32(net.OutputBias[b]) / nnueOutputScale
 	}
-	// Output bias: divide by nnueOutputScale (8128)
-	train.OutputBias = float32(net.OutputBias) / nnueOutputScale
 
 	return train
 }

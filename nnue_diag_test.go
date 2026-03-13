@@ -54,7 +54,7 @@ func TestNNUEDiagnostic(t *testing.T) {
 		b.NNUEAcc = accStack
 		b.NNUENet = net
 		net.RecomputeAccumulator(accStack.Current(), &b)
-		quantOutput := net.Evaluate(accStack.Current(), b.SideToMove)
+		quantOutput := net.Evaluate(accStack.Current(), b.SideToMove, b.AllPieces.Count())
 
 		// Classical eval for reference
 		classicalOutput := b.EvaluateRelative()
@@ -69,6 +69,7 @@ func TestNNUEDiagnostic(t *testing.T) {
 func extractFeatures(b *Board) *NNUETrainSample {
 	sample := &NNUETrainSample{
 		SideToMove: b.SideToMove,
+		PieceCount: b.AllPieces.Count(),
 	}
 
 	wKingSq := b.Pieces[WhiteKing].LSB()
@@ -131,13 +132,15 @@ func TestNNUEQuantizationAccuracy(t *testing.T) {
 	}
 
 	var outMin, outMax float32
-	for j := range trainNet.OutputWeights {
-		v := trainNet.OutputWeights[j]
-		if v < outMin {
-			outMin = v
-		}
-		if v > outMax {
-			outMax = v
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			v := trainNet.OutputWeights[b][j]
+			if v < outMin {
+				outMin = v
+			}
+			if v > outMax {
+				outMax = v
+			}
 		}
 	}
 
@@ -146,7 +149,7 @@ func TestNNUEQuantizationAccuracy(t *testing.T) {
 		inputMin, inputMax, inputNonZero, total, 100*float64(inputNonZero)/float64(total))
 	fmt.Printf("Hidden weights: min=%.4f max=%.4f\n", hiddenMin, hiddenMax)
 	fmt.Printf("Output weights: min=%.4f max=%.4f\n", outMin, outMax)
-	fmt.Printf("Output bias:    %.4f\n", trainNet.OutputBias)
+	fmt.Printf("Output bias:    %.4f (bucket 0)\n", trainNet.OutputBias[0])
 
 	// Check accumulator values for startpos
 	var b Board
