@@ -1017,6 +1017,81 @@ func addGradients(dst, src *NNUETrainGradients) {
 	}
 }
 
+// aggregateGradientsParallel sums all worker gradients into dst in parallel.
+// The small layers (output, hidden2, hidden1) are summed on the main thread while
+// goroutines handle the input layer sparse rows (the dominant cost).
+func aggregateGradientsParallel(dst *NNUETrainGradients, workers []NNUETrainGradients) {
+	// Build union of dirty input rows across all workers (sequential, fast)
+	zeroGradients(dst)
+	for w := range workers {
+		for _, idx := range workers[w].dirtyInputs {
+			if !dst.dirtySet[idx] {
+				dst.dirtySet[idx] = true
+				dst.dirtyInputs = append(dst.dirtyInputs, idx)
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	// Parallel: sum input weights for dirty rows across all workers
+	dirtyRows := dst.dirtyInputs
+	if len(dirtyRows) > 0 {
+		numParallel := runtime.NumCPU()
+		perWorker := (len(dirtyRows) + numParallel - 1) / numParallel
+		for p := 0; p < numParallel; p++ {
+			start := p * perWorker
+			if start >= len(dirtyRows) {
+				break
+			}
+			end := start + perWorker
+			if end > len(dirtyRows) {
+				end = len(dirtyRows)
+			}
+			wg.Add(1)
+			go func(rows []int) {
+				defer wg.Done()
+				for _, idx := range rows {
+					for w := range workers {
+						for j := 0; j < NNUEHiddenSize; j++ {
+							dst.InputWeights[idx][j] += workers[w].InputWeights[idx][j]
+						}
+					}
+				}
+			}(dirtyRows[start:end])
+		}
+	}
+
+	// Main thread: sum small layers concurrently with input goroutines
+	for w := range workers {
+		for b := 0; b < NNUEOutputBuckets; b++ {
+			dst.OutputBias[b] += workers[w].OutputBias[b]
+			for k := 0; k < NNUEHidden3Size; k++ {
+				dst.OutputWeights[b][k] += workers[w].OutputWeights[b][k]
+			}
+		}
+		for k := 0; k < NNUEHidden3Size; k++ {
+			dst.Hidden2Biases[k] += workers[w].Hidden2Biases[k]
+		}
+		for j := 0; j < NNUEHidden2Size; j++ {
+			dst.HiddenBiases[j] += workers[w].HiddenBiases[j]
+			for k := 0; k < NNUEHidden3Size; k++ {
+				dst.Hidden2Weights[j][k] += workers[w].Hidden2Weights[j][k]
+			}
+		}
+		for i := 0; i < NNUEHiddenSize*2; i++ {
+			for j := 0; j < NNUEHidden2Size; j++ {
+				dst.HiddenWeights[i][j] += workers[w].HiddenWeights[i][j]
+			}
+		}
+		for j := 0; j < NNUEHiddenSize; j++ {
+			dst.InputBiases[j] += workers[w].InputBiases[j]
+		}
+	}
+
+	wg.Wait()
+}
+
 func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
 	trainer.applyAdamUpdatesParallel(grads, scale, lr, runtime.NumCPU())
 }
@@ -1479,12 +1554,11 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 
 			// Aggregate gradients and loss
 			t0 = time.Now()
-			zeroGradients(&totalGrads)
 			for w := 0; w < numWorkers; w++ {
 				totalLoss += workerLoss[w]
 				numSamples += workerCount[w]
-				addGradients(&totalGrads, &workerGrads[w])
 			}
+			aggregateGradientsParallel(&totalGrads, workerGrads[:numWorkers])
 			tAgg += time.Since(t0)
 
 			// Scale gradients and apply Adam updates
