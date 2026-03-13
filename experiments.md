@@ -811,6 +811,84 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 
 ## 2026-03-12: CaptHist Scaling /16 in Good Captures (MERGED)
 - **Change**: Scale capture history by /16 in good capture scoring (`mvvLva + captHistScore/16` instead of `mvvLva + captHistScore`). CaptHist range [-16384, +16384] was dominating MVV-LVA range [~0, 9990], causing misordering.
-- **Result**: +5 Elo (50.7%, 463-441-642, 1546 games). Stable positive for 1000+ games.
+- **Result**: **+6.4 Elo** (50.9%, 475-447-657, 1579 games). **H1 accepted** (LLR 2.98).
 - **Baseline**: 04796f7 (simplified extensions)
 - **Notes**: Correctness fix — MVV-LVA should be primary signal for capture ordering, captHist acts as tiebreaker. Before this fix, a PxQ with bad captHist could sort below PxP with good captHist. Bad captures still scored by raw captHist (no MVV-LVA there).
+
+## 2026-03-12: ContHist2 in MovePicker (quiet+evasion scoring)
+- **Change**: Added contHist2 (2-ply continuation history) to MovePicker quiet and evasion scoring at 1x weight (vs 3x for contHist1). contHist2 was already used in LMR/pruning but not in move ordering.
+- **Result**: -8 Elo (48.8%, 448-485-637, 1570 games). Killed — persistent negative.
+- **Baseline**: 04796f7 (simplified extensions)
+- **Notes**: Adding contHist2 to ordering hurts despite being useful in LMR/pruning. Possible explanations: (1) 2-ply history is too noisy for ordering — the signal-to-noise ratio is worse than 1-ply contHist; (2) the 1x weight may be wrong; (3) contHist2 may help more as a pruning/reduction signal than as an ordering signal. Don't retry without a different approach (e.g., smaller weight like /2, or only in evasions).
+
+## 2026-03-12: QS Skip Bad Captures (remove double SEE)
+- **Change**: In QS, skip bad captures entirely in MovePicker (go straight to stageDone after good captures) and remove redundant SEE check in search loop. NPS optimization.
+- **Result**: -2 Elo (49.7%, 376-385-605, 1366 games). Killed — flat zero.
+- **Baseline**: 04796f7 (simplified extensions)
+- **Notes**: Theory was sound (avoid double SEE for good captures, skip bad captures entirely). But the NPS gain from one fewer SEE call per QS capture is negligible. Strength-neutral.
+
+## 2026-03-12: LMR Reduction-- for Checks (instead of skip)
+- **Change**: Remove `!givesCheck` from LMR guard, add `reduction--` for checking moves inside reduction adjustments. Allows LMR on checks but with less reduction.
+- **Result**: -31 Elo (45.6%, 64-90-144, 298 games). Killed — strongly negative.
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: Checks genuinely need full-depth search. Even reducing by 1 less than normal is harmful. Combined with check extensions being harmful (-11.2 Elo), this confirms: the correct approach for checks is neither extend nor reduce — just search at normal depth. The `!givesCheck` LMR skip is well-calibrated.
+
+## 2026-03-12: ContHist2 Updates on Cutoff/Penalty
+- **Change**: Add contHistPtr2 (2-ply continuation history) to bonus/penalty updates on beta cutoffs and failed quiets. Previously contHist2 was used for LMR/pruning decisions but never received learning signal.
+- **Result**: -10 Elo (48.6%, 231-382-255, 868 games). Killed — persistent negative.
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: Updating contHist2 on cutoffs adds noise to the 2-ply history table. The signal from 2-ply-ago context is inherently weaker; adding full-weight updates may dilute the table with unreliable data. Could retry with reduced learning rate (bonus/2) but low priority given consistent negative results with contHist2 changes.
+
+## 2026-03-12: ProbCut MVV-LVA Ordering
+- **Change**: Sort ProbCut captures by MVV-LVA before searching. Selection sort with scores array. Previously ProbCut iterated captures in generation order after SEE filter.
+- **Result**: -16 Elo (47.8%, 111-166-129, 406 games). Killed — persistent negative.
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: The overhead of sorting ProbCut captures outweighs the benefit of trying better captures first. ProbCut already filters by SEE >= beta-200, so the remaining captures are all "good enough." The extra sorting computation at every ProbCut node adds up. The generation order (which tends to be roughly MVV-ordered anyway due to move generation patterns) is sufficient.
+
+## 2026-03-12: Fail-Low History Penalties
+- **Change**: At fail-low nodes (bestScore <= alphaOrig), penalize all quiets tried with historyBonus(depth-1). Known Stockfish technique — none of the quiets was good enough, so discourage them in future ordering.
+- **Result**: -43 Elo (43.9%, 42-103-68, 213 games). Killed — strongly negative.
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: Penalizing all quiets at fail-low is too aggressive. Fail-low doesn't mean the moves are bad — it means the position is bad. The quiets may be the best available; penalizing them pollutes history tables with misleading signals. Would need much smaller weight or only penalize moves that scored well below alpha to be viable.
+
+## 2026-03-12: HistoryBonus Cap 1600 (up from 1200)
+- **Change**: Increase historyBonus cap from 1200 to 1600 (min(depth*depth, 1600)). Allows deeper nodes to have stronger history updates.
+- **Result**: -19 Elo (47.2%, 92-141-111, 344 games). Killed — persistent negative.
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: Higher cap allows deep-node updates to dominate shallow ones, skewing history tables. 1200 is well-calibrated.
+
+## 2026-03-12: HistoryBonus Cap 800 (down from 1200)
+- **Change**: Decrease historyBonus cap from 1200 to 800 (min(depth*depth, 800)). Tests whether shallower history signals are sufficient.
+- **Result**: -16 Elo (47.7%, 62-127-74, 263 games). Killed — persistent negative.
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: Lower cap weakens deep-node history signal too much, reducing move ordering quality at higher depths. Combined with 1600 losing, 1200 is bracketed as optimal.
+
+## 2026-03-13: IIR Deep2 d≥10 (retest on new baseline)
+- **Change**: IIR reduces by 2 plies when depth ≥ 10 and no TT move (was always 1). Retest of 2026-03-10 experiment on new baseline.
+- **Result**: -4.3 Elo after 1068 games (killed). W270-L277-D443 (49.7%). LOS 29.6%. LLR -0.42 (-14%).
+- **Baseline**: 21b8ddd (captHist scaling)
+- **Notes**: Consistent with original result (+1.8 at 1394 games, flat). Double IIR at deep nodes remains neutral-to-slightly-negative. At 10+0.1s TC, depth ≥ 10 fires rarely enough that the savings don't compensate for the information loss. Not worth revisiting.
+
+## 2026-03-13: IIR Deep2 d≥8
+- **Change**: IIR reduces by 2 plies when depth ≥ 8 (lowered from 10) and no TT move.
+- **Result**: -6.9 Elo after 2231 games (killed, no SPRT conclusion). W580-L624-D1027 (49.0%). LOS 10.2%. LLR -2.24 (-76%).
+- **Baseline**: 4bbcb7d (conthist 3x, QS TT move)
+- **Notes**: Lowering the depth gate makes it worse. Double IIR fires more often at d≥8, losing too much search information. Combined with the d≥10 result, double IIR is harmful at any threshold. Don't revisit.
+
+## 2026-03-13: Killer Evasion Bonus
+- **Change**: Give killer moves a bonus in evasion move scoring (was unscored).
+- **Result**: -6.0 Elo after 2101 games (killed, no SPRT conclusion). W577-L614-D910 (49.1%). LOS 14.8%. LLR -1.59 (-54%).
+- **Baseline**: 4bbcb7d (conthist 3x, QS TT move)
+- **Notes**: Evasion sets are small (2-8 moves), so ordering quality has minimal impact. Killers from non-evasion contexts may not be relevant when in check. Not worth revisiting.
+
+## 2026-03-13: LMR SEE Quiet Reduction
+- **Change**: Increase LMR reduction for quiet moves with negative SEE (SEE < 0 → reduction += 1).
+- **Result**: -5.6 Elo after 1631 games (killed, no SPRT conclusion). W441-L468-D722 (49.2%). LOS 19.4%. LLR -1.11 (-38%).
+- **Baseline**: 4bbcb7d (conthist 3x, QS TT move)
+- **Notes**: SEE on quiet moves is unreliable — it measures capture exchanges, not positional value. Over-pruning quiet moves that happen to lose material in tactical lines misses important positional moves.
+
+## 2026-03-13: PawnHist in LMR Formula
+- **Change**: Add pawn structure history to LMR reduction formula (alongside main history and continuation history).
+- **Result**: -4.3 Elo after 2055 games (killed, no SPRT conclusion). W556-L581-D918 (49.4%). LOS 22.8%. LLR -0.81 (-27%).
+- **Baseline**: 4bbcb7d (conthist 3x, QS TT move)
+- **Notes**: PawnHist signal is too noisy/slow to learn for LMR adjustment. The /5000 divisor would need retuning, but the trend is clearly negative. Adding more history dimensions has diminishing returns — main + continuation is sufficient.
