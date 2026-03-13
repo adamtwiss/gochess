@@ -37,6 +37,7 @@ type NNUETrainConfig struct {
 	ScaleWeight  float64 // weight for centipawn scale anchoring term (0=disabled)
 	MaxPositions int             // limit training positions per epoch (0=use all)
 	FreezeHidden bool            // if true, only train output bucket weights (freeze input + hidden layers)
+	UseLAMB      bool            // use LAMB optimizer instead of plain Adam
 	Stop         <-chan struct{} // if non-nil, checked each epoch; close to stop early
 }
 
@@ -267,45 +268,88 @@ type NNUETrainGradients struct {
 	dirtySet    []bool // fast membership test (indexed by input feature)
 }
 
+// computeSampleLoss returns the loss for a single sample given its forward pass output.
+func computeSampleLoss(output float32, s *NNUETrainSample, cfg NNUETrainConfig) float64 {
+	score := float64(s.Score)
+	if s.SideToMove == Black {
+		score = -score
+	}
+
+	if cfg.Lambda == 0 && s.HasScore {
+		// Direct MSE on centipawn scores
+		diff := (float64(output) - score) / cfg.K
+		return diff * diff
+	}
+
+	// Sigmoid loss
+	pred := nnueSigmoid(float64(output), cfg.K)
+	var target float64
+	if s.HasScore {
+		scoreTarget := nnueSigmoid(score, cfg.K)
+		result := float64(s.Result)
+		if s.SideToMove == Black {
+			result = 1.0 - result
+		}
+		target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
+	} else {
+		target = float64(s.Result)
+		if s.SideToMove == Black {
+			target = 1.0 - target
+		}
+	}
+	diff := pred - target
+	loss := diff * diff
+	if cfg.ScaleWeight > 0 && s.HasScore {
+		scaleDiff := (float64(output) - score) / cfg.K
+		loss += cfg.ScaleWeight * scaleDiff * scaleDiff
+	}
+	return loss
+}
+
 // Backward computes gradients for a single sample and accumulates into grads.
 func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradients,
 	output float32, hidden1 [NNUEHiddenSize * 2]float32, hidden2 [NNUEHidden2Size]float32, hidden3 [NNUEHidden3Size]float32,
 	cfg NNUETrainConfig) {
 
 	// Compute loss gradient: d(loss)/d(output)
-	pred := nnueSigmoid(float64(output), cfg.K)
+	var dOutput float32
 
-	var target float64
-	if sample.HasScore {
-		score := float64(sample.Score)
-		if sample.SideToMove == Black {
-			score = -score
-		}
-		scoreTarget := nnueSigmoid(score, cfg.K)
-		result := float64(sample.Result)
-		if sample.SideToMove == Black {
-			result = 1.0 - result
-		}
-		target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
-	} else {
-		target = float64(sample.Result)
-		if sample.SideToMove == Black {
-			target = 1.0 - target
-		}
+	score := float64(sample.Score)
+	if sample.SideToMove == Black {
+		score = -score
 	}
 
-	// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
-	dOutput := float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
+	if cfg.Lambda == 0 && sample.HasScore {
+		// Direct MSE on centipawn scores: loss = ((output - target) / K)²
+		// Gradient: d(loss)/d(output) = 2 * (output - target) / K²
+		dOutput = float32(2.0 * (float64(output) - score) / (cfg.K * cfg.K))
+	} else {
+		// Sigmoid loss (needed for game outcome blending)
+		pred := nnueSigmoid(float64(output), cfg.K)
 
-	// Scale anchoring gradient: d/d(output) of ScaleWeight * ((output - targetScore) / K)²
-	// = 2 * ScaleWeight * (output - targetScore) / K²
-	if cfg.ScaleWeight > 0 && sample.HasScore {
-		targetScore := float64(sample.Score)
-		if sample.SideToMove == Black {
-			targetScore = -targetScore
+		var target float64
+		if sample.HasScore {
+			scoreTarget := nnueSigmoid(score, cfg.K)
+			result := float64(sample.Result)
+			if sample.SideToMove == Black {
+				result = 1.0 - result
+			}
+			target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
+		} else {
+			target = float64(sample.Result)
+			if sample.SideToMove == Black {
+				target = 1.0 - target
+			}
 		}
-		dScale := float32(2.0 * cfg.ScaleWeight * (float64(output) - targetScore) / (cfg.K * cfg.K))
-		dOutput += dScale
+
+		// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
+		dOutput = float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
+
+		// Scale anchoring gradient (only relevant with sigmoid)
+		if cfg.ScaleWeight > 0 && sample.HasScore {
+			dScale := float32(2.0 * cfg.ScaleWeight * (float64(output) - score) / (cfg.K * cfg.K))
+			dOutput += dScale
+		}
 	}
 
 	// Output layer gradients: output = bias + sum(ReLU(hidden3) * weights), using material bucket
@@ -780,7 +824,8 @@ type NNUETrainer struct {
 		outputWeights  [NNUEOutputBuckets][NNUEHidden3Size]nnueAdamState
 		outputBias     [NNUEOutputBuckets]nnueAdamState
 	}
-	step int
+	step    int
+	useLAMB bool
 }
 
 // NewNNUETrainer creates a new trainer with a randomly initialized network.
@@ -839,6 +884,7 @@ func lambTrustRatio(weightNormSq, updateNormSq float64) float64 {
 func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 	onEpoch func(epoch int, trainLoss, valLoss float64)) {
 
+	trainer.useLAMB = cfg.UseLAMB
 	numTrain := int(bf.NumTrain)
 	if cfg.MaxPositions > 0 && cfg.MaxPositions < numTrain {
 		numTrain = cfg.MaxPositions
@@ -926,37 +972,7 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 						trainer.Net.Backward(s, &workerGrads[workerIdx],
 							output, hidden1, hidden2, hidden3, cfg)
 
-						// Compute loss
-						pred := nnueSigmoid(float64(output), cfg.K)
-						var target float64
-						if s.HasScore {
-							result := float64(s.Result)
-							if s.SideToMove == Black {
-								result = 1.0 - result
-							}
-							score := float64(s.Score)
-							if s.SideToMove == Black {
-								score = -score
-							}
-							scoreTarget := nnueSigmoid(score, cfg.K)
-							target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
-						} else {
-							target = float64(s.Result)
-							if s.SideToMove == Black {
-								target = 1.0 - target
-							}
-						}
-						diff := pred - target
-						loss := diff * diff
-						if cfg.ScaleWeight > 0 && s.HasScore {
-							sc := float64(s.Score)
-							if s.SideToMove == Black {
-								sc = -sc
-							}
-							scaleDiff := (float64(output) - sc) / cfg.K
-							loss += cfg.ScaleWeight * scaleDiff * scaleDiff
-						}
-						workerLoss[workerIdx] += loss
+						workerLoss[workerIdx] += computeSampleLoss(output, s, cfg)
 						workerCount[workerIdx]++
 					}
 				}(w)
@@ -1151,7 +1167,66 @@ func aggregateGradientsParallel(dst *NNUETrainGradients, workers []NNUETrainGrad
 }
 
 func (trainer *NNUETrainer) applyAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
-	trainer.applyLAMBUpdatesParallel(grads, scale, lr, runtime.NumCPU())
+	if trainer.useLAMB {
+		trainer.applyLAMBUpdatesParallel(grads, scale, lr, runtime.NumCPU())
+	} else {
+		trainer.applyPlainAdamUpdates(grads, scale, lr)
+	}
+}
+
+// applyPlainAdamUpdates applies standard Adam optimizer (no trust ratio scaling).
+func (trainer *NNUETrainer) applyPlainAdamUpdates(grads *NNUETrainGradients, scale, lr float64) {
+	step := trainer.step
+
+	// Output layer (per-bucket)
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		adamUpdate(&trainer.Net.OutputBias[b], float64(grads.OutputBias[b])*scale,
+			&trainer.adam.outputBias[b], lr, step)
+		for j := 0; j < NNUEHidden3Size; j++ {
+			adamUpdate(&trainer.Net.OutputWeights[b][j], float64(grads.OutputWeights[b][j])*scale,
+				&trainer.adam.outputWeights[b][j], lr, step)
+		}
+	}
+
+	// Hidden2 layer
+	for j := 0; j < NNUEHidden3Size; j++ {
+		adamUpdate(&trainer.Net.Hidden2Biases[j], float64(grads.Hidden2Biases[j])*scale,
+			&trainer.adam.hidden2Biases[j], lr, step)
+	}
+	for i := 0; i < NNUEHidden2Size; i++ {
+		for j := 0; j < NNUEHidden3Size; j++ {
+			adamUpdate(&trainer.Net.Hidden2Weights[i][j], float64(grads.Hidden2Weights[i][j])*scale,
+				&trainer.adam.hidden2Weights[i][j], lr, step)
+		}
+	}
+
+	// Hidden1 layer
+	for j := 0; j < NNUEHidden2Size; j++ {
+		adamUpdate(&trainer.Net.HiddenBiases[j], float64(grads.HiddenBiases[j])*scale,
+			&trainer.adam.hiddenBiases[j], lr, step)
+	}
+	for i := 0; i < NNUEHiddenSize*2; i++ {
+		for j := 0; j < NNUEHidden2Size; j++ {
+			adamUpdate(&trainer.Net.HiddenWeights[i][j], float64(grads.HiddenWeights[i][j])*scale,
+				&trainer.adam.hiddenWeights[i][j], lr, step)
+		}
+	}
+
+	// Input layer (sparse)
+	for _, idx := range grads.dirtyInputs {
+		for j := 0; j < NNUEHiddenSize; j++ {
+			if grads.InputWeights[idx][j] != 0 {
+				adamUpdate(&trainer.Net.InputWeights[idx][j], float64(grads.InputWeights[idx][j])*scale,
+					&trainer.adam.inputWeights[idx][j], lr, step)
+			}
+		}
+	}
+
+	// Input biases
+	for j := 0; j < NNUEHiddenSize; j++ {
+		adamUpdate(&trainer.Net.InputBiases[j], float64(grads.InputBiases[j])*scale,
+			&trainer.adam.inputBiases[j], lr, step)
+	}
 }
 
 // applyLAMBUpdatesParallel applies LAMB (Layer-wise Adaptive Moments) optimizer.
@@ -1369,38 +1444,7 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 					continue
 				}
 				output, _, _, _ := trainer.Net.Forward(s)
-				pred := nnueSigmoid(float64(output), cfg.K)
-
-				var target float64
-				if s.HasScore {
-					result := float64(s.Result)
-					if s.SideToMove == Black {
-						result = 1.0 - result
-					}
-					score := float64(s.Score)
-					if s.SideToMove == Black {
-						score = -score
-					}
-					scoreTarget := nnueSigmoid(score, cfg.K)
-					target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
-				} else {
-					target = float64(s.Result)
-					if s.SideToMove == Black {
-						target = 1.0 - target
-					}
-				}
-
-				diff := pred - target
-				loss := diff * diff
-				if cfg.ScaleWeight > 0 && s.HasScore {
-					sc := float64(s.Score)
-					if s.SideToMove == Black {
-						sc = -sc
-					}
-					scaleDiff := (float64(output) - sc) / cfg.K
-					loss += cfg.ScaleWeight * scaleDiff * scaleDiff
-				}
-				wLoss[workerIdx] += loss
+				wLoss[workerIdx] += computeSampleLoss(output, s, cfg)
 				wCount[workerIdx]++
 			}
 		}(w)
@@ -1603,6 +1647,7 @@ func (trainer *NNUETrainer) TuneK(bf *NNBinFile, lambda float64) float64 {
 func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 	onEpoch func(epoch int, trainLoss, valLoss float64)) {
 
+	trainer.useLAMB = cfg.UseLAMB
 	trainFraction := 0.9
 	numWorkers := runtime.NumCPU()
 
@@ -1689,37 +1734,7 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 						trainer.Net.Backward(s, &workerGrads[workerIdx],
 							output, hidden1, hidden2, hidden3, cfg)
 
-						pred := nnueSigmoid(float64(output), cfg.K)
-						var target float64
-						if s.HasScore {
-							result := float64(s.Result)
-							if s.SideToMove == Black {
-								result = 1.0 - result
-							}
-							score := float64(s.Score)
-							if s.SideToMove == Black {
-								score = -score
-							}
-							scoreTarget := nnueSigmoid(score, cfg.K)
-							target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
-						} else {
-							target = float64(s.Result)
-							if s.SideToMove == Black {
-								target = 1.0 - target
-							}
-						}
-						diff := pred - target
-						loss := diff * diff
-						// Add scale anchoring loss
-						if cfg.ScaleWeight > 0 && s.HasScore {
-							score := float64(s.Score)
-							if s.SideToMove == Black {
-								score = -score
-							}
-							scaleDiff := (float64(output) - score) / cfg.K
-							loss += cfg.ScaleWeight * scaleDiff * scaleDiff
-						}
-						workerLoss[workerIdx] += loss
+						workerLoss[workerIdx] += computeSampleLoss(output, s, cfg)
 						workerCount[workerIdx]++
 					}
 				}(w)
@@ -1791,38 +1806,7 @@ func (trainer *NNUETrainer) computeValidationLossFromSamples(valSamples []*NNUET
 			for i := start; i < end; i++ {
 				s := valSamples[i]
 				output, _, _, _ := trainer.Net.Forward(s)
-				pred := nnueSigmoid(float64(output), cfg.K)
-
-				var target float64
-				if s.HasScore {
-					result := float64(s.Result)
-					if s.SideToMove == Black {
-						result = 1.0 - result
-					}
-					score := float64(s.Score)
-					if s.SideToMove == Black {
-						score = -score
-					}
-					scoreTarget := nnueSigmoid(score, cfg.K)
-					target = cfg.Lambda*result + (1.0-cfg.Lambda)*scoreTarget
-				} else {
-					target = float64(s.Result)
-					if s.SideToMove == Black {
-						target = 1.0 - target
-					}
-				}
-
-				diff := pred - target
-				loss := diff * diff
-				if cfg.ScaleWeight > 0 && s.HasScore {
-					sc := float64(s.Score)
-					if s.SideToMove == Black {
-						sc = -sc
-					}
-					scaleDiff := (float64(output) - sc) / cfg.K
-					loss += cfg.ScaleWeight * scaleDiff * scaleDiff
-				}
-				wLoss[workerIdx] += loss
+				wLoss[workerIdx] += computeSampleLoss(output, s, cfg)
 				wCount[workerIdx]++
 			}
 		}(w)
