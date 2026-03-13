@@ -169,7 +169,7 @@ During tuning, training data is streamed from the `.tbin` file in batches of 655
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-data` | `training.bin` | Training data file from step 1 (.bin or .dat) |
+| `-data` | `training.bin` | Training data file from step 1 (.bin) |
 | `-epochs` | 500 | Number of optimization epochs |
 | `-lr` | 1.0 | Learning rate |
 | `-lambda` | 1.0 | Result vs score weight: 1=result-only, 0=score-only |
@@ -219,11 +219,11 @@ Selfplay records the engine's search score alongside each position and game resu
 ./tuner nnue-train -data training.bin -epochs 100 -lr 0.01 -output net.nnue
 ```
 
-This trains a quantized NNUE network from scratch. On first run, the training data is preprocessed into a binary cache (`.nnbin`) for efficient streaming. The loss function blends game-result prediction with score prediction: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`.
+This trains a quantized NNUE network from scratch. The loss function blends game-result prediction with score prediction: `lambda * MSE(sigmoid(nnue/K), result) + (1-lambda) * MSE(sigmoid(nnue/K), sigmoid(score/K))`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-data` | `training.bin` | Training data file (.bin or .dat, must include scores) |
+| `-data` | `training.bin` | Training data file (.bin, must include scores) |
 | `-epochs` | 100 | Training epochs |
 | `-lr` | 0.01 | Learning rate |
 | `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
@@ -232,7 +232,7 @@ This trains a quantized NNUE network from scratch. On first run, the training da
 | `-positions` | 0 | Limit training positions per epoch (0=use all) |
 | `-resume` | | Resume training from an existing `.nnue` network file |
 
-Training uses float32 weights internally, then quantizes to int16 for inference (int8 for the hidden layer). The `.nnbin` cache is rebuilt automatically when the source data file changes.
+Training uses float32 weights internally, then quantizes to int16 for inference (int8 for the hidden layer).
 
 **Two-phase training workflow:**
 

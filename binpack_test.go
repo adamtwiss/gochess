@@ -341,43 +341,6 @@ func TestBinpackEpochReader(t *testing.T) {
 	}
 }
 
-func TestBinpackConvertRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	datFile := filepath.Join(dir, "test.dat")
-	binFile := filepath.Join(dir, "test.bin")
-	datFile2 := filepath.Join(dir, "test2.dat")
-
-	// Write a .dat file
-	f, _ := os.Create(datFile)
-	fmt.Fprintln(f, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1;15;1.0")
-	fmt.Fprintln(f, "8/8/8/8/8/5K2/5P2/5k2 w - - 0 1;500;0.5")
-	f.Close()
-
-	// Convert dat -> binpack
-	count, err := ConvertDatToBinpack(datFile, binFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 2 {
-		t.Fatalf("converted %d records, want 2", count)
-	}
-
-	// Convert binpack -> dat
-	count2, err := ConvertBinpackToDat(binFile, datFile2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count2 != 2 {
-		t.Fatalf("converted %d records, want 2", count2)
-	}
-
-	// Verify the binpack file size
-	stat, _ := os.Stat(binFile)
-	if stat.Size() != 2*BinpackRecordSize {
-		t.Errorf("binpack size: got %d, want %d", stat.Size(), 2*BinpackRecordSize)
-	}
-}
-
 func TestBinpackCatConcatenation(t *testing.T) {
 	dir := t.TempDir()
 

@@ -1,7 +1,6 @@
 package chess
 
 import (
-	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,8 +8,6 @@ import (
 	"math/bits"
 	"math/rand"
 	"os"
-	"strconv"
-	"strings"
 )
 
 // Binary training data format (.bin) for NNUE.
@@ -528,145 +525,3 @@ func (bf *BinpackFile) ValidationSamples(trainFraction float64) ([]*NNUETrainSam
 	return samples, nil
 }
 
-// ConvertDatToBinpack converts a text training data file (FEN;score;result format)
-// to binpack binary format. The output is shuffled deterministically.
-func ConvertDatToBinpack(datFile, binpackFile string) (int, error) {
-	f, err := os.Open(datFile)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	// Read all lines
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
-
-	// Shuffle deterministically
-	rng := rand.New(rand.NewSource(42))
-	rng.Shuffle(len(lines), func(i, j int) {
-		lines[i], lines[j] = lines[j], lines[i]
-	})
-
-	// Write to temp file, then atomic rename
-	tmpFile := binpackFile + ".tmp"
-	out, err := os.Create(tmpFile)
-	if err != nil {
-		return 0, err
-	}
-
-	w := bufio.NewWriter(out)
-	count := 0
-
-	for _, line := range lines {
-		parts := strings.Split(line, ";")
-		if len(parts) < 2 {
-			continue
-		}
-
-		var fen string
-		var score int16
-		var result float64
-
-		if len(parts) >= 3 {
-			fen = strings.TrimSpace(parts[0])
-			s, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-			if err != nil {
-				continue
-			}
-			score = int16(s)
-			r, err := strconv.ParseFloat(strings.TrimSpace(parts[2]), 64)
-			if err != nil {
-				continue
-			}
-			result = r
-		} else {
-			fen = strings.TrimSpace(parts[0])
-			r, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-			if err != nil {
-				continue
-			}
-			result = r
-		}
-
-		var b Board
-		if err := b.SetFEN(fen); err != nil {
-			continue
-		}
-
-		rec := PackPosition(&b, score, ResultToUint8(result))
-		if err := WriteBinpackRecord(w, rec); err != nil {
-			out.Close()
-			os.Remove(tmpFile)
-			return 0, err
-		}
-		count++
-	}
-
-	if err := w.Flush(); err != nil {
-		out.Close()
-		os.Remove(tmpFile)
-		return 0, err
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(tmpFile)
-		return 0, err
-	}
-
-	if err := os.Rename(tmpFile, binpackFile); err != nil {
-		os.Remove(tmpFile)
-		return 0, err
-	}
-
-	return count, nil
-}
-
-// ConvertBinpackToDat converts a binpack binary file to text (FEN;score;result) format.
-func ConvertBinpackToDat(binpackFile, datFile string) (int, error) {
-	bf, err := OpenBinpackFiles(binpackFile)
-	if err != nil {
-		return 0, err
-	}
-	defer bf.Close()
-
-	out, err := os.Create(datFile)
-	if err != nil {
-		return 0, err
-	}
-	defer out.Close()
-
-	w := bufio.NewWriter(out)
-	count := 0
-
-	for i := 0; i < bf.NumRecords(); i++ {
-		rec, err := bf.ReadRecord(i)
-		if err != nil {
-			return count, fmt.Errorf("reading record %d: %w", i, err)
-		}
-
-		b, score, result, err := UnpackPosition(rec)
-		if err != nil {
-			return count, fmt.Errorf("unpacking record %d: %w", i, err)
-		}
-
-		fen := b.ToFEN()
-		resultFloat := ResultToFloat(result)
-		fmt.Fprintf(w, "%s;%d;%.1f\n", fen, score, resultFloat)
-		count++
-	}
-
-	if err := w.Flush(); err != nil {
-		return count, err
-	}
-
-	return count, nil
-}
