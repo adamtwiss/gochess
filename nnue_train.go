@@ -4,12 +4,10 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // NNUETrainNet holds float32 weights for training (higher precision than int16 inference).
@@ -1144,9 +1142,6 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 		numSamples := 0
 		processed := 0
 
-		// Timing accumulators
-		var tRead, tFwdBwd, tAgg, tAdam time.Duration
-
 		// Pre-allocate sample buffer for batches
 		sampleBuf := make([]*NNUETrainSample, 0, cfg.BatchSize)
 
@@ -1157,19 +1152,15 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 			}
 
 			// Read batch via block-shuffled reader
-			t0 := time.Now()
 			batch, err := reader.NextBatch(batchSize, sampleBuf)
 			if err != nil || batch == nil {
 				break
 			}
 			actualBatch := len(batch)
 			processed += actualBatch
-			tRead += time.Since(t0)
 
 			// Parallel forward + backward
 			perWorker := (actualBatch + numWorkers - 1) / numWorkers
-
-			t0 = time.Now()
 			var wg sync.WaitGroup
 			for w := 0; w < numWorkers; w++ {
 				wg.Add(1)
@@ -1197,23 +1188,18 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 				}(w)
 			}
 			wg.Wait()
-			tFwdBwd += time.Since(t0)
 
 			// Aggregate gradients and loss
-			t0 = time.Now()
 			for w := 0; w < numWorkers; w++ {
 				totalLoss += workerLoss[w]
 				numSamples += workerCount[w]
 			}
 			aggregateGradientsParallel(&totalGrads, workerGrads[:numWorkers])
-			tAgg += time.Since(t0)
 
 			// Scale gradients and apply Adam updates
-			t0 = time.Now()
 			scale := 1.0 / float64(actualBatch)
 			trainer.step++
 			trainer.applyAdamUpdates(&totalGrads, scale, cfg.LR)
-			tAdam += time.Since(t0)
 		}
 
 		// Compute losses
@@ -1222,15 +1208,7 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 			trainLoss = totalLoss / float64(numSamples)
 		}
 
-		t0 := time.Now()
 		valLoss := trainer.computeValidationLossFromSamples(valSamples, cfg)
-		tVal := time.Since(t0)
-
-		tTotal := tRead + tFwdBwd + tAgg + tAdam + tVal
-		fmt.Fprintf(os.Stderr, "  Epoch %d timing: read=%v fwd+bwd=%v aggregate=%v adam=%v val=%v total=%v\n",
-			epoch, tRead.Round(time.Millisecond), tFwdBwd.Round(time.Millisecond),
-			tAgg.Round(time.Millisecond), tAdam.Round(time.Millisecond),
-			tVal.Round(time.Millisecond), tTotal.Round(time.Millisecond))
 
 		if onEpoch != nil {
 			onEpoch(epoch, trainLoss, valLoss)
