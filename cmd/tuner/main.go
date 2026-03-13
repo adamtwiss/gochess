@@ -29,6 +29,8 @@ func main() {
 		runNNUETrain(os.Args[2:])
 	case "convert":
 		runConvert(os.Args[2:])
+	case "convert-net":
+		runConvertNet(os.Args[2:])
 	case "rescore":
 		runRescore(os.Args[2:])
 	default:
@@ -41,11 +43,12 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: tuner <command> [options]
 
 Commands:
-  selfplay    Generate training data from self-play games
-  tune        Optimize evaluation parameters from training data
-  nnue-train  Train an NNUE network from training data
-  convert     Convert between .dat (text) and .bin (binary) formats
-  rescore     Re-search positions in a .bin file and update scores in-place
+  selfplay     Generate training data from self-play games
+  tune         Optimize evaluation parameters from training data
+  nnue-train   Train an NNUE network from training data
+  convert      Convert between .dat (text) and .bin (binary) formats
+  convert-net  Convert NNUE net between versions (e.g. v3 single-output → v4 output buckets)
+  rescore      Re-search positions in a .bin file and update scores in-place
 
 Run 'tuner <command> -h' for command-specific options.
 `)
@@ -369,9 +372,9 @@ func runNNUETrain(args []string) {
 	// Create trainer
 	trainer := chess.NewNNUETrainer(*seed)
 
-	// Resume from existing network if specified
+	// Resume from existing network if specified (accepts both v3 and v4 nets)
 	if *resumeFile != "" {
-		net, err := chess.LoadNNUE(*resumeFile)
+		net, err := chess.LoadNNUEAnyVersion(*resumeFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading resume network: %v\n", err)
 			os.Exit(1)
@@ -744,4 +747,44 @@ func runConvert(args []string) {
 		fmt.Fprintf(os.Stderr, "Supported: .dat → .bin, .bin → .dat, .bin → .bin (with -shuffle)\n")
 		os.Exit(1)
 	}
+}
+
+func runConvertNet(args []string) {
+	fs := flag.NewFlagSet("convert-net", flag.ExitOnError)
+	from := fs.String("from", "", "source .nnue file (v3 single-output)")
+	to := fs.String("to", "", "destination .nnue file (v4 output buckets)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: tuner convert-net [options]\n\nConverts a v3 NNUE net (single output) to v4 format (8 output buckets).\n")
+		fmt.Fprintf(os.Stderr, "Hidden layer weights are preserved; the single output is replicated into all buckets.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  tuner convert-net -from net.nnue -to net-v4.nnue\n")
+		fmt.Fprintf(os.Stderr, "\nThen resume training to specialize the buckets:\n")
+		fmt.Fprintf(os.Stderr, "  tuner nnue-train -data training.bin -resume net-v4.nnue -epochs 100 -lr 0.001\n")
+	}
+	fs.Parse(args)
+
+	if *from == "" || *to == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	// Load v3 net (auto-replicates single output into all buckets)
+	net, err := chess.LoadNNUEAnyVersion(*from)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading network: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Save as v4
+	if err := chess.SaveNNUE(*to, net); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving network: %v\n", err)
+		os.Exit(1)
+	}
+
+	fi, _ := os.Stat(*to)
+	fmt.Printf("Converted %s → %s (v4 with %d output buckets, %.1f KB)\n",
+		*from, *to, chess.NNUEOutputBuckets, float64(fi.Size())/1024)
 }

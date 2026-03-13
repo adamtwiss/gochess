@@ -796,12 +796,22 @@ func (net *NNUENet) Fingerprint() string {
 }
 
 func LoadNNUE(path string) (*NNUENet, error) {
+	return loadNNUEImpl(path, false)
+}
+
+// LoadNNUEAnyVersion loads an NNUE net from either v3 or v4 format.
+// v3 nets have their single output replicated into all output buckets.
+func LoadNNUEAnyVersion(path string) (*NNUENet, error) {
+	return loadNNUEImpl(path, true)
+}
+
+func loadNNUEImpl(path string, allowV3 bool) (*NNUENet, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	net, err := readNNUE(f)
+	net, err := readNNUEVersioned(f, allowV3)
 	if err != nil {
 		return nil, err
 	}
@@ -811,6 +821,12 @@ func LoadNNUE(path string) (*NNUENet, error) {
 }
 
 func readNNUE(r io.Reader) (*NNUENet, error) {
+	return readNNUEVersioned(r, false)
+}
+
+// readNNUEVersioned reads an NNUE net. If allowV3 is true, it accepts v3 (single output)
+// nets and replicates the output weights into all output buckets.
+func readNNUEVersioned(r io.Reader, allowV3 bool) (*NNUENet, error) {
 	// Header
 	var magic, version uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
@@ -822,8 +838,8 @@ func readNNUE(r io.Reader) (*NNUENet, error) {
 	if err := binary.Read(r, binary.LittleEndian, &version); err != nil {
 		return nil, fmt.Errorf("reading version: %w", err)
 	}
-	if version != nnueVersion {
-		return nil, fmt.Errorf("unsupported NNUE version: %d (expected %d; old v2 HalfKP nets must be retrained)", version, nnueVersion)
+	if version != nnueVersion && !(allowV3 && version == 3) {
+		return nil, fmt.Errorf("unsupported NNUE version: %d (expected %d)", version, nnueVersion)
 	}
 
 	net := &NNUENet{}
@@ -853,11 +869,27 @@ func readNNUE(r io.Reader) (*NNUENet, error) {
 	}
 
 	// Output weights and bias
-	if err := binary.Read(r, binary.LittleEndian, &net.OutputWeights); err != nil {
-		return nil, fmt.Errorf("reading output weights: %w", err)
-	}
-	if err := binary.Read(r, binary.LittleEndian, &net.OutputBias); err != nil {
-		return nil, fmt.Errorf("reading output bias: %w", err)
+	if version == 3 {
+		// v3: single output layer — read then replicate into all buckets
+		var singleWeights [NNUEHidden3Size]int16
+		var singleBias int32
+		if err := binary.Read(r, binary.LittleEndian, &singleWeights); err != nil {
+			return nil, fmt.Errorf("reading v3 output weights: %w", err)
+		}
+		if err := binary.Read(r, binary.LittleEndian, &singleBias); err != nil {
+			return nil, fmt.Errorf("reading v3 output bias: %w", err)
+		}
+		for b := 0; b < NNUEOutputBuckets; b++ {
+			net.OutputWeights[b] = singleWeights
+			net.OutputBias[b] = singleBias
+		}
+	} else {
+		if err := binary.Read(r, binary.LittleEndian, &net.OutputWeights); err != nil {
+			return nil, fmt.Errorf("reading output weights: %w", err)
+		}
+		if err := binary.Read(r, binary.LittleEndian, &net.OutputBias); err != nil {
+			return nil, fmt.Errorf("reading output bias: %w", err)
+		}
 	}
 
 	return net, nil
