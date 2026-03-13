@@ -342,6 +342,7 @@ func runNNUETrain(args []string) {
 	kValue := fs.Float64("K", 400, "sigmoid scaling constant (0=auto-tune from data)")
 	seed := fs.Int64("seed", 42, "random seed for weight initialization")
 	positions := fs.Int("positions", 0, "limit training positions per epoch (0=use all)")
+	scaleWeight := fs.Float64("scale-weight", 0.0, "weight for centipawn scale anchoring loss (0=disabled)")
 	freezeHidden := fs.Bool("freeze-hidden", false, "only train output bucket weights (freeze input + hidden layers)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
 
@@ -400,6 +401,7 @@ func runNNUETrain(args []string) {
 		Lambda:       *lambda,
 		K:            actualK,
 		MaxPositions: *positions,
+		ScaleWeight:  *scaleWeight,
 		FreezeHidden: *freezeHidden,
 	}
 

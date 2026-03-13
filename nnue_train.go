@@ -34,6 +34,7 @@ type NNUETrainConfig struct {
 	BatchSize    int
 	Lambda       float64 // weight for result vs score: loss = lambda*MSE(result) + (1-lambda)*MSE(score)
 	K            float64 // sigmoid scaling constant
+	ScaleWeight  float64 // weight for centipawn scale anchoring term (0=disabled)
 	MaxPositions int             // limit training positions per epoch (0=use all)
 	FreezeHidden bool            // if true, only train output bucket weights (freeze input + hidden layers)
 	Stop         <-chan struct{} // if non-nil, checked each epoch; close to stop early
@@ -295,6 +296,17 @@ func (net *NNUETrainNet) Backward(sample *NNUETrainSample, grads *NNUETrainGradi
 
 	// d(loss)/d(output) = 2 * (pred - target) * pred * (1 - pred) * ln(10) / K
 	dOutput := float32(2.0 * (pred - target) * pred * (1.0 - pred) * math.Ln10 / cfg.K)
+
+	// Scale anchoring gradient: d/d(output) of ScaleWeight * ((output - targetScore) / K)²
+	// = 2 * ScaleWeight * (output - targetScore) / K²
+	if cfg.ScaleWeight > 0 && sample.HasScore {
+		targetScore := float64(sample.Score)
+		if sample.SideToMove == Black {
+			targetScore = -targetScore
+		}
+		dScale := float32(2.0 * cfg.ScaleWeight * (float64(output) - targetScore) / (cfg.K * cfg.K))
+		dOutput += dScale
+	}
 
 	// Output layer gradients: output = bias + sum(ReLU(hidden3) * weights), using material bucket
 	bucket := OutputBucket(sample.PieceCount)
@@ -935,7 +947,16 @@ func (trainer *NNUETrainer) Train(bf *NNBinFile, cfg NNUETrainConfig,
 							}
 						}
 						diff := pred - target
-						workerLoss[workerIdx] += diff * diff
+						loss := diff * diff
+						if cfg.ScaleWeight > 0 && s.HasScore {
+							sc := float64(s.Score)
+							if s.SideToMove == Black {
+								sc = -sc
+							}
+							scaleDiff := (float64(output) - sc) / cfg.K
+							loss += cfg.ScaleWeight * scaleDiff * scaleDiff
+						}
+						workerLoss[workerIdx] += loss
 						workerCount[workerIdx]++
 					}
 				}(w)
@@ -1370,7 +1391,16 @@ func (trainer *NNUETrainer) computeValidationLoss(bf *NNBinFile, cfg NNUETrainCo
 				}
 
 				diff := pred - target
-				wLoss[workerIdx] += diff * diff
+				loss := diff * diff
+				if cfg.ScaleWeight > 0 && s.HasScore {
+					sc := float64(s.Score)
+					if s.SideToMove == Black {
+						sc = -sc
+					}
+					scaleDiff := (float64(output) - sc) / cfg.K
+					loss += cfg.ScaleWeight * scaleDiff * scaleDiff
+				}
+				wLoss[workerIdx] += loss
 				wCount[workerIdx]++
 			}
 		}(w)
@@ -1679,7 +1709,17 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 							}
 						}
 						diff := pred - target
-						workerLoss[workerIdx] += diff * diff
+						loss := diff * diff
+						// Add scale anchoring loss
+						if cfg.ScaleWeight > 0 && s.HasScore {
+							score := float64(s.Score)
+							if s.SideToMove == Black {
+								score = -score
+							}
+							scaleDiff := (float64(output) - score) / cfg.K
+							loss += cfg.ScaleWeight * scaleDiff * scaleDiff
+						}
+						workerLoss[workerIdx] += loss
 						workerCount[workerIdx]++
 					}
 				}(w)
@@ -1773,7 +1813,16 @@ func (trainer *NNUETrainer) computeValidationLossFromSamples(valSamples []*NNUET
 				}
 
 				diff := pred - target
-				wLoss[workerIdx] += diff * diff
+				loss := diff * diff
+				if cfg.ScaleWeight > 0 && s.HasScore {
+					sc := float64(s.Score)
+					if s.SideToMove == Black {
+						sc = -sc
+					}
+					scaleDiff := (float64(output) - sc) / cfg.K
+					loss += cfg.ScaleWeight * scaleDiff * scaleDiff
+				}
+				wLoss[workerIdx] += loss
 				wCount[workerIdx]++
 			}
 		}(w)
