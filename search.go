@@ -970,7 +970,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		ttEntry = entry
 		ttMove = entry.Move
 
-		if info.ExcludedMove[ply] == NoMove && int(entry.Depth) >= depth && ply > 0 {
+		if info.ExcludedMove[ply] == NoMove && ply > 0 {
+			ttDepth := int(entry.Depth)
 			score := int(entry.Score)
 			// Adjust mate scores for distance from root
 			if score > MateScore-100 {
@@ -979,40 +980,54 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				score += ply
 			}
 
-			switch entry.Flag {
-			case TTExact:
-				if ttMove != NoMove {
-					info.pvTable[ply][0] = ttMove
-					info.pvLen[ply] = 1
-				} else {
-					info.pvLen[ply] = 0
+			if ttDepth >= depth {
+				switch entry.Flag {
+				case TTExact:
+					if ttMove != NoMove {
+						info.pvTable[ply][0] = ttMove
+						info.pvLen[ply] = 1
+					} else {
+						info.pvLen[ply] = 0
+					}
+					return score
+				case TTLower:
+					if score > alpha {
+						alpha = score
+					}
+				case TTUpper:
+					if score < beta {
+						beta = score
+					}
 				}
-				return score
-			case TTLower:
-				if score > alpha {
-					alpha = score
-				}
-			case TTUpper:
-				if score < beta {
-					beta = score
-				}
-			}
 
-			if alpha >= beta {
-				if ttMove != NoMove {
-					info.pvTable[ply][0] = ttMove
-					info.pvLen[ply] = 1
-				} else {
-					info.pvLen[ply] = 0
+				if alpha >= beta {
+					if ttMove != NoMove {
+						info.pvTable[ply][0] = ttMove
+						info.pvLen[ply] = 1
+					} else {
+						info.pvLen[ply] = 0
+					}
+					// TT score dampening: at non-PV nodes with non-mate lower-bound cutoffs,
+					// blend the TT score toward beta to prevent score inflation
+					if beta-alphaOrig == 1 &&
+						entry.Flag == TTLower &&
+						score > -MateScore+100 && score < MateScore-100 {
+						return (3*score + beta) / 4
+					}
+					return score
 				}
-				// TT score dampening: at non-PV nodes with non-mate lower-bound cutoffs,
-				// blend the TT score toward beta to prevent score inflation
-				if beta-alphaOrig == 1 &&
-					entry.Flag == TTLower &&
-					score > -MateScore+100 && score < MateScore-100 {
-					return (3*score + beta) / 4
+			} else if ttDepth >= depth-1 &&
+				beta-alphaOrig == 1 &&
+				score > -MateScore+100 && score < MateScore-100 {
+				// TT near-miss cutoffs: accept entries 1 ply short with a score margin.
+				// If the score exceeds the bound by 64cp per ply gap, it's likely still valid.
+				margin := 64
+				if entry.Flag == TTLower && score-margin >= beta {
+					return score - margin
 				}
-				return score
+				if entry.Flag == TTUpper && score+margin <= alpha {
+					return score + margin
+				}
 			}
 		}
 	}
