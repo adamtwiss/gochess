@@ -1892,6 +1892,10 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	bestScore := standPat
 
 	if bestScore >= beta {
+		// QS beta blending: dampen stand-pat cutoff at non-PV nodes
+		if beta-alpha == 1 && bestScore < MateScore-100 && bestScore > -MateScore+100 {
+			return (bestScore + beta) / 2
+		}
 		return bestScore
 	}
 
@@ -1964,6 +1968,11 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		flag = TTExact
 	}
 	info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, standPat)
+
+	// QS beta blending: dampen capture fail-high at non-PV nodes
+	if bestScore >= beta && beta-alphaOrig == 1 && bestScore < MateScore-100 && bestScore > -MateScore+100 {
+		return (bestScore + beta) / 2
+	}
 	return bestScore
 }
 
