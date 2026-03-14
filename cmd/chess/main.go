@@ -98,7 +98,7 @@ func main() {
 	} else if *nnueFile != "" {
 		// Explicit net path — must exist
 		var err error
-		nnueNet, err = chess.LoadNNUE(*nnueFile)
+		nnueNet, err = chess.LoadNNUEAnyVersion(*nnueFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
 			os.Exit(1)
@@ -109,10 +109,10 @@ func main() {
 		// Try net.nnue next to the binary, then in CWD
 		defaultNet := filepath.Join(exeDir, "net.nnue")
 		var err error
-		nnueNet, err = chess.LoadNNUE(defaultNet)
+		nnueNet, err = chess.LoadNNUEAnyVersion(defaultNet)
 		if err != nil {
 			// Fall back to CWD (for development convenience)
-			nnueNet, err = chess.LoadNNUE("net.nnue")
+			nnueNet, err = chess.LoadNNUEAnyVersion("net.nnue")
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: net.nnue not found (tried %s and CWD), NNUE available via UCI NNUEFile option\n", exeDir)
