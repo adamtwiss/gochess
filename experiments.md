@@ -892,3 +892,138 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: -4.3 Elo after 2055 games (killed, no SPRT conclusion). W556-L581-D918 (49.4%). LOS 22.8%. LLR -0.81 (-27%).
 - **Baseline**: 4bbcb7d (conthist 3x, QS TT move)
 - **Notes**: PawnHist signal is too noisy/slow to learn for LMR adjustment. The /5000 divisor would need retuning, but the trend is clearly negative. Adding more history dimensions has diminishing returns — main + continuation is sufficient.
+
+## 2026-03-14: V4 Net Threshold Tuning — RFP 100/70
+
+**Context**: V4 net (net-v4-classical.nnue) trained on classical depth-8 scored data has correct eval scale but loses ~230 Elo against v3 baseline due to threshold mismatch. All experiments below test v4 vs v4 (same net, different thresholds).
+
+**SPRT settings**: elo0=-5 elo1=15 alpha=0.05 beta=0.05, tc=10+0.1, Hash=64, v4 net, concurrency=4.
+
+### RFP Margins 85/60 → 100/70
+- **Change**: Reverse futility pruning margins from depth×85 (non-improving) / depth×60 (improving) → depth×100 / depth×70.
+- **Result**: **H1 accepted, +28.6 Elo** ±24.6 in 475 games. W166-L127-D182 (54.1%). LOS 98.9%.
+- **Notes**: Largest single threshold gain. Correct eval scale means positions are evaluated with larger magnitudes in tactical situations, so RFP needs wider margins to avoid over-pruning.
+
+### Futility Margins 100+d×100 → 120+d×120 (1.2x)
+- **Change**: Futility pruning base and scale from 100+lmrDepth×100 → 120+lmrDepth×120.
+- **Result**: **H0 accepted, -19.6 Elo** ±25.2 in 461 games. W132-L158-D171 (47.2%). LOS 6.3%.
+- **Notes**: Futility margins were already well-calibrated for v4 scale. Widening them over-prunes good moves. The original 100+d×100 margins may be near-optimal, or the optimal direction is tighter, not wider.
+
+### Aspiration Delta 15 → 20
+- **Change**: Initial aspiration window width from 15 to 20.
+- **Result**: ~0 Elo after 478 games (still running, converging to H0). W151-L153-D174 (49.8%).
+- **Notes**: Neutral. Aspiration window width is relatively scale-insensitive since it self-adjusts via the 1.5x widening mechanism.
+
+### Razoring 400+d×100 → 500+d×120 (1.2x)
+- **Change**: Razoring base from 400 to 500, per-depth from 100 to 120.
+- **Result**: ~0 Elo after 491 games (still running, converging to H0). W154-L157-D180 (49.7%).
+- **Notes**: Neutral. Razoring fires rarely (depth ≤ 2 only), so its impact is small regardless of scale.
+
+### Earlier round: 1.5x scaling (all rejected)
+- RFP 130/90, Futility 150+150d, Aspiration 25, Razoring 600+150d all trended negative (-13 to -42 Elo) after ~100 games. 1.5x was too aggressive. Killed early.
+
+### ProbCut Margin 200 → 240 (with gate 100 → 120)
+- **Change**: ProbCut beta margin from beta+200 → beta+240, eval gate from staticEval+100 → staticEval+120.
+- **Result**: **H0 accepted, -24.6 Elo** ±27.8 in 382 games. W108-L135-D139 (46.5%). LOS 4.2%.
+- **Notes**: ProbCut margins don't need scaling for v4 net. The current 200cp margin is well-calibrated. Widening over-prunes.
+
+### SEE Capture Threshold -d×100 → -d×120
+- **Change**: SEE capture pruning threshold from -depth×100 → -depth×120.
+- **Result**: **H0 accepted, -13.3 Elo** ±21.8 in 549 games. W144-L165-D240 (48.1%). LOS 11.6%.
+- **Notes**: SEE is material-based and already correctly scaled. Loosening the threshold allows more bad captures through, hurting play. Current -d×100 is near-optimal.
+
+### NMP Eval Divisor 200 → 240
+- **Change**: Null-move pruning eval-based reduction divisor from 200 → 240.
+- **Result**: **H0 accepted, -11.4 Elo** ±20.5 in 641 games. W175-L196-D270 (48.4%). LOS 13.8%.
+- **Notes**: NMP divisor controls how much extra reduction is given when eval exceeds beta. Widening the divisor reduces the extra reduction, making NMP less aggressive. The current 200 is well-calibrated for v4 scale. Consider testing tighter (170) as a replacement.
+
+### Singular Margin d×3 → d×4
+- **Change**: Singular extension margin from depth×3 → depth×4 (also double-singular and negative-singular thresholds).
+- **Result**: **H0 accepted, -6.2 Elo** ±16.8 in 958 games. W271-L288-D399 (49.1%). LOS 23.6%.
+- **Notes**: Singular margin is well-calibrated at d×3. Widening reduces the number of singular extensions, losing valuable search depth on critical moves. Both directions tested (d×3 was previously tuned), confirming near-optimality.
+
+### Delta Pruning QS Buffer +200 → +240
+- **Change**: Quiescence search delta pruning margin from SEEPieceValues[captured]+200 → +240.
+- **Result**: **H0 accepted, -11.2 Elo** ±20.6 in 588 games. W148-L167-D273 (48.4%). LOS 14.2%.
+- **Notes**: Delta pruning buffer is already well-calibrated at +200. Widening lets too many futile captures through QS, wasting time. The buffer accounts for positional value beyond material, which doesn't scale with eval magnitude.
+
+### SEE Quiet Threshold -20×d² → -25×d²
+- **Change**: SEE quiet move pruning threshold from -20×depth² → -25×depth².
+- **Result**: **H0 accepted, -2.8 Elo** ±14.1 in 1347 games. W386-L397-D564 (49.6%). LOS 34.7%.
+- **Notes**: Very close to zero — 1347 games to converge. SEE quiet threshold is well-calibrated at -20×d². The v4 net doesn't significantly change quiet move SEE dynamics.
+
+### NMP Eval Divisor 200 → 170 (tighter)
+- **Change**: Null-move pruning eval-based reduction divisor from 200 → 170 (more aggressive NMP).
+- **Result**: **H0 accepted, -4.4 Elo** ±15.4 in 1116 games. W313-L327-D476 (49.4%). LOS 29.0%.
+- **Notes**: Both directions tested (240 and 170), both rejected. NMP divisor 200 is well-calibrated for v4 net. The parameter is near-optimal — don't revisit.
+
+### Contempt 10 → 15
+- **Change**: Draw avoidance contempt penalty from 10 → 15 centipawns.
+- **Result**: **H0 accepted, -11.7 Elo** ±20.8 in 626 games. W172-L193-D261 (48.3%). LOS 13.6%.
+- **Notes**: Higher contempt causes the engine to avoid draws too aggressively in self-play, accepting worse positions rather than drawing. Current contempt=10 is well-calibrated.
+
+### Instability Threshold 200 → 240
+- **Change**: Eval instability detection threshold from 200cp → 240cp swing between parent/child nodes.
+- **Result**: **H0 accepted, -0.8 Elo** ±12.2 in 1743 games. W490-L494-D759 (49.9%). LOS 44.9%.
+- **Notes**: Almost perfectly zero — needed 1743 games to converge. Instability threshold at 200 is well-calibrated. This parameter is scale-insensitive since it measures relative eval swings, not absolute values.
+
+### TM Score Delta Stable ≤10 → ≤15
+- **Change**: Time management stable score threshold from ≤10cp → ≤15cp (reduces time on more positions).
+- **Result**: **H0 accepted, -2.2 Elo** ±13.7 in 1415 games. W400-L409-D606 (49.7%). LOS 37.6%.
+- **Notes**: Near-zero after 1415 games. TM stable threshold at 10cp is well-calibrated for v4 net. Score deltas between iterations don't scale with eval magnitude since they measure relative changes.
+
+### TM Score Delta Medium >25/>50 → >35/>70
+- **Change**: Time management volatile score thresholds from >25cp/50cp → >35cp/70cp (require larger swings to extend time).
+- **Result**: **H0 accepted, -1.1 Elo** ±12.6 in 1632 games. W452-L457-D723 (49.8%). LOS 43.4%.
+- **Notes**: Near-zero after 1632 games. Time management score deltas are relative measures (iteration-to-iteration changes), not absolute eval values, so they don't scale with eval magnitude. All TM thresholds are confirmed well-calibrated.
+
+### Futility Tighter 100+d×100 → 80+d×80
+- **Change**: Futility pruning margins tightened from 100+lmrDepth×100 → 80+lmrDepth×80.
+- **Result**: ~0 Elo after 2062 games (killed). W593-L580-D889 (50.3%). Converging to H0.
+- **Notes**: Both directions tested (120 rejected at -19.6, 80 flat at +1.8). Futility margins at 100+d×100 are well-calibrated for v4 net. Confirmed near-optimal.
+
+### RFP Depth Gate ≤7 → ≤8
+- **Change**: Allow reverse futility pruning at one deeper ply (depth ≤ 8 instead of ≤ 7).
+- **Result**: ~0 Elo after 686 games (killed). W188-L189-D309 (49.9%). Dead flat.
+- **Notes**: Depth gate doesn't benefit from v4's eval. At depth 8 the margins (800cp non-improving) are too large for reliable static pruning.
+
+### Razoring Depth Gate ≤2 → ≤3
+- **Change**: Allow razoring at depth 3 (was depth ≤ 2 only).
+- **Result**: ~-10 Elo after 405 games (killed). W109-L120-D176 (48.6%). Trending negative.
+- **Notes**: Razoring at depth 3 drops to QS too early, losing search depth. The v4 net's better eval doesn't compensate for the lost search.
+
+### Razoring Tighter 400+d×100 → 350+d×90
+- **Change**: Razoring margins tightened from 400+depth×100 → 350+depth×90.
+- **Result**: **H0 accepted, -28.2 Elo** ±29.4 in 309 games. W76-L101-D132 (46.0%). LOS 3.0%.
+- **Notes**: Both directions tested: wider (500+d×120, ~0 Elo), tighter (350+d×90, -28 Elo), deeper (depth≤3, -10 Elo). Tighter razoring drops to QS too aggressively. Current 400+d×100 is well-calibrated. Don't revisit.
+
+### Contempt 10 → 5 (reverse direction)
+- **Change**: Contempt (draw avoidance penalty) from 10 → 5 centipawns.
+- **Result**: **H0 accepted, -17.0 Elo** ±23.8 in 490 games. W134-L158-D198 (47.6%). LOS 8.0%.
+- **Notes**: Both directions tested (15 and 5), both rejected. Contempt=10 is optimal. Lower contempt accepts too many draws; higher contempt avoids draws too aggressively. This parameter is eval-scale-independent (fixed return value in search, not derived from NNUE output).
+
+### RFP 100/70 → 110/80 (further scaling)
+- **Change**: RFP margins from 100/70 → 110/80 (further scaling beyond proven 100/70).
+- **Result**: **H0 accepted, +0.9 Elo** ±10.2 in 1957 games. LOS 57.2%. Dead flat.
+- **Notes**: 100/70 is well-bracketed. Both directions (110/80 and original 85/60) tested; 100/70 is optimal for v4 net.
+
+### ProbCut Margin 200 → 170 with Gate 100 → 85 (MERGED)
+- **Change**: ProbCut beta margin from beta+200 → beta+170, eval pre-filter gate from staticEval+100 → staticEval+85.
+- **Result**: **H1 accepted, +10.0 Elo** ±11.3 in 2042 games. W608-L549-D885 (51.4%). LOS 95.9%. LLR 3.01.
+- **Baseline**: V4 net with RFP 100/70. SPRT elo0=-5 elo1=15.
+- **Commit**: (pending merge)
+- **Notes**: Second v4 threshold win after RFP. Tighter ProbCut means we try the expensive verification search more often, catching positions where the null-move-like cut was too optimistic. The opposite direction (200→240) was rejected at -24.6 Elo, confirming 170 is the right direction.
+
+### Futility 100+d×100 → 90+d×90 (tighter)
+- **Change**: Futility pruning margins tightened from 100+lmrDepth×100 → 90+lmrDepth×90.
+- **Result**: **H0 accepted, -2.2 Elo** ±13.5 in 1431 games. W400-L409-D622 (49.7%). LOS 37.6%.
+- **Notes**: Both directions tested (120 rejected at -19.6, 90 flat at -2.2, 80 flat at +1.8). Futility margins at 100+d×100 are well-calibrated and bracketed.
+
+### ContHist2 Cutoff/Penalty Updates
+- **Change**: Add learning signal updates (cutoff bonus + quiet penalty) to 2-ply continuation history table, which was previously read-only for LMR/pruning.
+- **Result**: **H0 accepted, -7.5 Elo** ±18.0 in 791 games. W210-L227-D354 (48.9%). LOS 20.8%.
+- **Notes**: The ply-2 continuation history lookup is too noisy for reliable learning signal. The piece at the ply-2 move may have been captured, making the key stale. Read-only with half-weight remains the correct approach.
+
+### LMR Reduce Less for Checks (reduction--)
+- **Change**: Allow LMR on checking moves (was skipped entirely), but with reduction-- to reduce less.
+- **Status**: Running at 597 games, -9.0 Elo. Trending toward H0 (LLR -2.39).

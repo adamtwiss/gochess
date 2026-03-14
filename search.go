@@ -1102,11 +1102,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// If static eval is far above beta, prune the whole node.
 		// NNUE-tuned margins: tighter than classical since eval is more accurate.
 		// improving = true -> depth * 60 (trust rising eval, prune aggressively)
-		// improving = false -> depth * 85
+		// improving = false -> depth * 100
 		if depth <= 7 && ply > 0 {
-			margin := depth * 85
+			margin := depth * 100
 			if improving {
-				margin = depth * 60
+				margin = depth * 70
 			}
 			if staticEval-margin >= beta {
 				return staticEval - margin
@@ -1127,8 +1127,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	// ProbCut: at moderate+ depths, if a shallow search of captures with
 	// raised beta confirms the position is winning, prune the node.
-	probCutBeta := beta + 200
-	if !inCheck && ply > 0 && depth >= 5 && staticEval+100 >= probCutBeta {
+	probCutBeta := beta + 170
+	if !inCheck && ply > 0 && depth >= 5 && staticEval+85 >= probCutBeta {
 		pcDepth := depth - 4
 		var pcBuf [64]Move
 		caps := b.GenerateCapturesAppend(pcBuf[:0])
