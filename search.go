@@ -70,26 +70,41 @@ var RecaptureExtEnabled = true
 // are currently disabled (0.0 Elo ablation, 1095 games).
 var PassedPawnExtEnabled = false
 
-// LMR reduction table - indexed by [depth][moveNumber]
-// Precomputed for efficiency
-var lmrTable [64][64]int
+// LMR reduction tables - indexed by [depth][moveNumber]
+// Precomputed for efficiency. Separate tables for quiets and captures.
+var lmrTable [64][64]int    // for quiet moves
+var lmrTableCap [64][64]int // for captures (less aggressive)
 
 func init() {
-	// Initialize LMR table using logarithmic formula:
+	// Initialize LMR tables using logarithmic formula:
 	//   reduction = ln(depth) * ln(moveNum) / C
 	// C controls aggressiveness: lower = more reduction.
-	// NNUE-tuned: 1.5 (was 2.0→1.75→1.5). More aggressive reduction is safe
-	// with NNUE's accurate eval. Each step validated by SPRT.
-	const C = 1.5
+
+	// Quiet table: NNUE-tuned C=1.5 (was 2.0→1.75→1.5)
+	const quietC = 1.5
 	for depth := 1; depth < 64; depth++ {
 		for moveNum := 1; moveNum < 64; moveNum++ {
 			if depth >= 3 && moveNum >= 3 {
-				reduction := int(math.Log(float64(depth)) * math.Log(float64(moveNum)) / C)
-				// Cap reduction to leave at least depth 1
+				reduction := int(math.Log(float64(depth)) * math.Log(float64(moveNum)) / quietC)
 				if reduction > depth-2 {
 					reduction = depth - 2
 				}
 				lmrTable[depth][moveNum] = reduction
+			}
+		}
+	}
+
+	// Capture table: less aggressive reduction (higher divisor = less reduction)
+	// Captures are more forcing and deserve more search depth
+	const capC = 1.80
+	for depth := 1; depth < 64; depth++ {
+		for moveNum := 1; moveNum < 64; moveNum++ {
+			if depth >= 3 && moveNum >= 3 {
+				reduction := int(math.Log(float64(depth)) * math.Log(float64(moveNum)) / capC)
+				if reduction > depth-2 {
+					reduction = depth - 2
+				}
+				lmrTableCap[depth][moveNum] = reduction
 			}
 		}
 	}
@@ -1484,23 +1499,39 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		}
 
-		// LMR for captures: reduce captures with bad capture history
+		// LMR for captures: use separate capture LMR table with capture history adjustments
 		if LMREnabled && !inCheck && isCap && !move.IsPromotion() && !givesCheck && moveCount > 1 && move != ttMove {
 			// Only reduce at non-PV nodes (zero window search)
 			if beta-alpha == 1 {
-				piece := b.Squares[move.From()]
-				cpt := capturedType(b.Squares[move.To()])
-				if move.Flags() == FlagEnPassant {
-					cpt = 1 // pawn
+				d, m := depth, moveCount
+				if d >= 64 {
+					d = 63
 				}
-				captHistVal := info.CaptHistory[piece][move.To()][cpt]
+				if m >= 64 {
+					m = 63
+				}
+				reduction = lmrTableCap[d][m]
 
-				// Only reduce captures with negative capture history
-				if captHistVal < 0 {
-					reduction = 1
-					// Increase reduction for very bad capture history
+				if reduction > 0 {
+					// Adjust by capture history: good captures reduce less, bad more
+					piece := b.Squares[move.From()]
+					cpt := capturedType(b.Squares[move.To()])
+					if move.Flags() == FlagEnPassant {
+						cpt = 1 // pawn
+					}
+					captHistVal := info.CaptHistory[piece][move.To()][cpt]
+
+					// Positive capture history: reduce less
+					if captHistVal > 2000 {
+						reduction--
+					}
+					// Negative capture history: reduce more
 					if captHistVal < -2000 {
-						reduction = 2
+						reduction++
+					}
+
+					if reduction < 0 {
+						reduction = 0
 					}
 					// Never reduce past depth 1
 					if reduction > newDepth-1 {

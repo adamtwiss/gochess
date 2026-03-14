@@ -1026,4 +1026,25 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 
 ### LMR Reduce Less for Checks (reduction--)
 - **Change**: Allow LMR on checking moves (was skipped entirely), but with reduction-- to reduce less.
-- **Status**: Running at 597 games, -9.0 Elo. Trending toward H0 (LLR -2.39).
+- **Result**: **H0 accepted, -8.1 Elo** ±18.5 in 771 games. W210-L228-D333 (48.8%). LOS 19.5%.
+- **Notes**: Checking moves should not be reduced at all. Skipping LMR for checks is correct — they are tactically significant and reducing them loses search depth on critical lines. The check extension removal (earlier experiment) was also harmful. Checks need full search depth.
+
+### ProbCut MVV-LVA Ordering
+- **Change**: Sort ProbCut captures by MVV-LVA (sort.Slice) before iterating, so highest-value captures are tried first.
+- **Result**: **H0 accepted, -18.3 Elo** ±24.5 in 438 games. W113-L136-D189 (47.4%). LOS 7.2%.
+- **Notes**: The sort.Slice overhead outweighs any benefit from better ordering. ProbCut already uses SEE >= 0 filter, and the capture set is small (typically 2-5 moves). The sort allocations may also cause GC pressure. Generation order is adequate for this small set.
+
+### SkipQuiets After LMP
+- **Change**: When LMP triggers, tell the MovePicker to skip quiet move generation entirely (jump to bad captures stage).
+- **Result**: **H0 accepted, -35.0 Elo** ±32.0 in 269 games. W66-L93-D110 (45.0%). LOS 1.6%.
+- **Notes**: Catastrophic. Skipping quiet generation after LMP breaks the killer and counter-move stages which come before quiets but after good captures. Those moves are essential even when LMP fires. The implementation may have been too aggressive in what it skipped.
+
+### ProbCut β+150 (tighter, bracket optimum)
+- **Change**: ProbCut margin from β+170 → β+150, gate 85→75.
+- **Result**: Killed at 639 games, -3.9 Elo ±20.3. W172-L183-D284 (49.1%). Trending H0.
+- **Notes**: Both tighter (150) and wider (240, -24.6 Elo) rejected. ProbCut margin 170 is well-bracketed as optimal.
+
+### ProbCut Verification Depth depth-4 → depth-3
+- **Change**: Deeper ProbCut verification search (depth-3 instead of depth-4).
+- **Result**: Killed at 394 games, -10.1 Elo ±26.5. W111-L118-D165 (49.1%). Trending H0.
+- **Notes**: Deeper verification is too expensive — the extra ply costs more than it saves in pruning accuracy. depth-4 is optimal.
