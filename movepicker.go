@@ -26,6 +26,7 @@ type MovePicker struct {
 	skipQuiet   bool // For quiescence search
 	checkers    Bitboard
 	pinned      Bitboard
+	threatSq    Square // Square targeted by opponent's threat (from NMP fail); -1 = none
 }
 
 // MovePicker stages
@@ -75,6 +76,7 @@ func (mp *MovePicker) Init(b *Board, ttMove Move, ply int, killers [2]Move, hist
 	mp.stage = stageTTMove
 	mp.index = 0
 	mp.skipQuiet = false
+	mp.threatSq = -1
 	if mp.moves == nil {
 		mp.moves = make([]Move, 0, 64)
 		mp.scores = make([]int, 0, 64)
@@ -273,6 +275,10 @@ func (mp *MovePicker) generateAndScoreQuiets() {
 		}
 		if mp.pawnHist != nil {
 			score += int(mp.pawnHist[piece][m.To()])
+		}
+		// Null-move threat: bonus for escaping the threatened square
+		if mp.threatSq >= 0 && Square(m.From()) == mp.threatSq {
+			score += 8000
 		}
 		mp.scores = append(mp.scores, score)
 		j++

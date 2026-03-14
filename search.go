@@ -1079,6 +1079,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		depth--
 	}
 
+	// Threat square from null-move failure: set when NMP fails low and we
+	// extract the opponent's best reply from the TT. -1 = no threat detected.
+	threatSq := Square(-1)
+
 	// Null-move pruning
 	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
 	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
@@ -1098,6 +1102,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		b.MakeNullMove()
+		nullKey := b.HashKey // save hash for threat detection after unmake
 		score := -b.negamax(depth-1-R, ply+1, -beta, -beta+1, info)
 		b.UnmakeNullMove()
 
@@ -1115,6 +1120,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				}
 			} else {
 				return beta
+			}
+		} else {
+			// NMP failed low: opponent had a strong reply. Extract it from TT.
+			// The null-move position was searched, so its TT entry holds the
+			// opponent's best move. The target square of that move indicates
+			// what the opponent threatens; we boost quiet moves that escape it.
+			if threatEntry, threatHit := info.TT.Probe(nullKey); threatHit && threatEntry.Move != NoMove {
+				threatSq = Square(threatEntry.Move.To())
 			}
 		}
 	}
@@ -1217,6 +1230,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		info.pickers[ply].Init(b, ttMove, ply, killers, &info.History, counterMove, contHistPtr, &info.CaptHistory, pawnHistPtr)
 	}
 	picker := &info.pickers[ply]
+	picker.threatSq = threatSq
 
 	bestMove := NoMove
 	bestScore := -Infinity
