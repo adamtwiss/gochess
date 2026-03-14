@@ -25,6 +25,7 @@ type SelfPlayConfig struct {
 	NNUENet      *NNUENet      // optional NNUE network (shared read-only across games)
 	SyzygyPath   string        // path to Syzygy tablebases (empty = disabled)
 	Book         *OpeningBook  // optional opening book for game diversification
+	BlunderRate  float64       // probability of playing a random move (0.0-1.0, default 0 = disabled)
 }
 
 // SelfPlayGame holds the result of one self-play game.
@@ -213,6 +214,19 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 			break
 		}
 
+		// "Drunk beginner" mode: with some probability, play a random legal move
+		// instead of the best move. This creates natural material imbalances in
+		// early/midgame that the training data would otherwise lack. The position
+		// is still labeled by proper search, so the training signal is clean.
+		blundered := false
+		if cfg.BlunderRate > 0 && rng.Float64() < cfg.BlunderRate && totalPlies < 80 {
+			legalMoves := b.GenerateLegalMoves()
+			if len(legalMoves) > 1 {
+				bestMove = legalMoves[rng.Intn(len(legalMoves))]
+				blundered = true
+			}
+		}
+
 		// Track eval for adjudication (side-to-move relative -> White-relative)
 		eval := searchResult.Score
 		if b.SideToMove == Black {
@@ -244,8 +258,10 @@ func PlaySelfPlayGame(cfg SelfPlayConfig, startFEN string, rng *rand.Rand) SelfP
 
 		// Record position for training data (with filtering)
 		// Result byte is 0 here; patched to actual result when game ends.
+		// Skip recording when a blunder move was chosen — the eval reflects the
+		// best move, not the random one, so the label would be misleading.
 		plyFromStart := initialPly + totalPlies
-		if shouldRecordPosition(&b, bestMove, eval, plyFromStart) {
+		if !blundered && shouldRecordPosition(&b, bestMove, eval, plyFromStart) {
 			rec := PackPosition(&b, int16(eval), 0)
 			records = append(records, rec)
 		}

@@ -73,6 +73,7 @@ func runSelfPlay(args []string) {
 	classical := fs.Bool("classical", false, "disable NNUE, use classical eval only")
 	syzygyPath := fs.String("syzygy", "", "path to Syzygy tablebase files")
 	bookFile := fs.String("book", "", "Polyglot opening book for game diversification")
+	blunderRate := fs.Float64("blunder-rate", 0, "probability of playing a random move (0.0-1.0, creates material imbalances for training)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner selfplay [options]\n\nOptions:\n")
@@ -150,6 +151,7 @@ func runSelfPlay(args []string) {
 		NNUENet:      nnueNet,
 		SyzygyPath:   *syzygyPath,
 		Book:         book,
+		BlunderRate:  *blunderRate,
 	}
 
 	fmt.Printf("Self-play configuration:\n")
@@ -171,6 +173,9 @@ func runSelfPlay(args []string) {
 	}
 	if cfg.SyzygyPath != "" {
 		fmt.Printf("  Syzygy:      %s\n", cfg.SyzygyPath)
+	}
+	if cfg.BlunderRate > 0 {
+		fmt.Printf("  Blunder:     %.1f%% random moves (plies 0-80)\n", cfg.BlunderRate*100)
 	}
 	if stat, err := os.Stat(cfg.OutputFile); err == nil {
 		fmt.Printf("  (appending to existing file, %d bytes)\n", stat.Size())

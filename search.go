@@ -1734,6 +1734,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		info.updateCorrectionHistory(b, bestScore, rawEval, depth)
 	}
 
+	// Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
+	// Deeper cutoffs are more trustworthy, so weight raw score by depth.
+	if bestScore >= beta && beta-alphaOrig == 1 && depth >= 3 &&
+		bestScore > -MateScore+100 && bestScore < MateScore-100 {
+		return (bestScore*depth + beta) / (depth + 1)
+	}
+
 	return bestScore
 }
 
