@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
@@ -34,6 +35,8 @@ func main() {
 		runCheckNet(os.Args[2:])
 	case "rescore":
 		runRescore(os.Args[2:])
+	case "shuffle":
+		runShuffle(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -50,6 +53,7 @@ Commands:
   convert-net  Convert NNUE net between versions (e.g. v3 single-output → v4 output buckets)
   check-net    Health check: evaluate test positions and flag scale issues
   rescore      Re-search positions in a .bin file and update scores in-place
+  shuffle      Fisher-Yates shuffle a .bin file in-place (32-byte records)
 
 Run 'tuner <command> -h' for command-specific options.
 `)
@@ -385,22 +389,42 @@ func runNNUETrain(args []string) {
 		FreezeHidden: *freezeHidden,
 	}
 
-	// Set up SIGINT handler for graceful early stop
-	stopCh := make(chan struct{})
+	// Set up SIGINT handler — saves best net immediately and exits
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
-	go func() {
-		<-sigCh
-		fmt.Fprintf(os.Stderr, "\nInterrupted — finishing current epoch and saving network...\n")
-		close(stopCh)
-		signal.Stop(sigCh)
-	}()
+	stopCh := make(chan struct{})
 	cfg.Stop = stopCh
 
-	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue)
+	// bestNet is shared between the training callback and the signal handler
+	var bestNet *chess.NNUENet
+	var bestEpoch int
+	var bestValLoss float64 = math.MaxFloat64
+
+	go func() {
+		<-sigCh
+		signal.Stop(sigCh)
+		fmt.Fprintf(os.Stderr, "\nInterrupted — saving best network and exiting...\n")
+		close(stopCh)
+		if bestNet != nil {
+			if err := chess.SaveNNUE(*outputFile, bestNet); err == nil {
+				fmt.Fprintf(os.Stderr, "Best network (epoch %d, val=%.8f) saved to %s\n", bestEpoch, bestValLoss, *outputFile)
+			} else {
+				fmt.Fprintf(os.Stderr, "Error saving network: %v\n", err)
+			}
+		} else {
+			// No best yet — save current weights
+			infNet := chess.QuantizeNetwork(trainer.Net)
+			if err := chess.SaveNNUE(*outputFile, infNet); err == nil {
+				fmt.Fprintf(os.Stderr, "Network saved to %s (no best checkpoint yet)\n", *outputFile)
+			}
+		}
+		os.Exit(0)
+	}()
+
+	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &bestNet, &bestEpoch, &bestValLoss)
 }
 
-func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64) {
+func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64) {
 	bf, err := chess.OpenBinpackFiles(paths...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening binpack files: %v\n", err)
@@ -436,22 +460,38 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 	trainer.TrainBinpack(bf, cfg, func(epoch int, trainLoss, valLoss float64) {
 		elapsed := time.Since(epochStart)
 		epochStart = time.Now()
+		marker := ""
+		if valLoss < *bestValLoss {
+			*bestValLoss = valLoss
+			*bestEpoch = epoch
+			// Keep best checkpoint in RAM for immediate save on Ctrl+C
+			*bestNet = chess.QuantizeNetwork(trainer.Net)
+			marker = " *best"
+		}
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
-			fmt.Printf("%-8d  %-14.8f  %-14.8f  %s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond))
+			fmt.Printf("%-8d  %-14.8f  %-14.8f  %s%s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond), marker)
 		}
 	})
 
 	elapsed := time.Since(start)
 	fmt.Printf("\nTraining completed in %v\n", elapsed.Round(time.Second))
 
-	// Quantize and save
+	// Save final weights
 	infNet := chess.QuantizeNetwork(trainer.Net)
 	if err := chess.SaveNNUE(outputFile, infNet); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving network: %v\n", err)
 		os.Exit(1)
 	}
 	fi, _ := os.Stat(outputFile)
-	fmt.Printf("Network saved to %s (%.1f MB)\n", outputFile, float64(fi.Size())/(1024*1024))
+	fmt.Printf("Final network saved to %s (%.1f MB)\n", outputFile, float64(fi.Size())/(1024*1024))
+
+	// Also save best checkpoint to .best file
+	if *bestNet != nil {
+		bestFile := outputFile + ".best"
+		if err := chess.SaveNNUE(bestFile, *bestNet); err == nil {
+			fmt.Printf("Best val loss at epoch %d (saved to %s)\n", *bestEpoch, bestFile)
+		}
+	}
 }
 
 
@@ -813,4 +853,84 @@ func runCheckNet(args []string) {
 	} else {
 		fmt.Printf("%d issue(s) found — eval scale may be collapsed or miscalibrated.\n", issues)
 	}
+}
+
+func runShuffle(args []string) {
+	fs := flag.NewFlagSet("shuffle", flag.ExitOnError)
+	dataFile := fs.String("data", "training.bin", "training data file (.bin) to shuffle in-place")
+	seed := fs.Int64("seed", 0, "random seed (0=use current time)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: tuner shuffle [options]\n\nShuffle a .bin training file in-place using Fisher-Yates on 32-byte records.\n\nOptions:\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	stat, err := os.Stat(*dataFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	const recSize = chess.BinpackRecordSize // 32 bytes
+	if stat.Size()%recSize != 0 {
+		fmt.Fprintf(os.Stderr, "Error: file size %d is not a multiple of %d bytes\n", stat.Size(), recSize)
+		os.Exit(1)
+	}
+	n := stat.Size() / recSize
+
+	f, err := os.OpenFile(*dataFile, os.O_RDWR, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	rngSeed := *seed
+	if rngSeed == 0 {
+		rngSeed = time.Now().UnixNano()
+	}
+	rng := rand.New(rand.NewSource(rngSeed))
+
+	fmt.Printf("Shuffling %s: %d records (%.1f MB), seed=%d\n", *dataFile, n, float64(stat.Size())/(1024*1024), rngSeed)
+
+	// Fisher-Yates shuffle using ReadAt/WriteAt on 32-byte records
+	var buf1, buf2 [recSize]byte
+	reportInterval := n / 20
+	if reportInterval < 1 {
+		reportInterval = 1
+	}
+	start := time.Now()
+
+	for i := n - 1; i > 0; i-- {
+		j := rng.Int63n(i + 1)
+		if i == j {
+			continue
+		}
+		// Swap records i and j
+		if _, err := f.ReadAt(buf1[:], i*recSize); err != nil {
+			fmt.Fprintf(os.Stderr, "\nError reading record %d: %v\n", i, err)
+			os.Exit(1)
+		}
+		if _, err := f.ReadAt(buf2[:], j*recSize); err != nil {
+			fmt.Fprintf(os.Stderr, "\nError reading record %d: %v\n", j, err)
+			os.Exit(1)
+		}
+		if _, err := f.WriteAt(buf2[:], i*recSize); err != nil {
+			fmt.Fprintf(os.Stderr, "\nError writing record %d: %v\n", i, err)
+			os.Exit(1)
+		}
+		if _, err := f.WriteAt(buf1[:], j*recSize); err != nil {
+			fmt.Fprintf(os.Stderr, "\nError writing record %d: %v\n", j, err)
+			os.Exit(1)
+		}
+
+		if (n-i)%reportInterval == 0 {
+			pct := float64(n-i) / float64(n) * 100
+			fmt.Printf("\r  %.0f%% complete...", pct)
+		}
+	}
+
+	elapsed := time.Since(start)
+	fmt.Printf("\r  Done. Shuffled %d records in %v\n", n, elapsed.Round(time.Millisecond))
 }
