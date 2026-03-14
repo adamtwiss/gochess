@@ -1235,6 +1235,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	bestMove := NoMove
 	bestScore := -Infinity
 	moveCount := 0
+	alphaRaised := false // depth reduction after alpha improvement (Caissa-style)
 
 	// Track quiet moves searched before beta cutoff for history penalty
 	var quietsTried [64]Move
@@ -1451,6 +1452,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 		newDepth := depth - 1 + extension
 
+		// Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
+		if alphaRaised {
+			newDepth--
+		}
+
 		var score int
 
 		// Track quiet moves for history penalty on beta cutoff
@@ -1604,6 +1610,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 			if score > alpha {
 				alpha = score
+				alphaRaised = true
 
 				// Update PV using triangular table
 				info.pvTable[ply][0] = move
