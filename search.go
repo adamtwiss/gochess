@@ -1917,7 +1917,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 			if move.Flags() == FlagEnPassant {
 				capturedPiece = pieceOf(WhitePawn, 1-b.SideToMove)
 			}
-			if capturedPiece != Empty && standPat+SEEPieceValues[capturedPiece]+200 <= alpha {
+			if capturedPiece != Empty && standPat+SEEPieceValues[capturedPiece]+240 <= alpha {
 				continue
 			}
 		}
