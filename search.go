@@ -1088,6 +1088,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		unstable = diff > 200
 	}
 
+	// Detect if TT move is a capture — if so, quiet moves deserve more reduction
+	ttMoveNoisy := ttMove != NoMove && b.Squares[ttMove.To()] != Empty
+
 	// Internal Iterative Reduction: reduce depth when no TT move exists.
 	// Searching without a good move to try first is less efficient.
 	if IIREnabled && depth >= 6 && ttMove == NoMove && !inCheck {
@@ -1519,6 +1522,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// Reduce less when eval is unstable (sharp swing from parent)
 				if unstable {
 					reduction--
+				}
+
+				// Reduce more when TT move is a capture — quiet alternatives less likely to be good
+				if ttMoveNoisy {
+					reduction++
 				}
 
 				// Continuous history adjustment: good history reduces less, bad more
