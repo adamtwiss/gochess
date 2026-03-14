@@ -1005,6 +1005,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				} else {
 					info.pvLen[ply] = 0
 				}
+				// TT score dampening: at non-PV nodes with non-mate lower-bound cutoffs,
+				// blend the TT score toward beta to prevent score inflation
+				if beta-alphaOrig == 1 &&
+					entry.Flag == TTLower &&
+					score > -MateScore+100 && score < MateScore-100 {
+					return (3*score + beta) / 4
+				}
 				return score
 			}
 		}
