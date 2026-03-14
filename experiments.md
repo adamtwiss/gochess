@@ -1048,3 +1048,142 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Deeper ProbCut verification search (depth-3 instead of depth-4).
 - **Result**: Killed at 394 games, -10.1 Elo ±26.5. W111-L118-D165 (49.1%). Trending H0.
 - **Notes**: Deeper verification is too expensive — the extra ply costs more than it saves in pruning accuracy. depth-4 is optimal.
+
+## 2026-03-14: Engine Review Ideas — SPRT Testing
+
+**Context**: Ideas from cross-referencing 12 chess engines (see engine-notes/SUMMARY.md). Tested against V4 baseline with RFP 100/70 + ProbCut 170/85 + LMR-split. SPRT elo0=-5 elo1=15, tc=10+0.1, concurrency=4.
+
+### LMR Separate Tables for Captures vs Quiets (MERGED)
+- **Change**: Separate LMR reduction tables for captures (C=1.80, less aggressive) and quiets (C=1.50). Table-based capture LMR with captHist adjustments (>2000 reduces less, <-2000 reduces more), replacing hard-coded reduction=1/2.
+- **Result**: **H1 accepted, +43.5 Elo**. Biggest single win in the project.
+- **Source**: Midnight (cap: 1.40/1.80, quiet: 1.50/1.75), Caissa
+- **Commit**: d8fdc3c
+- **Notes**: Captures and quiets have fundamentally different reduction needs. Captures are more forcing and should be reduced less. The table-based approach with capture history integration gives much finer-grained control.
+
+### RFP Score Dampening (eval+beta)/2
+- **Change**: Return (eval+beta)/2 instead of eval on RFP cutoff. Blends the raw eval with the bound to prevent score inflation.
+- **Result**: **H0 accepted, -16.7 Elo**. W119-L147-D199 (47.0%).
+- **Source**: Winter, Arasan
+- **Notes**: Our RFP margins are already well-calibrated (100/70). Dampening loses precision — the raw eval is more informative than the blended value at our margin levels.
+
+### NMP TT Guard (killed — flat zero, RETRY CANDIDATE)
+- **Change**: Skip null-move pruning if TT has upper-bound entry with score below beta (predicts fail-low).
+- **Result**: Killed at 806 games, +0.9 Elo ±18.6. W242-L238-D326 (50.2%). LLR -0.92. Dead flat.
+- **Source**: Ethereal, Rodent, Arasan
+- **Notes**: Was -45 Elo early (~100 games), recovered to zero by 800 games. Our lockless 4-slot TT may have unreliable shallow TTUpper entries — the guard fires on noisy data. Needs depth guard or different TT architecture to work.
+- **Retry**: Candidate for retest after better NNUE net or other search improvements. Could also run with patience (3000+ games) to detect a +5 Elo gain. Consider adding a depth guard (only trust TTUpper entries with sufficient depth).
+
+### History Bonus Scaled by Score Difference
+- **Change**: Scale history update bonus proportionally to score-beta on cutoffs. bonus = bonus + bonus * min(scoreDiff, 300) / 300. Applied to both quiet and capture history.
+- **Result**: **H0 accepted, -33.9 Elo** ±31.8 in 257 games. W59-L84-D114 (45.1%). LOS 1.8%.
+- **Source**: Caissa
+- **Notes**: Strongly negative. Scaling history bonuses by score difference adds too much noise — large cutoff margins don't necessarily mean the move is more informative. The flat bonus approach is more robust. Our history divisor (5000) is already well-calibrated.
+
+### NMP Threat Detection (MERGED)
+- **Change**: After null move fails, extract opponent's TT best move target square, give +8000 ordering bonus to quiet moves escaping from that square.
+- **Result**: **H1 accepted, +12.4 Elo** ±13.7 in 1398 games. W423-L373-D602 (51.8%). LOS 96.2%. LLR 3.02.
+- **Source**: Rodent (+2048 bonus), ExChess (exempt from pruning), Texel (defense heuristic)
+- **Commit**: 464a425
+- **Notes**: Patient win — hovered at +4-8 for hundreds of games before converging. The TT probe after NMP failure is essentially free (the entry exists from the null-move search). The +8000 bonus is large enough to promote threat evasions above most quiets but below good captures and killers. Fourth engine-review win.
+
+### Non-Pawn Material Correction History
+- **Change**: Added second correction history table indexed by XOR hash of non-pawn piece bitboards (knights through queens). Applied alongside pawn correction, averaged (each contributes half weight).
+- **Result**: **H0 accepted, -11.8 Elo** ±20.7 in 618 games. W166-L187-D265 (48.3%). LOS 13.2%.
+- **Source**: Arasan (6 tables), Caissa (3+ tables), Winter (16 dims)
+- **Notes**: The XOR hash of piece bitboards may not be discriminating enough — different piece configurations can hash to the same value. Also, averaging pawn+non-pawn corrections at equal weight may dilute the pawn signal. Consider: (1) better hash (use Zobrist keys per piece), (2) weighted sum favoring pawn correction, (3) separate application rather than averaging. Despite failing, expanded correction history is proven in strong engines — the implementation matters.
+
+### QS Beta Blending (MERGED)
+- **Change**: At non-PV QS nodes, blend fail-high scores with beta: `(bestScore+beta)/2`. Applied at both stand-pat cutoffs and capture fail-highs.
+- **Result**: **Accepted at +4.9 Elo** ±10.1 in 2467 games. W687-L657-D1123 (50.6%). LOS 83.1%. LLR did not converge but consistently positive.
+- **Source**: Caissa, Berserk, Stormphrax
+- **Commit**: 00af62c
+- **Notes**: Third application of the score dampening pattern (after TT-dampen +22.1 and FH-blend +14.7). Smaller effect in QS because scores are already closer to ground truth, but still positive. Accepted based on 2467 games of consistent positive signal despite SPRT non-convergence.
+
+### TM Score Delta Stable ≤10 → ≤15 (H0 rejected)
+- **Change**: Widen "stable score" threshold from ≤10cp to ≤15cp. This makes the 0.8x time reduction trigger more often.
+- **Result**: **H0 accepted, -54.1 Elo** ±39.7 in 149 games. W26-L49-D74 (42.3%). LOS 0.4%.
+- **Notes**: Fast, strong rejection. Making the stability detector more permissive wastes time on volatile positions. The ≤10cp threshold is well-calibrated.
+
+### TM Score Delta Medium >25 → >35 (H0 rejected)
+- **Change**: Raise "medium instability" threshold from >25cp to >35cp. Requires larger score swings before applying 1.2x time extension.
+- **Result**: **H0 accepted, -26.5 Elo** ±28.7 in 250 games. W46-L65-D139 (46.2%). LOS 3.6%.
+- **Notes**: Fast rejection. The >25cp medium threshold is well-calibrated. All three TM thresholds tested (instability 200, stable ≤10, medium >25) confirmed optimal.
+
+### QS Delta Pruning Buffer 200 → 240 (MERGED)
+- **Change**: Widen QS delta pruning buffer from +200 to +240cp. Captures within 240cp of alpha are now searched instead of pruned.
+- **Result**: **H1 accepted, +31.2 Elo** ±26.1 in 368 games. W116-L83-D169 (54.5%). LOS 99.0%. LLR 2.97.
+- **Commit**: 0a4b4d1
+- **Notes**: Fastest convergence of any experiment — H1 in just 368 games. The old +200 buffer was too aggressive, pruning captures that turned out to matter. Aligns with pattern #5: per-move pruning needs slack.
+
+### SEE Quiet Threshold -20d² → -25d² (H0 rejected)
+- **Change**: Tighten SEE quiet pruning threshold from -20d² to -25d².
+- **Result**: **H0 accepted, -26.2 Elo** ±28.5 in 305 games. W70-L93-D142 (46.2%). LOS 3.6%.
+- **Notes**: Fast rejection. Making SEE pruning more aggressive loses Elo — our -20d² threshold is well-calibrated.
+
+### Instability Threshold 200 → 240 (H0 rejected)
+- **Change**: Raise eval instability detection threshold from 200 to 240.
+- **Result**: **H0 accepted, -28.8 Elo** ±29.3 in 278 games. W60-L83-D135 (45.9%). LOS 2.7%.
+- **Notes**: Fast rejection. Making the instability detector less sensitive hurts. The 200 threshold is well-calibrated.
+
+### Fail-High Score Blending (MERGED)
+- **Change**: At non-PV nodes with depth ≥ 3, blend fail-high score toward beta weighted by depth: `(score*depth + beta)/(depth+1)`. Deeper cutoffs trust the raw score more; shallow cutoffs blend more toward beta.
+- **Result**: **H1 accepted, +14.7 Elo** ±15.8 in 1038 games. W312-L268-D458 (52.1%). LOS 96.6%. LLR 3.0.
+- **Source**: Caissa, Stormphrax, Berserk
+- **Commit**: c7b65d0
+- **Notes**: Sixth engine-review win. Same dampening pattern as TT score dampening (+22.1). Score inflation at fail-high boundaries is a real problem — non-PV cutoff scores are noisy, and blending toward beta dampens that noise proportional to depth confidence.
+
+### 50-Move Rule Eval Scaling (H0 rejected)
+- **Change**: Scale eval toward zero as halfmove clock advances: `eval * (200-fmr) / 200`.
+- **Result**: **H0 accepted, -3.0 Elo** ±14.4 in 1255 games. W349-L360-D546 (49.6%). LOS 34.0%. LLR -2.96.
+- **Source**: Texel, Berserk
+- **Notes**: Dead flat throughout, drifting slightly negative. Our eval doesn't have significant 50-move bias, or the scaling formula is wrong for our engine.
+
+### Singular Margin d*3 → d*2 (H0 rejected)
+- **Change**: Tighten singular extension margin from `ttScore - depth*3` to `ttScore - depth*2`. More moves become singular → more extensions.
+- **Result**: **H0 accepted, -8.5 Elo** ±18.6 in 697 games. W173-L190-D334 (48.8%). LOS 18.6%. LLR -2.99.
+- **Source**: Seer, Berserk, Stormphrax, Koivisto, RubiChess
+- **Notes**: Tightening the margin is the wrong direction for our engine. Combined with d*4 also being negative (-6.2), our d*3 margin is well-calibrated. The double extension and multi-cut shortcut variants may still work — those are structural changes, not margin changes.
+
+### Alpha-Reduce: Depth Reduction After Alpha Improvement (MERGED)
+- **Change**: After a move raises alpha in the search, all subsequent moves are searched at one ply less depth. Once a PV is established, remaining moves are less likely to improve on it.
+- **Result**: **H1 accepted, +13.0 Elo** in 1281 games. LLR 2.95 (elo0=-5, elo1=15).
+- **Source**: Caissa (similar approach)
+- **Commit**: 4a49d1f
+- **Notes**: Fifth engine-review win. Simple 3-line change with strong results. Complements LMR by providing an additional depth reduction mechanism based on search progress rather than move ordering heuristics.
+
+### TT Score Dampening (3*score+beta)/4 (MERGED)
+- **Change**: On non-PV TT cutoffs (TTLower, non-mate scores), return (3*score + beta)/4 instead of raw score. Prevents inflated TT scores from propagating.
+- **Result**: **H1 accepted, +22.1 Elo** ±21.1 in 567 games. W172-L136-D259 (53.2%). LOS 98.0%. LLR 2.96.
+- **Source**: Winter, Caissa
+- **Commit**: 2b37d25
+- **Notes**: Third engine-review win after LMR-split (+43.5) and ProbCut tightening (+10.0). TT score inflation is a real issue at non-PV nodes — blending toward beta dampens propagation of overly optimistic scores. Consider testing the opposite direction (more dampening: (score+beta)/2) or extending to fail-high dampening in main search.
+
+### RFP TT Quiet-Move Guard (H0 rejected)
+- **Change**: Skip reverse futility pruning when TT has a quiet best move — `&& (ttMove == NoMove || board.IsCapture(ttMove))` added to RFP condition. Logic: if we know a good quiet move exists, don't prune based on static eval alone.
+- **Result**: **H0 accepted, -31.3 Elo** ±30.7 in 234 games. W45-L66-D123 (45.5%). LOS 2.3%. LLR -2.99.
+- **Source**: Tucano, Weiss (history-gated variant)
+- **Notes**: Fast rejection. Guarding RFP when a quiet TT move exists actually *hurts* — it prevents RFP from working in positions where it should. The TT quiet move doesn't mean the position is tactical; RFP's eval-based gate is already sufficient. Weiss's variant (guard only when TT move history > 6450) might be better, but the basic guard is clearly wrong for our engine.
+
+### Contempt 10 → 15 (H0 rejected)
+- **Change**: Increase contempt from 10 to 15 centipawns. Higher contempt makes the engine avoid draws more aggressively.
+- **Result**: **H0 accepted, -5.2 Elo** ±16.2 in 865 games. W206-L219-D440 (49.2%). LOS 26.4%. LLR -2.98.
+- **Notes**: Slow grind to rejection. Current contempt of 10 is well-calibrated. Increasing it makes the engine overvalue risky positions. Don't revisit unless eval character changes significantly.
+
+### LMR doDeeperSearch/doShallowerSearch (H0 rejected)
+- **Change**: After LMR re-search beats alpha, dynamically adjust newDepth: +1 if score > bestScore+69, -1 if score < bestScore+newDepth. Concentrates effort on genuinely promising LMR fail-highs.
+- **Result**: **H0 accepted, -13.7 Elo** ±21.7 in 483 games. W109-L128-D246 (48.0%). LOS 10.9%. LLR -3.05.
+- **Source**: Berserk, Stormphrax, Weiss, Obsidian, Stockfish (5 engines)
+- **Notes**: Despite 5-engine consensus, clearly negative for our engine. The thresholds (69/newDepth) may be poorly calibrated for our search, or our LMR tables already handle this adequately. Could retry with different margins (Weiss uses `1+6*(newDepth-lmrDepth)`, Obsidian uses tunable 43/11), but the basic concept doesn't seem to help.
+
+### TT Near-Miss Cutoffs (MERGED)
+- **Change**: Accept TT entries 1 ply shallower than required, with a 64cp score margin. At non-PV nodes: if TTLower entry has score-64 >= beta, return score-64. If TTUpper entry has score+64 <= alpha, return score+64. Avoids re-searching positions where we have a near-hit.
+- **Result**: **H1 accepted, +21.7 Elo** ±20.8 in 561 games. W165-L130-D266 (53.2%). LOS 97.9%. LLR 2.96.
+- **Source**: Minic (margin 60-64cp, credited to Ethereal), Ethereal
+- **Commit**: a412cbe
+- **Notes**: Ninth engine-review win. Strong and fast convergence. The 64cp margin is conservative enough to avoid incorrect cutoffs while still saving significant re-search effort. Only applies at non-PV nodes (beta-alpha == 1) and non-mate scores.
+
+### Singular Extensions + Multi-Cut (H0 rejected)
+- **Change**: Re-enable singular extensions (previously disabled at -28.6 Elo) with multi-cut pruning shortcut: when the singular verification search finds singularBeta >= beta, return singularBeta immediately (multiple moves beat beta, position has many good options).
+- **Result**: **H0 accepted, -28.5 Elo** ±29.4 in 281 games. W62-L85-D134 (46.2%). LOS 2.9%. LLR -3.00.
+- **Source**: Weiss, Obsidian, Minic, Tucano, Koivisto (7+ engines)
+- **Notes**: Fast rejection. The underlying problem is that our singular extensions themselves are harmful — the verification search costs more than it saves, even with multi-cut providing an alternative pruning path. Our depth*3 margin may be too loose (97-100% of SE searches found no singularity). Could try tighter margin or depth gate (depth >= 12 instead of 10), but the basic SE framework seems wrong for our engine.
