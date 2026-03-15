@@ -259,7 +259,7 @@ func runTune(args []string) {
 	}
 
 	// Open trace file (mmap)
-	tf, err := chess.OpenTraceFile(tbinFile, tuner.NumParams())
+	tf, err := chess.OpenTraceFile(tbinFile, tuner.NumParams(), tuner.BuildPairMap())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening trace file: %v\n", err)
 		os.Exit(1)

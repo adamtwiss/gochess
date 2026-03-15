@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -445,6 +446,59 @@ func (t *Tuner) NumParams() int {
 	return len(t.Params)
 }
 
+// BuildPairMap builds a mapping from MG parameter index to EG parameter index.
+// Parameters are paired by matching base names after stripping MG/EG markers.
+// This is used by the v3 tbin format to store paired entries once instead of twice.
+func (t *Tuner) BuildPairMap() map[uint16]uint16 {
+	type info struct {
+		idx   uint16
+		phase byte // 'm' or 'e'
+	}
+	bases := make(map[string][]info)
+
+	for i, p := range t.Params {
+		name := p.Name
+		var base string
+		var phase byte
+
+		switch {
+		case strings.HasPrefix(name, "mg"):
+			phase, base = 'm', name[2:]
+		case strings.HasPrefix(name, "eg"):
+			phase, base = 'e', name[2:]
+		case strings.HasSuffix(name, "MG"):
+			phase, base = 'm', name[:len(name)-2]
+		case strings.HasSuffix(name, "EG"):
+			phase, base = 'e', name[:len(name)-2]
+		case strings.Contains(name, "[MG]"):
+			phase, base = 'm', strings.Replace(name, "[MG]", "[]", 1)
+		case strings.Contains(name, "[EG]"):
+			phase, base = 'e', strings.Replace(name, "[EG]", "[]", 1)
+		default:
+			continue // unpaired (e.g. KingSafetyTable, OCBScale)
+		}
+
+		bases[base] = append(bases[base], info{uint16(i), phase})
+	}
+
+	result := make(map[uint16]uint16)
+	for _, infos := range bases {
+		if len(infos) != 2 {
+			continue
+		}
+		var mgIdx, egIdx uint16
+		if infos[0].phase == 'm' && infos[1].phase == 'e' {
+			mgIdx, egIdx = infos[0].idx, infos[1].idx
+		} else if infos[0].phase == 'e' && infos[1].phase == 'm' {
+			mgIdx, egIdx = infos[1].idx, infos[0].idx
+		} else {
+			continue
+		}
+		result[mgIdx] = egIdx
+	}
+	return result
+}
+
 // ---------------------------------------------------------------------------
 // Binary trace file (.tbin) format for disk-streamed training
 // ---------------------------------------------------------------------------
@@ -471,7 +525,7 @@ func (t *Tuner) NumParams() int {
 
 const (
 	tbinMagic      = "TBIN"
-	tbinVersion    = 2
+	tbinVersion    = 3
 	tbinHeaderSize = 24
 )
 
@@ -482,7 +536,9 @@ type TraceFile struct {
 	NumValidation int
 	NumParams     int
 	trainBytes    uint64
-	data          []byte // mmap'd file contents
+	data          []byte           // mmap'd file contents
+	version       uint16           // tbin format version
+	mgToEg        map[uint16]uint16 // MG→EG index map for v3 paired decoding
 }
 
 // Close unmaps the memory-mapped file.
@@ -518,46 +574,97 @@ func uint8ToResult(r uint8) float64 {
 	}
 }
 
-// writeTraceRecord writes a single TunerTrace as a binary record to w.
-// Returns the number of bytes written.
-func writeTraceRecord(w io.Writer, trace *TunerTrace) (int, error) {
-	// Fixed fields: 11 bytes (v2: added score at [5:7])
-	header := [11]byte{
-		uint8(trace.Phase),
-		resultToUint8(trace.Result),
-		uint8(trace.WScale),
-		uint8(trace.BScale),
-		uint8(trace.HalfmoveClock),
+// writeTraceRecord writes a single TunerTrace as a v3 binary record to w.
+// v3 format: paired MG/EG entries (same coeff) stored once, ~50% smaller than v2.
+// Entries are also aggregated by index (summing coefficients) before writing.
+// Header: 13 bytes (5 fixed + 2 score + 2 pairedCount + 2 mgOnlyCount + 2 egOnlyCount)
+// Then: paired entries (4 bytes each), mgOnly entries (4 bytes each), egOnly entries (4 bytes each).
+func writeTraceRecord(w io.Writer, trace *TunerTrace, mgToEg map[uint16]uint16) (int, error) {
+	// Aggregate MG entries by index (sum coefficients for duplicates)
+	mgAgg := make(map[uint16]int16, len(trace.MG))
+	for _, e := range trace.MG {
+		mgAgg[e.Index] += e.Coeff
 	}
+	// Aggregate EG entries by index
+	egAgg := make(map[uint16]int16, len(trace.EG))
+	for _, e := range trace.EG {
+		egAgg[e.Index] += e.Coeff
+	}
+
+	// Remove zero-sum entries
+	for idx, coeff := range mgAgg {
+		if coeff == 0 {
+			delete(mgAgg, idx)
+		}
+		_ = coeff
+	}
+	for idx, coeff := range egAgg {
+		if coeff == 0 {
+			delete(egAgg, idx)
+		}
+		_ = coeff
+	}
+
+	// Classify into paired, mgOnly, egOnly
+	paired := make([]SparseEntry, 0, len(mgAgg))
+	mgOnly := make([]SparseEntry, 0, 4)
+
+	for mgIdx, mgCoeff := range mgAgg {
+		if egIdx, ok := mgToEg[mgIdx]; ok {
+			if egCoeff, found := egAgg[egIdx]; found && egCoeff == mgCoeff {
+				paired = append(paired, SparseEntry{mgIdx, mgCoeff})
+				delete(egAgg, egIdx) // consume the EG entry
+				continue
+			}
+		}
+		mgOnly = append(mgOnly, SparseEntry{mgIdx, mgCoeff})
+	}
+
+	// Remaining EG entries are egOnly
+	egOnly := make([]SparseEntry, 0, len(egAgg))
+	for egIdx, egCoeff := range egAgg {
+		egOnly = append(egOnly, SparseEntry{egIdx, egCoeff})
+	}
+
+	// 13-byte header
+	var header [13]byte
+	header[0] = uint8(trace.Phase)
+	header[1] = resultToUint8(trace.Result)
+	header[2] = uint8(trace.WScale)
+	header[3] = uint8(trace.BScale)
+	header[4] = uint8(trace.HalfmoveClock)
 	binary.LittleEndian.PutUint16(header[5:7], uint16(trace.Score))
-	binary.LittleEndian.PutUint16(header[7:9], uint16(len(trace.MG)))
-	binary.LittleEndian.PutUint16(header[9:11], uint16(len(trace.EG)))
+	binary.LittleEndian.PutUint16(header[7:9], uint16(len(paired)))
+	binary.LittleEndian.PutUint16(header[9:11], uint16(len(mgOnly)))
+	binary.LittleEndian.PutUint16(header[11:13], uint16(len(egOnly)))
+
 	n, err := w.Write(header[:])
 	if err != nil {
 		return n, err
 	}
 	total := n
 
-	// MG sparse entries
-	for _, e := range trace.MG {
-		var buf [4]byte
+	var buf [4]byte
+	writeEntry := func(e SparseEntry) error {
 		binary.LittleEndian.PutUint16(buf[0:2], e.Index)
 		binary.LittleEndian.PutUint16(buf[2:4], uint16(e.Coeff))
 		nn, err := w.Write(buf[:])
 		total += nn
-		if err != nil {
+		return err
+	}
+
+	for _, e := range paired {
+		if err := writeEntry(e); err != nil {
 			return total, err
 		}
 	}
-
-	// EG sparse entries
-	for _, e := range trace.EG {
-		var buf [4]byte
-		binary.LittleEndian.PutUint16(buf[0:2], e.Index)
-		binary.LittleEndian.PutUint16(buf[2:4], uint16(e.Coeff))
-		nn, err := w.Write(buf[:])
-		total += nn
-		if err != nil {
+	for _, e := range mgOnly {
+		if err := writeEntry(e); err != nil {
+			return total, err
+		}
+	}
+	for _, e := range egOnly {
+		if err := writeEntry(e); err != nil {
 			return total, err
 		}
 	}
@@ -565,40 +672,56 @@ func writeTraceRecord(w io.Writer, trace *TunerTrace) (int, error) {
 	return total, nil
 }
 
-// decodeTraceRecord decodes a single TunerTrace from a byte slice at the given offset.
-// Returns the trace, updated backing slices, and the new offset past this record.
-func decodeTraceRecord(data []byte, offset int, mgBuf, egBuf []SparseEntry) (TunerTrace, []SparseEntry, []SparseEntry, int) {
+// decodeTraceRecord decodes a single v3 TunerTrace from a byte slice at the given offset.
+// v3: 13-byte header with 3 counts (paired, mgOnly, egOnly). Paired entries emit to both MG and EG.
+func decodeTraceRecord(data []byte, offset int, mgBuf, egBuf []SparseEntry, mgToEg map[uint16]uint16) (TunerTrace, []SparseEntry, []SparseEntry, int) {
 	phase := int(data[offset])
 	result := uint8ToResult(data[offset+1])
 	wScale := int(data[offset+2])
 	bScale := int(data[offset+3])
 	halfmove := int(data[offset+4])
 	score := int16(binary.LittleEndian.Uint16(data[offset+5:]))
-	mgCount := int(binary.LittleEndian.Uint16(data[offset+7:]))
-	egCount := int(binary.LittleEndian.Uint16(data[offset+9:]))
-	offset += 11
+	pairedCount := int(binary.LittleEndian.Uint16(data[offset+7:]))
+	mgOnlyCount := int(binary.LittleEndian.Uint16(data[offset+9:]))
+	egOnlyCount := int(binary.LittleEndian.Uint16(data[offset+11:]))
+	offset += 13
+
+	totalMG := pairedCount + mgOnlyCount
+	totalEG := pairedCount + egOnlyCount
 
 	// Grow backing slices if needed, reuse capacity
-	if cap(mgBuf) < mgCount {
-		mgBuf = make([]SparseEntry, mgCount)
+	if cap(mgBuf) < totalMG {
+		mgBuf = make([]SparseEntry, totalMG)
 	} else {
-		mgBuf = mgBuf[:mgCount]
+		mgBuf = mgBuf[:totalMG]
 	}
-	for i := 0; i < mgCount; i++ {
-		mgBuf[i] = SparseEntry{
+	if cap(egBuf) < totalEG {
+		egBuf = make([]SparseEntry, totalEG)
+	} else {
+		egBuf = egBuf[:totalEG]
+	}
+
+	// Paired entries → emit to both MG and EG
+	for i := 0; i < pairedCount; i++ {
+		idx := binary.LittleEndian.Uint16(data[offset:])
+		coeff := int16(binary.LittleEndian.Uint16(data[offset+2:]))
+		mgBuf[i] = SparseEntry{idx, coeff}
+		egBuf[i] = SparseEntry{mgToEg[idx], coeff}
+		offset += 4
+	}
+
+	// MG-only entries
+	for i := 0; i < mgOnlyCount; i++ {
+		mgBuf[pairedCount+i] = SparseEntry{
 			Index: binary.LittleEndian.Uint16(data[offset:]),
 			Coeff: int16(binary.LittleEndian.Uint16(data[offset+2:])),
 		}
 		offset += 4
 	}
 
-	if cap(egBuf) < egCount {
-		egBuf = make([]SparseEntry, egCount)
-	} else {
-		egBuf = egBuf[:egCount]
-	}
-	for i := 0; i < egCount; i++ {
-		egBuf[i] = SparseEntry{
+	// EG-only entries
+	for i := 0; i < egOnlyCount; i++ {
+		egBuf[pairedCount+i] = SparseEntry{
 			Index: binary.LittleEndian.Uint16(data[offset:]),
 			Coeff: int16(binary.LittleEndian.Uint16(data[offset+2:])),
 		}
@@ -612,8 +735,8 @@ func decodeTraceRecord(data []byte, offset int, mgBuf, egBuf []SparseEntry) (Tun
 		WScale:        wScale,
 		BScale:        bScale,
 		HalfmoveClock: halfmove,
-		MG:            mgBuf[:mgCount],
-		EG:            egBuf[:egCount],
+		MG:            mgBuf[:totalMG],
+		EG:            egBuf[:totalEG],
 	}
 	return trace, mgBuf, egBuf, offset
 }
@@ -681,6 +804,10 @@ func PreprocessBinToFile(t *Tuner, inputBin, outputBin string) error {
 		return err
 	}
 
+	// Build pair map for v3 format
+	pairMap := t.BuildPairMap()
+	fmt.Printf("  v3 format: %d MG/EG paired parameters\n", len(pairMap))
+
 	// Write records in shuffled order: training first, then validation.
 	// Parallelized: process batches of records with worker goroutines,
 	// then write results sequentially to maintain order.
@@ -741,7 +868,7 @@ func PreprocessBinToFile(t *Tuner, inputBin, outputBin string) error {
 				os.Remove(tmpFile)
 				return r.err
 			}
-			n, err := writeTraceRecord(bw, &r.trace)
+			n, err := writeTraceRecord(bw, &r.trace, pairMap)
 			if err != nil {
 				out.Close()
 				os.Remove(tmpFile)
@@ -795,8 +922,9 @@ func PreprocessBinToFile(t *Tuner, inputBin, outputBin string) error {
 }
 
 // OpenTraceFile mmaps a .tbin file and validates its header.
+// mgToEg is the MG→EG pair map from Tuner.BuildPairMap(), required for v3 format.
 // The caller must call Close() when done to unmap the file.
-func OpenTraceFile(filename string, numParams int) (*TraceFile, error) {
+func OpenTraceFile(filename string, numParams int, mgToEg map[uint16]uint16) (*TraceFile, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -842,6 +970,8 @@ func OpenTraceFile(filename string, numParams int) (*TraceFile, error) {
 		NumParams:     fileParams,
 		trainBytes:    trainBytes,
 		data:          data,
+		version:       version,
+		mgToEg:        mgToEg,
 	}, nil
 }
 
@@ -867,7 +997,7 @@ func (tf *TraceFile) streamRecords(byteOffset int64, count, batchSize int, fn fu
 		}
 		for i := read; i < end; i++ {
 			slot := i - read
-			trace, mg, eg, newOffset := decodeTraceRecord(tf.data, offset, mgBufs[slot], egBufs[slot])
+			trace, mg, eg, newOffset := decodeTraceRecord(tf.data, offset, mgBufs[slot], egBufs[slot], tf.mgToEg)
 			mgBufs[slot] = mg
 			egBufs[slot] = eg
 			offset = newOffset
