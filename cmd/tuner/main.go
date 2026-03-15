@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"time"
 
 	"chess"
@@ -279,7 +280,7 @@ func runTune(args []string) {
 		fmt.Printf("\nUsing fixed K = %.2f\n", K)
 	} else {
 		fmt.Printf("\nTuning K (scaling constant)...\n")
-		K = tuner.TuneK(tf, scoreBlend)
+		K = tuner.TuneK(tf)
 	}
 	initialError := tuner.ComputeTrainError(tf, K, scoreBlend)
 	initialValError := tuner.ComputeValidationError(tf, K, scoreBlend)
@@ -407,6 +408,7 @@ func runNNUETrain(args []string) {
 	cfg.Stop = stopCh
 
 	// bestNet is shared between the training callback and the signal handler
+	var mu sync.Mutex
 	var bestNet *chess.NNUENet
 	var bestEpoch int
 	var bestValLoss float64 = math.MaxFloat64
@@ -416,9 +418,12 @@ func runNNUETrain(args []string) {
 		signal.Stop(sigCh)
 		fmt.Fprintf(os.Stderr, "\nInterrupted — saving best network and exiting...\n")
 		close(stopCh)
-		if bestNet != nil {
-			if err := chess.SaveNNUE(*outputFile, bestNet); err == nil {
-				fmt.Fprintf(os.Stderr, "Best network (epoch %d, val=%.8f) saved to %s\n", bestEpoch, bestValLoss, *outputFile)
+		mu.Lock()
+		net, epoch, loss := bestNet, bestEpoch, bestValLoss
+		mu.Unlock()
+		if net != nil {
+			if err := chess.SaveNNUE(*outputFile, net); err == nil {
+				fmt.Fprintf(os.Stderr, "Best network (epoch %d, val=%.8f) saved to %s\n", epoch, loss, *outputFile)
 			} else {
 				fmt.Fprintf(os.Stderr, "Error saving network: %v\n", err)
 			}
@@ -432,10 +437,10 @@ func runNNUETrain(args []string) {
 		os.Exit(0)
 	}()
 
-	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &bestNet, &bestEpoch, &bestValLoss)
+	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss)
 }
 
-func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64) {
+func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64) {
 	bf, err := chess.OpenBinpackFiles(paths...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening binpack files: %v\n", err)
@@ -459,8 +464,12 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 	}
 
 	lossType := "MSE"
-	if cfg.CrossEntropy { lossType = "cross-entropy" }
-	if cfg.Lambda == 0 && !cfg.CrossEntropy { lossType = "MSE-cp" }
+	if cfg.CrossEntropy {
+		lossType = "cross-entropy"
+	}
+	if cfg.Lambda == 0 && !cfg.CrossEntropy {
+		lossType = "MSE-cp"
+	}
 	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f loss=%s\n",
 		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda, lossType)
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "Epoch", "Train Loss", "Val Loss", "Time")
@@ -472,6 +481,7 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 		elapsed := time.Since(epochStart)
 		epochStart = time.Now()
 		marker := ""
+		mu.Lock()
 		if valLoss < *bestValLoss {
 			*bestValLoss = valLoss
 			*bestEpoch = epoch
@@ -479,6 +489,7 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 			*bestNet = chess.QuantizeNetwork(trainer.Net)
 			marker = " *best"
 		}
+		mu.Unlock()
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
 			fmt.Printf("%-8d  %-14.8f  %-14.8f  %s%s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond), marker)
 		}
@@ -497,10 +508,13 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 	fmt.Printf("Final network saved to %s (%.1f MB)\n", outputFile, float64(fi.Size())/(1024*1024))
 
 	// Also save best checkpoint to .best file
-	if *bestNet != nil {
+	mu.Lock()
+	bn, be := *bestNet, *bestEpoch
+	mu.Unlock()
+	if bn != nil {
 		bestFile := outputFile + ".best"
-		if err := chess.SaveNNUE(bestFile, *bestNet); err == nil {
-			fmt.Printf("Best val loss at epoch %d (saved to %s)\n", *bestEpoch, bestFile)
+		if err := chess.SaveNNUE(bestFile, bn); err == nil {
+			fmt.Printf("Best val loss at epoch %d (saved to %s)\n", be, bestFile)
 		}
 	}
 }

@@ -500,12 +500,12 @@ func (t *Tuner) BuildPairMap() map[uint16]uint16 {
 }
 
 // ---------------------------------------------------------------------------
-// Binary trace file (.tbin) format for disk-streamed training
+// Binary trace file (.tbin) format v3 for disk-streamed training
 // ---------------------------------------------------------------------------
 //
 // Header (24 bytes):
 //   magic:         [4]byte   "TBIN"
-//   version:       uint16    2
+//   version:       uint16    3
 //   numParams:     uint16
 //   numTrain:      uint32
 //   numValidation: uint32
@@ -518,10 +518,12 @@ func (t *Tuner) BuildPairMap() map[uint16]uint16 {
 //   bScale:        uint8
 //   halfmoveClock: uint8
 //   score:         int16     (White-relative centipawns, 0 when unavailable)
-//   mgCount:       uint16
-//   egCount:       uint16
-//   mg[mgCount]:   4 bytes each (uint16 index, int16 coeff)
-//   eg[egCount]:   4 bytes each
+//   pairedCount:   uint16    (entries where MG and EG share the same coeff)
+//   mgOnlyCount:   uint16    (entries with only an MG component)
+//   egOnlyCount:   uint16    (entries with only an EG component)
+//   paired[pairedCount]:  4 bytes each (uint16 mgIndex, int16 coeff; EG index via mgToEg map)
+//   mgOnly[mgOnlyCount]:  4 bytes each (uint16 index, int16 coeff)
+//   egOnly[egOnlyCount]:  4 bytes each (uint16 index, int16 coeff)
 
 const (
 	tbinMagic      = "TBIN"
@@ -592,17 +594,15 @@ func writeTraceRecord(w io.Writer, trace *TunerTrace, mgToEg map[uint16]uint16) 
 	}
 
 	// Remove zero-sum entries
-	for idx, coeff := range mgAgg {
-		if coeff == 0 {
+	for idx := range mgAgg {
+		if mgAgg[idx] == 0 {
 			delete(mgAgg, idx)
 		}
-		_ = coeff
 	}
-	for idx, coeff := range egAgg {
-		if coeff == 0 {
+	for idx := range egAgg {
+		if egAgg[idx] == 0 {
 			delete(egAgg, idx)
 		}
-		_ = coeff
 	}
 
 	// Classify into paired, mgOnly, egOnly
@@ -1980,10 +1980,10 @@ func sigmoid(score, K float64) float64 {
 
 // TuneK finds the optimal scaling constant K by minimizing MSE on training data.
 // Uses a random sample of up to 1M records for speed — K is stable well below this.
-// When scoreBlend=1.0 (score-only target), K is tuned against game results instead,
-// since wrapping both target and prediction in the same sigmoid lets K trivially
-// minimize error by flattening everything to 0.5.
-func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
+// Always tunes against game results (not blended scores), since wrapping both
+// target and prediction in the same sigmoid lets K trivially minimize error by
+// flattening everything to 0.5.
+func (t *Tuner) TuneK(tf *TraceFile) float64 {
 	// Sample up to 1M training records for K estimation
 	sampleSize := tf.NumTrain
 	const maxSample = 1_000_000

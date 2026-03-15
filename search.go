@@ -1074,7 +1074,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// "Failing" heuristic: detect significant position deterioration.
 		// When eval has dropped well below 2-ply-ago eval, be more aggressive
 		// with reductions and pruning — our moves are being refuted.
-		failing = !inCheck && ply >= 2 && info.StaticEvals[ply-2] > -MateScore+100 &&
+		failing = ply >= 2 && info.StaticEvals[ply-2] > -MateScore+100 &&
 			staticEval < info.StaticEvals[ply-2]-(60+40*depth)
 	} else {
 		if ply <= MaxPly {
@@ -1108,7 +1108,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 
 	// Detect if TT move is a capture — if so, quiet moves deserve more reduction
-	ttMoveNoisy := ttMove != NoMove && b.Squares[ttMove.To()] != Empty
+	ttMoveNoisy := ttMove != NoMove && (b.Squares[ttMove.To()] != Empty || ttMove.Flags() == FlagEnPassant)
 
 	// Internal Iterative Reduction: reduce depth when no TT move exists.
 	// Searching without a good move to try first is less efficient.
@@ -1496,6 +1496,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if alphaRaisedCount > 0 {
 			newDepth--
 		}
+		if newDepth < 0 {
+			newDepth = 0
+		}
 
 		var score int
 
@@ -1796,6 +1799,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	// Fail-high score blending: dampen inflated cutoff scores at non-PV nodes.
 	// Deeper cutoffs are more trustworthy, so weight raw score by depth.
+	// Note: TT stores the unblended bestScore (above); we return the blended
+	// value. This is intentional — the dampening is a return-path transform,
+	// not a persistent score adjustment. SPRT-validated.
 	if bestScore >= beta && beta-alphaOrig == 1 && depth >= 3 &&
 		bestScore > -MateScore+100 && bestScore < MateScore-100 {
 		return (bestScore*depth + beta) / (depth + 1)
@@ -2029,7 +2035,8 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	}
 	info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, standPat)
 
-	// QS beta blending: dampen capture fail-high at non-PV nodes
+	// QS beta blending: dampen capture fail-high at non-PV nodes.
+	// TT stores unblended score; return blended value (intentional asymmetry, SPRT-validated).
 	if bestScore >= beta && beta-alphaOrig == 1 && bestScore < MateScore-100 && bestScore > -MateScore+100 {
 		return (bestScore + beta) / 2
 	}
