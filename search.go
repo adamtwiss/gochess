@@ -1095,6 +1095,18 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		unstable = diff > 200
 	}
 
+	// Compute enemy pawn attacks for threat-aware LMR.
+	// Moving a piece away from a pawn-attacked square deserves less reduction.
+	var enemyPawnAttacks Bitboard
+	if !inCheck {
+		enemyPawns := b.Pieces[pieceOf(WhitePawn, b.SideToMove^1)]
+		if b.SideToMove == White {
+			enemyPawnAttacks = enemyPawns.SouthWest() | enemyPawns.SouthEast()
+		} else {
+			enemyPawnAttacks = enemyPawns.NorthWest() | enemyPawns.NorthEast()
+		}
+	}
+
 	// Detect if TT move is a capture — if so, quiet moves deserve more reduction
 	ttMoveNoisy := ttMove != NoMove && b.Squares[ttMove.To()] != Empty
 
@@ -1547,6 +1559,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// Reduce more when TT move is a capture — quiet alternatives less likely to be good
 				if ttMoveNoisy {
 					reduction++
+				}
+
+				// Reduce less when moving a piece away from a pawn-attacked square
+				if enemyPawnAttacks&(1<<move.From()) != 0 {
+					reduction--
 				}
 
 				// Continuous history adjustment: good history reduces less, bad more
