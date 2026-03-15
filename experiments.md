@@ -1474,3 +1474,24 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 1c7bdc8 (code review fixes merged, pre-opp-material merge)
 - **Source**: Igel pattern, experiment_queue Tier 3 (CMP/FMP)
 - **Notes**: Strongly negative. Per-component pruning is too aggressive — individual continuation history components can be deeply negative for a specific piece-to pair while the combined score (main history + contHist + contHist2) is positive, indicating the move is still worth searching. Pruning based on a single negative component throws away moves that other history signals support. The combined-score approach in our existing history pruning (threshold: -2000×depth) is the correct granularity. Confirms the pattern: history-based pruning modifications have a ~8% success rate for our engine.
+
+### Opponent Material LMR Threshold 3 (MERGED)
+- **Change**: Widen the opponent material LMR threshold from `oppNonPawn < 2` to `oppNonPawn < 3`. With fewer than 3 non-pawn pieces (i.e. 0-2 pieces), the position is simplified enough to increase LMR reduction.
+- **Result**: **H1 at 624 games, +18.4 Elo ±18.3, LOS 97.5%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 705911f (opp-material < 2 + bad-noisy merged)
+- **Source**: Bracket test of merged Opponent Material LMR
+- **Notes**: Another strong result from widening the threshold. The < 2 condition only fires in deep endgames (lone piece); < 3 fires much more often (e.g. rook + minor vs similar). The broader application still works because positions with ≤2 non-pawn opponent pieces genuinely have reduced tactical complexity. Consider testing < 4 as a further bracket, though diminishing returns are likely as the condition approaches normal middlegame material counts.
+
+### Own-Side Low Material LMR (REJECTED)
+- **Change**: In LMR, add `reduction++` when the side to move has fewer than 2 non-pawn pieces. Symmetric counterpart to the opponent material LMR — if we're simplified too, reduce more.
+- **Result**: **H0 at 316 games, -18.7 Elo ±24.8, LOS 7.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 705911f (opp-material < 2 + bad-noisy merged)
+- **Source**: Follow-up to Opponent Material LMR
+- **Notes**: Strongly negative. The asymmetry makes sense: when the *opponent* has few pieces, *their* threats are limited so we can reduce our quiet moves. But when *we* have few pieces, we need to search carefully to find the best use of our limited material — reducing our own moves in this situation loses critical accuracy. The signal is one-directional: opponent material count predicts opponent threat level, not our own move quality.
+
+### Bad Noisy Futility Margin 75 (MERGED)
+- **Change**: Loosen the bad-noisy futility margin from `staticEval + depth*50 <= alpha` to `staticEval + depth*75 <= alpha`. The wider gate allows more losing captures to be pruned.
+- **Result**: **H1 at 131 games, +58.9 Elo ±38.0, LOS 99.9%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 705911f (opp-material < 2 + bad-noisy merged)
+- **Source**: Bracket test of merged Bad Noisy Futility
+- **Notes**: Massive result — the original depth*50 margin was too conservative. With depth*75, the pruning fires much more frequently (a depth-4 capture is pruned when eval is 300cp below alpha instead of 200cp). Losing captures in positions that are 300cp below alpha are overwhelmingly futile. The SEE guard still ensures we only prune material-losing captures, so the wider eval gate is safe. Consider testing depth*100 as a further bracket.
