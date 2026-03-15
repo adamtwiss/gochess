@@ -689,7 +689,7 @@ func PreprocessBinToFile(t *Tuner, inputBin, outputBin string) error {
 	if numWorkers < 1 {
 		numWorkers = 1
 	}
-	const batchSize = 4096
+	const batchSize = 32768
 	startTime := time.Now()
 	processed := 0
 
