@@ -212,6 +212,7 @@ func runTune(args []string) {
 	lr := fs.Float64("lr", 1.0, "learning rate")
 	l2 := fs.Float64("l2", 0, "L2 regularization strength toward initial values (0=disabled)")
 	lambda := fs.Float64("lambda", 0.0, "result vs score weight: 0=score-only (default), 1=result-only")
+	fixedK := fs.Float64("K", 0, "fixed sigmoid scaling constant (0=auto-tune)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner tune [options]\n\nOptions:\n")
@@ -271,10 +272,15 @@ func runTune(args []string) {
 		os.Exit(1)
 	}
 
-	// Tune K
-	fmt.Printf("\nTuning K (scaling constant)...\n")
 	scoreBlend := 1.0 - *lambda
-	K := tuner.TuneK(tf, scoreBlend)
+	var K float64
+	if *fixedK > 0 {
+		K = *fixedK
+		fmt.Printf("\nUsing fixed K = %.2f\n", K)
+	} else {
+		fmt.Printf("\nTuning K (scaling constant)...\n")
+		K = tuner.TuneK(tf, scoreBlend)
+	}
 	initialError := tuner.ComputeTrainError(tf, K, scoreBlend)
 	initialValError := tuner.ComputeValidationError(tf, K, scoreBlend)
 	fmt.Printf("Optimal K = %.2f, initial train error = %.8f, val error = %.8f\n\n", K, initialError, initialValError)
