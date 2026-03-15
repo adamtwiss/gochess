@@ -1886,8 +1886,8 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 		return totalErr / float64(len(sample))
 	}
 
-	// Golden section search for optimal K in [50, 800]
-	lo, hi := 50.0, 800.0
+	// Golden section search for optimal K in [50, 2000]
+	lo, hi := 50.0, 2000.0
 	gr := (math.Sqrt(5) + 1) / 2
 	iter := 0
 
