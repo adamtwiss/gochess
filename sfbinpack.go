@@ -1351,14 +1351,20 @@ func (r *BINPReader) Next() (*NNUETrainSample, error) {
 		// Try to parse a stem at the current offset.
 		// If decompression fails (corrupt offset from movetext skip failure),
 		// scan forward byte-by-byte to find the next valid stem.
-		pos, ok := r.tryParseStem()
+		sample, ok := r.tryParseStem()
 		if !ok {
 			// No valid stem found in remainder of chunk — skip to next chunk
 			r.offset = len(r.chunk)
 			continue
 		}
 
-		return pos, nil
+		// nil sample means a valid but filtered stem (score too high, in check, etc.)
+		// Loop to find the next non-filtered stem.
+		if sample == nil {
+			continue
+		}
+
+		return sample, nil
 	}
 }
 
@@ -1457,6 +1463,17 @@ func (r *BINPReader) parseStemAt(offset int) (*NNUETrainSample, int, bool) {
 	}
 
 	consumed := 34 // stem + numPlies
+
+	// Filter: skip positions with extreme scores (mates, decided games)
+	if score > 3000 || score < -3000 {
+		return nil, consumed, true // valid stem, skip it
+	}
+
+	// Filter: skip positions where side to move is in check (static eval meaningless)
+	board, err := pos.toBoard()
+	if err == nil && board.InCheck() {
+		return nil, consumed, true // valid stem, skip it
+	}
 
 	// Convert result to our 0/1/2 format
 	var resultU8 uint8
