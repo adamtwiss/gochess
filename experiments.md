@@ -1187,3 +1187,138 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 accepted, -28.5 Elo** ±29.4 in 281 games. W62-L85-D134 (46.2%). LOS 2.9%. LLR -3.00.
 - **Source**: Weiss, Obsidian, Minic, Tucano, Koivisto (7+ engines)
 - **Notes**: Fast rejection. The underlying problem is that our singular extensions themselves are harmful — the verification search costs more than it saves, even with multi-cut providing an alternative pruning path. Our depth*3 margin may be too loose (97-100% of SE searches found no singularity). Could try tighter margin or depth gate (depth >= 12 instead of 10), but the basic SE framework seems wrong for our engine.
+
+### Futility Pruning Margin 100+d*100 → 80+d*80 (MERGED)
+- **Change**: Tighten futility pruning margin from `staticEval+100+lmrDepth*100` to `staticEval+80+lmrDepth*80`. More aggressive pruning of quiet moves that can't reach alpha.
+- **Result**: **H1 accepted, +33.6 Elo** ±27.2 in ~300 games. W72-L52-D133 (53.9%). LOS 99.2%. LLR 3.0.
+- **Commit**: ec9d8fa
+- **Notes**: Tenth win! Previous attempt at 120+d*120 (loosening) failed, confirming the optimum is in the tighter direction. This is the opposite of our usual pattern ("per-move pruning needs slack") — futility uses estimated LMR depth which provides its own slack. Consider testing 60+d*60 to bracket further.
+
+### QS Two-Sided Delta Pruning (H0 — rejected)
+- **Change**: Add "good-delta" early return in QS: when standPat + captureValue - 240 >= beta AND SEE is positive, return beta immediately. Complement to existing "bad-delta" (skip captures that can't reach alpha).
+- **Result**: H0 at 224 games, -37.4 Elo ±33.4, LOS 1.4%, LLR -2.96.
+- **Source**: Minic (credited to Seer)
+- **Notes**: The good-delta early return is too aggressive — returning beta without searching the capture misses important tactical complications. Our existing bad-delta + QS beta blending already handles the QS boundary well.
+
+### TT Noisy Move Detection (H1 — MERGED)
+- **Change**: Detect when the TT best move is a capture (`ttMoveNoisy := ttMove != NoMove && b.Squares[ttMove.To()] != Empty`). When true, add +1 LMR reduction for quiet moves — if the best known move is tactical, quiet alternatives deserve extra skepticism.
+- **Result**: H1 at 304 games, +34.4 Elo ±27.4, LOS 99.3%, LLR 3.02.
+- **Baseline**: ec9d8fa (futility 80+d*80)
+- **Commit**: 330dcd4
+- **Source**: Obsidian, Berserk
+- **Notes**: Eleventh SPRT win from engine reviews! Simple 2-line idea with massive payoff. The insight is that when the position's best move is a capture, the position is likely tactical and quiet moves are less relevant — so reduce them more aggressively. This is a form of position-aware LMR that leverages TT information.
+
+### Aspiration Fail-High Depth Reduction (H0 — rejected)
+- **Change**: In the aspiration window loop, add `depth--` when the search fails high. Intent: make re-searches cheaper after fail-high by reducing the search depth.
+- **Result**: H0 at 26 games, -353.8 Elo ±166.9, LOS 0.0%, LLR -3.09. Catastrophic.
+- **Baseline**: ec9d8fa (futility 80+d*80)
+- **Source**: 5 engines (but implementation was wrong)
+- **Notes**: Bug: `depth--` modified the outer iterative deepening loop variable, permanently reducing search depth for the rest of the game. Correct implementation would use a separate `searchDepth` variable inside the aspiration loop. Not worth retesting — the correct version would need careful scoping and the gain is likely marginal.
+
+### 4-Ply Continuation History (H0 — rejected)
+- **Change**: Add `contHistPtr4` from 4 plies ago (our own move 2 full moves back) at quarter weight (1/4) in both history pruning and LMR history scoring. Read-only — no updates to the 4-ply table.
+- **Result**: H0 at 303 games, -25.3 Elo ±27.7, LOS 3.7%, LLR -3.04.
+- **Baseline**: 330dcd4 (TT-noisy merged)
+- **Source**: 10 engines (Berserk, Stormphrax, RubiChess, Caissa, Seer, Weiss, Obsidian, BlackMarlin, Altair, Reckless)
+- **Notes**: Despite massive engine consensus (10 engines), this hurts for us. The 4-ply lookback is too distant — the position has changed too much for the correlation to be useful. Our 1-ply and 2-ply continuation history are sufficient. May work better if writes to ply-4 are also done (Obsidian writes at half bonus), but the read-only approach is clearly negative. The 1/4 weight may also be wrong — some engines use equal weight for all plies.
+
+### NMP Less Reduction After Captures (H0 — rejected)
+- **Change**: In NMP, reduce R by 1 when the previous move was a capture (`b.UndoStack[last].Captured != Empty → R--`). Rationale: captures change the position significantly, making NMP riskier.
+- **Result**: H0 at 668 games, -8.3 Elo ±18.3, LOS 18.7%, LLR -3.04.
+- **Baseline**: 330dcd4 (TT-noisy merged)
+- **Source**: Tucano
+- **Notes**: Our NMP is already well-calibrated for post-capture positions. The R-1 after captures makes NMP too conservative, losing the time savings without compensating accuracy gain.
+
+### Cutnode LMR +2 (H0 — rejected)
+- **Change**: Extra LMR reduction at cut nodes increased from +1 to +2. `if beta-alpha == 1 && moveCount > 1 { reduction += 2 }` (was `+= 1`).
+- **Result**: H0 at 1930 games, +0.5 Elo ±10.8, LOS 53.9%, LLR -2.93.
+- **Baseline**: 330dcd4 (TT-noisy merged)
+- **Source**: Weiss (+2), Obsidian, BlackMarlin
+- **Notes**: Dead flat after 1930 games. Our existing +1 cut-node reduction is correctly calibrated. +2 is too aggressive — it over-reduces at expected cut nodes, losing tactical accuracy. Despite 3-engine consensus for +2, our engine's LMR tables (C=1.50 quiet / C=1.80 capture) already provide sufficient reduction at cut nodes.
+
+### Cutoff-Count Child Feedback (H0 — rejected)
+- **Change**: Track beta cutoffs at child nodes. Added `ChildCutoffs [MaxPly+1]int` to SearchInfo, reset at node entry, increment parent's counter on beta cutoff. In quiet LMR: `if info.ChildCutoffs[ply] > 2 { reduction++ }`.
+- **Result**: H0 at 1294 games, -1.6 Elo ±13.1, LOS 40.5%, LLR -2.96.
+- **Baseline**: 330dcd4 (TT-noisy merged)
+- **Source**: Reckless (cutoff_count > 2 → reduction += 1604)
+- **Notes**: Dead flat. The child cutoff count doesn't provide useful signal for parent LMR. Many children cutting off is ambiguous — it could mean many refutations exist (bad position) or many moves are obviously losing (clear best move). The signal is too noisy to improve on existing LMR heuristics.
+
+### "Failing" Heuristic — Position Deterioration (H1 — MERGED)
+- **Change**: Detect significant eval deterioration: `failing = staticEval < eval2pliesAgo - (60 + 40*depth)`. When failing: +1 LMR reduction for quiet moves, tighten LMP limit to 2/3. Complements the existing `improving` flag by detecting the opposite — positions getting much worse.
+- **Result**: **H1 at 355 games, +29.4 Elo ±25.3, LOS 98.9%, LLR 2.95.** Fast convergence.
+- **Baseline**: 330dcd4 (TT-noisy merged)
+- **Source**: Altair (failing flag → +1 LMR, tighter LMP divider)
+- **Commit**: (pending merge)
+- **Notes**: Twelfth engine-review win! Same "search progress feedback" family as alpha-reduce (+13.0). When the position is deteriorating significantly, our moves are being refuted — reduce and prune more aggressively. The depth-scaled threshold (60+40*d) ensures the bar for "failing" rises with depth, avoiding false positives at deep nodes.
+
+### Futility History Gate (H0 — rejected)
+- **Change**: Exempt moves with combined history > 12000 from futility pruning. Computed `combinedHist = mainHistory + contHist + contHist2/2` before MakeMove, added `combinedHist <= 12000` condition to futility pruning block.
+- **Result**: H0 at 600 games, -9.8 Elo ±19.5, LOS 16.1%, LLR -3.00.
+- **Baseline**: 05aee22 (failing heuristic merged)
+- **Source**: Igel (history + cmhist + fmhist < fpHistoryLimit[improving])
+- **Notes**: Clearly negative. Futility pruning's eval-based gate is already well-calibrated — adding a history exemption allows bad moves through. History is already used in LMR and history pruning; double-dipping in futility is redundant and harmful. Consistent with earlier finding that history-aware futility margins lose Elo (-6.0 in 2026-03-12 experiment).
+
+### NMP Divisor 170 (H0 — rejected)
+- **Change**: Reduce NMP depth divisor from 200 to 170 (more aggressive null-move pruning via deeper reductions). `depth - depth/170 - 4` instead of `depth - depth/200 - 4`.
+- **Result**: H0 at 3963 games, +2.7 Elo ±7.7, LOS 75.5%, LLR -2.96. SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 05aee22 (failing heuristic merged)
+- **Notes**: Long grind to rejection. The +2.7 Elo is in the noise band — NMP divisor 200 is well-calibrated. Combined with the earlier NMP-240 rejection (-3.2 Elo), both directions lose, confirming 200 is optimal. Do not revisit NMP divisor.
+
+### Alpha-Raised Aspiration Window (H1 — MERGED)
+- **Change**: After alpha-side aspiration failure, raise alpha to `max(alpha, bestScore - delta/2)` instead of `alpha - delta`. This prevents alpha from collapsing too far on a single fail-low, giving tighter search windows on the retry.
+- **Result**: **H1 at 3519 games, +7.5 Elo ±8.0, LOS 96.7%, LLR 3.00.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 05aee22 (failing heuristic merged)
+- **Source**: Engine review — Altair aspiration window management
+- **Notes**: Thirteenth engine-review win! Same "score dampening" family as TT-dampen (+22.1) and FH-blend (+14.7). Pattern confirmed: score dampening at noisy boundaries has 80% win rate. The key insight is that a single fail-low doesn't mean the true score is far below alpha — raising alpha prevents wasted work on overly wide windows.
+
+### History-Based Extensions (H0 — rejected)
+- **Change**: Extend +1 ply when both contHist[0] and contHist[1] are >= 10000 (Igel pattern). Applied only to quiet, non-check moves at depth >= 6.
+- **Result**: H0 at 1443 games, -1.2 Elo ±12.7, LOS 42.6%, LLR -2.95. SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 05aee22 (failing heuristic merged)
+- **Source**: Igel (extend when continuation histories both high)
+- **Notes**: Dead flat. Continuation history values >= 10000 are too rare to trigger frequently enough to matter, and when they do trigger, the position is likely already well-searched. Extensions based on history don't add signal beyond what singular extensions already provide. Consistent with the general finding that history-aware modifications beyond LMR have low success rate (8%).
+
+### Threat-Aware LMR: Pawn Threat Escape (H1 — MERGED)
+- **Change**: Compute enemy pawn attacks at each node. In LMR, reduce less (reduction--) when moving a piece away from a pawn-attacked square. The logic: escaping a pawn threat is a purposeful move that deserves deeper search.
+- **Result**: **H1 at 951 games, +14.6 Elo ±15.7, LOS 96.6%, LLR 2.99.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 0c1e716 (progressive alpha-raised merged)
+- **Source**: Engine review — threat-aware history (12-engine consensus). Simplified to LMR-only adjustment using pawn threats.
+- **Notes**: Fourteenth engine-review win! First structural innovation from the next-phase plan. Pawn attacks are cheap to compute (two bitboard shifts + OR). The signal is strong because pieces under pawn attack genuinely need to move, and reducing less on those escape moves prevents overlooking critical tactics. This lighter approach (LMR adjustment only) captured the key benefit without the complexity of a full 4x indexed history table.
+
+### Node-Based Time Management — Aggressive (H0 — rejected)
+- **Change**: Track best move's share of root nodes per iteration. Scale soft time limit: >0.9 fraction → 0.6x, >0.8 → 0.75x, <0.2 → 1.6x, <0.4 → 1.3x. More aggressive thresholds than the earlier conservative attempt (+2 Elo, flat).
+- **Result**: H0 at 903 games, -4.6 Elo ±15.8, LOS 28.3%, LLR -2.97. SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 0c1e716 (progressive alpha-raised merged)
+- **Source**: Next-phase plan item #4 (retry with aggressive scaling)
+- **Notes**: Both conservative (flat) and aggressive (negative) node-fraction TM have failed. The issue may be that at 10+0.1 time controls, there aren't enough root nodes per iteration for the fraction to be meaningful. Also, the interaction with existing stability-based TM may be redundant — both try to measure "how confident are we in the best move." Do not revisit node-fraction TM.
+
+### IIR Extra on PV Nodes (inconclusive — killed for net upgrade)
+- **Change**: Extra IIR reduction at PV nodes without TT move: depth reduced by 2 instead of 1. `if beta-alpha > 1 { depth-- }` inside IIR block.
+- **Result**: Killed at 2102 games, +8.1 Elo ±10.2, LOS 94.0%, LLR 2.28 (77% toward H1). SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 0c1e716 (progressive alpha-raised merged)
+- **Source**: Altair (IIR extra at PV)
+- **Notes**: Was trending strongly toward H1 when killed for net upgrade. Re-test with new net — likely a real +5-8 Elo gain.
+
+### SEE Quiet Threshold -20d² → -25d² (inconclusive — killed for net upgrade)
+- **Change**: Tighter SEE quiet pruning threshold from -20*depth*depth to -25*depth*depth.
+- **Result**: Killed at 1819 games, +2.5 Elo ±10.9, LOS 67.4%, LLR -1.61. SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 0c1e716 (progressive alpha-raised merged)
+- **Notes**: Flat — was trending toward H0. Low priority for re-test.
+
+### Threat-Aware LMP (killed — clearly negative)
+- **Change**: Tighten LMP limit to 3/4 for quiet moves that don't escape a pawn-attacked square. Uses the enemyPawnAttacks bitboard from threat-aware LMR.
+- **Result**: Killed at 386 games, -11.0 Elo ±24.7, LOS 19.2%, LLR -2.01. SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 8d6f19d (threat-aware LMR merged)
+- **Notes**: Clearly negative. Tightening LMP based on threat status prunes too aggressively — many good quiet moves don't involve escaping threats. The threat signal works for LMR (search shallower) but not LMP (skip entirely). Do not revisit.
+
+### Non-Pawn Correction History with Zobrist (killed — negative)
+- **Change**: Added second correction history table indexed by `(hash ^ pawnHash) % corrHistSize` to capture piece-placement eval errors. Blended 2:1 with pawn correction (2/3 pawn + 1/3 non-pawn).
+- **Result**: Killed at 367 games, -9.7 Elo ±24.5, LOS 22.0%, LLR -1.87. SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 8d6f19d (threat-aware LMR merged)
+- **Source**: Next-phase plan item #3 (correction history retry with Zobrist keys)
+- **Notes**: Negative. The non-pawn Zobrist key changes too frequently (every piece move) to build reliable correction statistics. The pawn hash works because pawn structure is stable — adding a volatile key dilutes the signal. Third correction history variant to fail. The pawn-hash-only approach is correct for our engine.
+
+### NNUE Net v3: 113M Positions (MERGED)
+- **Change**: New NNUE net trained from scratch on 112.7M positions (vs 70M for previous net). Includes ~1M "drunken" positions from games with blunders. 3-stage LR schedule: 0.01×8ep → 0.003×4ep → 0.001×4ep. Val loss: 0.127 (vs ~0.133 for old net).
+- **Result**: **H1 at 216 games, +56.8 Elo ±37.2, LOS 99.9%.** SPRT bounds: elo0=-5, elo1=15. Tested on separate 32-thread machine.
+- **Notes**: Biggest single Elo gain ever. Data volume (1.6x) was the key driver — suggests returns on data are far from exhausted. Low draw ratio (36.6%) indicates the net finds wins the old net couldn't. Priority should shift to data scaling for future gains.
