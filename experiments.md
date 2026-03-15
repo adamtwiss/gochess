@@ -1495,3 +1495,17 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 705911f (opp-material < 2 + bad-noisy merged)
 - **Source**: Bracket test of merged Bad Noisy Futility
 - **Notes**: Massive result — the original depth*50 margin was too conservative. With depth*75, the pruning fires much more frequently (a depth-4 capture is pruned when eval is 300cp below alpha instead of 200cp). Losing captures in positions that are 300cp below alpha are overwhelmingly futile. The SEE guard still ensures we only prune material-losing captures, so the wider eval gate is safe. Consider testing depth*100 as a further bracket.
+
+### Texel-Tuned Classical Eval (MERGED)
+- **Change**: All PST, eval, and pawn structure parameters optimized via Texel tuning on 125M positions (depth-10 rescored). ~1268 parameters updated.
+- **Result**: **H1 at 314 games, +33.3 Elo ±27.1, LOS 99.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: Current main (classical mode, `arg=-classical`)
+- **Source**: Texel tuner with Adam optimizer, 500 epochs, lambda=0.5
+- **Notes**: First complete Texel tune from the large rescored dataset. The classical eval was using manually-tuned PeSTO values; the optimized parameters are better calibrated. Changes are small per-square adjustments across all piece types and pawn structure bonuses, not structural changes. This gain is orthogonal to NNUE (only affects classical play and training data generation). The .tbin cache must be regenerated after this merge.
+
+### Bad Noisy Depth 6 — NOT DIRECTLY COMPARABLE
+- **Change**: Extend bad-noisy from depth≤4 to depth≤6, with margin depth*50 (vs current depth*75 at depth≤4).
+- **Result**: **H1 at 281 games, +37.2 Elo ±29.1, LOS 99.4%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: Pre-M75 merge base (old worktree). NOT directly comparable to current main.
+- **Source**: Pre-merge bracket test
+- **Notes**: Tested against an older baseline before the depth*75 merge. The current main has depth≤4/margin*75, while this tested depth≤6/margin*50 against the old depth≤4/margin*50 base. The +37.2 Elo gain is vs that old base, not vs current. Worth retesting depth≤6/margin*75 against current main to see if extending the depth range adds further value on top of the wider margin.
