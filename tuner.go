@@ -1872,6 +1872,36 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 		}
 	})
 
+	// Print diagnostic: score distribution from scoreFromTrace and game results
+	{
+		var minScore, maxScore float64
+		sumScore := 0.0
+		wins, draws, losses := 0, 0, 0
+		for i := range sample {
+			s := scoreFromTrace(&sample[i], t.Values)
+			if i == 0 || s < minScore {
+				minScore = s
+			}
+			if i == 0 || s > maxScore {
+				maxScore = s
+			}
+			sumScore += s
+			switch {
+			case sample[i].Result == 1.0:
+				wins++
+			case sample[i].Result == 0.5:
+				draws++
+			default:
+				losses++
+			}
+		}
+		fmt.Printf("  K diagnostic: %d samples, scores min=%.1f avg=%.1f max=%.1f\n",
+			len(sample), minScore, sumScore/float64(len(sample)), maxScore)
+		fmt.Printf("  Results: W=%d D=%d L=%d (%.1f%% decisive)\n",
+			wins, draws, losses,
+			float64(wins+losses)/float64(len(sample))*100)
+	}
+
 	// Always tune K against game results (not score targets).
 	// K maps eval scores to win probabilities — it only has meaning
 	// relative to a fixed target. With score-only targets, K cancels out.
