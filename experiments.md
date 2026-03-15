@@ -1318,7 +1318,159 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Source**: Next-phase plan item #3 (correction history retry with Zobrist keys)
 - **Notes**: Negative. The non-pawn Zobrist key changes too frequently (every piece move) to build reliable correction statistics. The pawn hash works because pawn structure is stable — adding a volatile key dilutes the signal. Third correction history variant to fail. The pawn-hash-only approach is correct for our engine.
 
+### Threat-Aware RFP (REJECTED)
+- **Change**: Widen RFP margin by 30cp per non-pawn piece under enemy pawn attack. When our pieces are threatened, the position is more volatile, so require a bigger eval surplus before pruning.
+- **Result**: **H0 at 402 games, -15.6 Elo ±22.8, LOS 9.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: b6ab0c9 (net v3 merged)
+- **Notes**: Widening the RFP margin for threatened positions makes it harder to prune, wasting search effort on nodes that should be cut. The base RFP margins are already well-calibrated — adding threat-based adjustments just makes them worse. Third threat-signal extension to fail (after threat-LMP and threat-futility). The threat signal is only useful for LMR modulation.
+
+### Threat-Aware Futility Pruning (REJECTED)
+- **Change**: Exempt moves that escape enemy pawn threats from futility pruning. If a quiet move's from-square is under pawn attack but to-square is not, skip the futility check.
+- **Result**: **H0 at 195 games, -35.8 Elo ±32.8, LOS 1.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: b6ab0c9 (net v3 merged)
+- **Notes**: Strongly negative. Exempting threat-escaping moves from futility pruning allows too many low-value moves through — most "escapes" aren't tactically important enough to justify the search cost. Similar lesson to threat-LMP: the threat signal is only useful for *modulating* search depth (LMR), not for *bypassing* pruning entirely.
+
+### IIR Extra Reduction for PV Nodes (REJECTED)
+- **Change**: When IIR triggers (no TT move, depth >= 4), apply an additional `depth--` for PV nodes. Theory: PV nodes without a TT move are especially suspect and benefit from deeper reduction.
+- **Result**: **H0 at 825 games, -5.5 Elo ±16.5, LOS 25.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: PV nodes need full depth more than other node types — they're on the principal variation. Extra IIR reduction loses the engine's ability to find good continuations. Combined with earlier IIR-deep2 failures, extra IIR beyond a single depth reduction is harmful.
+
+### LMR Check Reduction (REJECTED)
+- **Change**: Instead of skipping LMR for check-giving moves (`!givesCheck`), allow checks into LMR but give them `reduction--`. Theory: checks are important but not so important they should skip LMR entirely.
+- **Result**: **H0 at 362 games, -16.3 Elo ±23.4, LOS 8.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: Strongly negative. Checks deserve full LMR skip — they're tactical by nature and reducing them loses critical tactics. This aligns with the check extension failure (-11.2 Elo): the current "skip LMR for checks" is the correct calibration.
+
 ### NNUE Net v3: 113M Positions (MERGED)
 - **Change**: New NNUE net trained from scratch on 112.7M positions (vs 70M for previous net). Includes ~1M "drunken" positions from games with blunders. 3-stage LR schedule: 0.01×8ep → 0.003×4ep → 0.001×4ep. Val loss: 0.127 (vs ~0.133 for old net).
 - **Result**: **H1 at 216 games, +56.8 Elo ±37.2, LOS 99.9%.** SPRT bounds: elo0=-5, elo1=15. Tested on separate 32-thread machine.
 - **Notes**: Biggest single Elo gain ever. Data volume (1.6x) was the key driver — suggests returns on data are far from exhausted. Low draw ratio (36.6%) indicates the net finds wins the old net couldn't. Priority should shift to data scaling for future gains.
+
+### Correction History with Zobrist Keys v2 (REJECTED)
+- **Change**: Second attempt at correction history using `(hash ^ pawnHash) % corrHistSize` as the non-pawn key. Separate table blended with pawn correction.
+- **Result**: **H0 at 1385 games, -1.3 Elo ±12.5, LOS 42.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: Third correction history variant to fail (XOR bitboards: -11.8, Zobrist killed at -9.7, Zobrist v2: -1.3). The pawn-hash-only approach is correct for our engine. Non-pawn keys change too frequently to build reliable correction statistics. Do not revisit correction history unless the approach fundamentally changes (e.g., per-color separate tables, continuation-indexed).
+
+### ContHist2 Updates on Cutoff/Penalty v2 (REJECTED)
+- **Change**: Add contHistPtr2 (2-ply continuation history) to bonus/penalty updates on beta cutoffs and failed quiets. Second attempt.
+- **Result**: **H0 at 1331 games, -1.3 Elo ±12.7, LOS 42.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: Second attempt, same result as first (-7.5 Elo). The 2-ply continuation history signal is inherently too weak for reliable learning — the piece at ply-2 may have been captured, making the key stale. Read-only at half weight for LMR/pruning remains the correct approach. Do not revisit.
+
+### ProbCut MVV-LVA Ordering (REJECTED)
+- **Change**: Add MVV-LVA + captHist scoring with incremental selection sort to ProbCut capture iteration. Previously captures were iterated in generation order after SEE filter.
+- **Result**: **H0 at 474 games, -13.2 Elo ±21.8, LOS 11.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: ProbCut already filters by SEE >= margin, leaving very few captures (~2-3). Sorting overhead outweighs any ordering benefit. The SEE filter is sufficient — the first passing capture is almost always the best. Do not revisit.
+
+### Hindsight Reduction/Bonus (REJECTED)
+- **Change**: After LMR re-search, adjust newDepth based on eval trajectory. When reduction >= 2: if staticEval + parentEval > 0 (improving), newDepth++; if < 0 (declining), newDepth--. Stormphrax/Berserk/Tucano pattern.
+- **Result**: **H0 at 198 games, -35.2 Elo ±32.3, LOS 1.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: engine-notes/SUMMARY.md #8, 4 engines
+- **Notes**: Strongly negative despite 4-engine consensus. The eval sum heuristic may be too crude — staticEval + parentEval doesn't account for tempo or captures between plies. Also, the newDepth-- path (reduce further when declining) may over-prune positions where the engine needs to search harder to find a defense. Could retry with only the extension path (no reduction), or with a larger threshold than 0.
+
+### IIR in PV at Depth 2 (REJECTED)
+- **Change**: Apply Internal Iterative Reduction in PV nodes at depth >= 2 (previously only non-PV). When no TT move found in PV, reduce depth by 1.
+- **Result**: **H0 at 825 games, -5.5 Elo ±16.5, LOS 25.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: PV nodes without a TT move are rare and usually important positions where the engine needs full depth. Reducing depth here causes the PV to miss critical moves. IIR is correct for non-PV (saves search on unimportant lines) but harmful in PV. Second test of this idea (also -5.5 Elo at different bounds). Do not revisit.
+
+### Opponent-Threats Guard on RFP (REJECTED)
+- **Change**: Skip Reverse Futility Pruning when the opponent has a threatening move (detected via null move or TT). Prevents over-pruning in tactical positions.
+- **Result**: **H0 at 402 games, -15.6 Elo ±22.8, LOS 9.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: engine-notes/SUMMARY.md, Berserk/Minic pattern
+- **Notes**: The guard was triggered too frequently, effectively disabling RFP in many positions. RFP's margin already accounts for tactical risk implicitly. Adding explicit threat detection on top creates redundancy and loses efficiency. Guards against over-pruning work when they're rare (like our NMP threat bonus at +12.4 Elo) but not when they fire broadly.
+
+### Opponent-Threats Guard on Futility (REJECTED)
+- **Change**: Skip futility pruning when the opponent has a threatening move. Similar approach to Threat-RFP but applied to futility pruning gate.
+- **Result**: **H0 at 195 games, -35.8 Elo ±32.8, LOS 1.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: engine-notes/SUMMARY.md, Berserk/Minic pattern
+- **Notes**: Even worse than Threat-RFP. Futility pruning is the engine's most aggressive quiet-move pruning and disabling it for threats causes massive search tree explosion. The futility margin (100+d*100) is already well-calibrated. Threat-based guards on pruning are consistently negative for our engine — do not revisit this pattern.
+
+### Finny Tables — NNUE Accumulator Cache (REJECTED)
+- **Change**: Per-perspective, per-king-bucket accumulator cache (`[2][16]FinnyEntry`). On king bucket change, diff cached vs current features using sorted merge (O(n)) and apply deltas (~5 ops) instead of full recompute (~30 ops). Fast path (no cache hit) has zero overhead — identical to original code.
+- **Result**: **H0 at 702 games, -6.9 Elo ±17.6, LOS 22.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4bbcb7d (conthist 3x merged)
+- **Notes**: NPS gain was +0.5-1.5% in benchmarks but didn't translate to Elo. Early SPRT was misleadingly positive (+20.6 at 236 games). King bucket changes are rare enough that caching doesn't fire often, and when it does the accuracy of the diff'd accumulator may be slightly worse than a clean recompute due to int16 accumulation error. Not worth the complexity. Could revisit if architecture scales to 2x512+ where recompute cost is higher.
+
+### ProbCut QS Pre-Filter (REJECTED)
+- **Change**: Inside ProbCut capture loop, call quiescence search before the reduced-depth negamax. If QS already exceeds the ProbCut beta threshold, skip the expensive reduced-depth search entirely.
+- **Result**: **H0 at 177 games, -35.5 Elo ±32.6, LOS 1.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: Tucano pattern, experiment_queue Tier 1 #3
+- **Notes**: Strongly negative. QS is not a reliable filter for ProbCut — the QS score can differ significantly from the reduced-depth search score because QS only considers captures while ProbCut's reduced search also evaluates quiet moves. Using QS as a cheap pre-filter causes ProbCut to fire on positions where the full search would not confirm the cutoff, leading to incorrect pruning. The existing ProbCut implementation (reduced-depth search only) is correct.
+
+### Recapture Depth Reduction (REJECTED)
+- **Change**: When `!improving` and `staticEval + bestCaptureValue < alpha`, reduce depth by 1 before the main search. Theory: if our eval plus the best available capture still can't reach alpha, the position is hopeless and we can search shallowly.
+- **Result**: **H0 at 1197 games, -2.4 Elo ±13.7, LOS 36.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: Tucano pattern, experiment_queue Tier 1 #2
+- **Notes**: Flat-to-slightly-negative over ~1200 games. The condition fires in positions where the engine is already losing, so reducing depth there doesn't save meaningful time — those nodes are typically cut quickly by other pruning (RFP, futility, LMP). The depth reduction also risks missing tactical escapes in losing positions. Not harmful but not helpful either.
+
+### Score-Drop Time Extension — Aggressive Sigmoid (REJECTED)
+- **Change**: Replaced conservative time management scaling (1.4x/1.2x for score drops >50/>25) with aggressive Tucano-inspired scaling: 2.5x/2.0x/1.5x for drops ≥60/≥40/≥20. Also added score-stability tracking (3+ consecutive iterations with Δ≤10 → scale 0.7x to save time).
+- **Result**: **H0 at 1539 games, -0.5 Elo ±11.7, LOS 46.9%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: Tucano pattern, experiment_queue Tier 1 #1
+- **Notes**: Dead flat over 1500+ games. The more aggressive time allocation on score drops doesn't help because: (1) at 10+0.1s TC, the extra time from 2.5x scaling is still small in absolute terms, (2) the engine's existing TM already handles instability via best-move stability and the 1.4x scaling, (3) the 0.7x stable-score reduction may counteract the extensions. Our existing TM is well-calibrated for this TC. Aggressive time extension might help at longer TCs (60+0.6s) where the absolute time gain is larger.
+
+### Fail-High Extra Reduction at Cut-Nodes (REJECTED)
+- **Change**: In LMR, add `reduction++` when `staticEval - 200 > beta`. Theory: if static eval exceeds beta by 200+ centipawns, we're very likely to get a cutoff and can search more shallowly.
+- **Result**: **H0 at 955 games, -4.0 Elo ±15.1, LOS 30.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: Minic pattern, experiment_queue Tier 1 #4
+- **Notes**: Slightly negative. The engine already has effective cut-node handling via NMP (which prunes entire subtrees when eval >> beta) and RFP (which prunes at shallow depths). Adding an extra LMR reduction on top is redundant — the positions where eval-200 > beta are already being aggressively pruned. The extra reduction only fires on the few moves that survive other pruning, and reducing those further loses important tactical verification.
+
+### Complexity-Adjusted LMR (REJECTED)
+- **Change**: Compute `complexity = abs(staticEval - rawEval)` (correction history magnitude). When `complexity > 50`, reduce LMR by 1 (search more deeply in uncertain positions).
+- **Result**: **H0 at 530 games, -11.2 Elo ±20.5, LOS 14.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: Obsidian pattern, experiment_queue Tier 2 #6
+- **Notes**: Clearly negative. Reducing LMR in "complex" positions (high correction magnitude) fires too broadly and increases the search tree significantly without finding better moves. The correction history magnitude is not a reliable indicator of tactical complexity — it may be large due to positional evaluation errors that don't affect move ordering. LMR reductions are well-calibrated; blanket reduction decreases based on eval uncertainty are harmful.
+
+### Opponent Material LMR (MERGED)
+- **Change**: In LMR, add `reduction++` when opponent has fewer than 2 non-pawn pieces. In simplified endgame-like positions, there's less tactical potential, so quiet moves can be searched more shallowly.
+- **Result**: **H1 at 742 games, +18.5 Elo ±18.5, LOS 97.4%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged)
+- **Source**: Weiss pattern, experiment_queue Tier 2 #7
+- **Notes**: Strong result. When the opponent has ≤1 non-pawn piece, the position is simplified enough that quiet move alternatives are even less likely to be best — the engine can afford to search them more shallowly. This is a clean, principled LMR adjustment: material count is a reliable proxy for tactical complexity, unlike correction-history-based complexity measures which fire too broadly. Consider testing the opposite direction (reduction-- when opponent has many pieces) as a follow-up.
+
+### Castling Bonus in Quiet Scoring (REJECTED)
+- **Change**: Add a small bonus (+10) to quiet move scoring for castling moves, encouraging the move picker to try castling earlier in the quiet move ordering.
+- **Result**: **H0 at 567 games, -9.8 Elo ±19.7, LOS 16.4%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged, pre-opp-material merge)
+- **Source**: move_ordering_backlog, low-priority idea
+- **Notes**: Clearly negative. Castling is already handled well by the existing move ordering (history heuristic, PST). Adding a fixed bonus disrupts the learned ordering and can cause castling to be tried before more relevant quiet moves. The move picker's history-based approach is superior to static bonuses for non-forcing moves.
+
+### Opponent High-Material LMR Reduction-- (REJECTED)
+- **Change**: In LMR, add `reduction--` when opponent has ≥4 non-pawn pieces. The complement to the merged opp-material LMR (reduction++ when oppNonPawn < 2): search quiet moves more deeply when the opponent has many pieces (higher tactical complexity).
+- **Result**: **H0 at 307 games, -24.9 Elo ±27.5, LOS 3.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: opp-material-LMR merged (main + reduction++ for oppNonPawn < 2)
+- **Source**: Follow-up to Opponent Material LMR (Tier 2 #7)
+- **Notes**: Strongly negative. Reducing LMR in complex positions (many opponent pieces) massively increases the search tree. The existing LMR reduction table is well-calibrated for normal material counts — decreasing reductions broadly when the opponent has 4+ pieces causes too many quiet moves to be searched deeply, wasting time on irrelevant alternatives. The asymmetry makes sense: pruning MORE in simple positions (few pieces) is safe because there are fewer tactics, but pruning LESS in complex positions doesn't find better moves — it just searches more junk. The opp-material LMR benefit is one-directional.
+
+### Complexity-Aware RFP (REJECTED)
+- **Change**: Use correction history magnitude as a complexity proxy in Reverse Futility Pruning margin. When `abs(correctedEval - rawEval) > 50`, widen the RFP margin by 30cp (require more margin to prune in uncertain positions).
+- **Result**: **H0 at 1907 games, +0.5 Elo ±10.8, LOS 54.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged, pre-opp-material merge)
+- **Source**: Stormphrax pattern, experiment_queue Tier 2 #5
+- **Notes**: Dead flat over nearly 2000 games. The correction history magnitude doesn't provide useful signal for RFP margin adjustment. The existing RFP margin (85cp + 60cp×depth) is well-calibrated and the correction history correction already implicitly handles eval uncertainty by adjusting staticEval directly. Adding a second layer of uncertainty-based margin widening is redundant — the corrected eval already accounts for the positional patterns that correction history captures. RFP margins are fully bracketed.
+
+### Bad Noisy Futility (MERGED)
+- **Change**: Separate futility pruning for losing captures (SEE < 0). At depth ≤ 4, when `staticEval + depth*50 <= alpha` and the capture has negative SEE, prune it (unless it gives check). The SEE call is gated behind the cheap eval guard so it's only computed when the position already looks futile.
+- **Result**: **H1 at 1295 games, +11.8 Elo ±13.2, LOS 96.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged, pre-opp-material merge)
+- **Source**: Reckless pattern, experiment_queue Tier 2 #8
+- **Notes**: Strong result. Losing captures that don't even bring eval close to alpha are pure waste — they lose material AND the position is already bad. The existing futility pruning only covers quiets; this extends the concept to bad captures. The `depth*50` margin is tight (vs `80+80*depth` for quiet futility) because captures have a known material exchange that SEE evaluates. Guards: not in check, not TT move, not promotion, has bestScore, doesn't give check. The cheap eval guard prevents unnecessary SEE calls in most positions.
+
+### CMP/FMP — Per-Component Continuation History Pruning (REJECTED)
+- **Change**: In the history pruning section (depth ≤ 3), add per-component continuation history pruning: prune quiet moves when individual `contHist[piece][to] < -3000` or `contHist2[piece][to] < -3000`, even if the combined history score is above threshold.
+- **Result**: **H0 at 303 games, -21.8 Elo ±26.1, LOS 5.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 1c7bdc8 (code review fixes merged, pre-opp-material merge)
+- **Source**: Igel pattern, experiment_queue Tier 3 (CMP/FMP)
+- **Notes**: Strongly negative. Per-component pruning is too aggressive — individual continuation history components can be deeply negative for a specific piece-to pair while the combined score (main history + contHist + contHist2) is positive, indicating the move is still worth searching. Pruning based on a single negative component throws away moves that other history signals support. The combined-score approach in our existing history pruning (threshold: -2000×depth) is the correct granularity. Confirms the pattern: history-based pruning modifications have a ~8% success rate for our engine.
