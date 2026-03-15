@@ -172,7 +172,7 @@ During tuning, training data is streamed from the `.tbin` file in batches of 655
 | `-data` | `training.bin` | Training data file from step 1 (.bin) |
 | `-epochs` | 500 | Number of optimization epochs |
 | `-lr` | 1.0 | Learning rate |
-| `-lambda` | 1.0 | Result vs score weight: 1=result-only, 0=score-only |
+| `-lambda` | 0.0 | Result vs score weight: 0=score-only (default), 1=result-only |
 | `-l2` | 0 | L2 regularization strength toward initial values |
 
 #### Step 3: Apply tuned values
@@ -199,9 +199,25 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 - The tuner does not optimize endgame scale factors (multiplicative) or phase constants.
 - The `.tbin` cache is tied to the parameter catalog. If you add or remove tunable parameters, delete the `.tbin` file to force a rebuild.
 
+#### Additional tuner subcommands
+
+```bash
+# Rescore training data with deeper search (updates scores in-place)
+./tuner rescore -data training.bin -depth 10 -concurrency 8 -hash 512
+./tuner rescore -data training.bin -depth 8 -concurrency 4 -syzygy /path/to/tb
+
+# Shuffle training data in-place (Fisher-Yates on 32-byte records)
+./tuner shuffle -data training.bin
+
+# NNUE network utilities
+./tuner check-net -net net.nnue          # Health check (eval scale, dead neurons)
+./tuner compare-nets -net1 a.nnue -net2 b.nnue  # Compare two networks
+./tuner convert-net -input old.nnue -output new.nnue  # Convert between versions
+```
+
 ### NNUE Evaluation
 
-The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKA architecture: 12288 inputs (16 king buckets × 12 piece types × 64 squares), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→1 output. The hidden layer uses int8 quantized weights for doubled SIMD throughput. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
+The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKA architecture: 12288 inputs (16 king buckets × 12 piece types × 64 squares), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→8 output (8 material-based output buckets). The hidden layer uses int8 quantized weights for doubled SIMD throughput. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
 
 #### Training an NNUE network
 
@@ -226,7 +242,7 @@ This trains a quantized NNUE network from scratch. The loss function blends game
 | `-data` | `training.bin` | Training data file (.bin, must include scores) |
 | `-epochs` | 100 | Training epochs |
 | `-lr` | 0.01 | Learning rate |
-| `-lambda` | 0.5 | Blend between result (1.0) and score (0.0) targets |
+| `-lambda` | 0.0 | Blend between result (1.0) and score (0.0) targets |
 | `-K` | 400 | Sigmoid scaling constant |
 | `-output` | `net.nnue` | Output network file |
 | `-positions` | 0 | Limit training positions per epoch (0=use all) |

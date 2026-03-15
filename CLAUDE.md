@@ -32,6 +32,10 @@ cat a.bin b.bin > combined.bin                                               # C
 
 ./tuner rescore -data training.bin -depth 10 -concurrency 8 -hash 512        # Rescore .bin in-place
 ./tuner rescore -data training.bin -depth 8 -concurrency 4 -syzygy /path/to/tb  # Rescore with Syzygy
+./tuner shuffle -data training.bin                                            # Shuffle .bin in-place
+./tuner check-net -net net.nnue                                              # NNUE health check
+./tuner compare-nets -net1 a.nnue -net2 b.nnue                              # Compare two networks
+./tuner convert-net -input old.nnue -output new.nnue                         # Convert net versions
 
 ./chess -nnue net.nnue -uci                             # UCI with NNUE
 ./chess -syzygy /path/to/tablebases -uci                # UCI with Syzygy tablebases
@@ -90,6 +94,7 @@ book.go / polyglot.go  Polyglot opening book (build and load)
 uci.go               UCI protocol implementation
 cli.go               Interactive CLI engine
 selfplay.go          Self-play game generation for tuning data (binpack output)
+rescore.go           Rescore .bin training data with deeper search
 binpack.go           Fixed-size binary training data format (32 bytes/record, no header)
 tuner.go             Texel tuner: parameter catalog, traces, .tbin cache, Adam optimizer
 nnue.go              NNUE inference: HalfKA network, lazy accumulators, incremental updates
@@ -125,13 +130,13 @@ Pieces 1-12 (Empty=0). White 1-6 (Pawn..King), Black 7-12. Use `pieceOf(WhiteKni
 - `IsLegal(m, pinned, inCheck)` uses pin-aware fast paths; `PinnedAndCheckers()` called once per node
 
 ### Search Overview
-Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features: null-move pruning, reverse futility, futility, LMR, LMP, SEE pruning, ProbCut, history pruning, IIR, singular extensions, check/recapture/passed-pawn extensions. Quiescence with SEE filtering and evasion handling. Move ordering: TT move -> good captures -> killers -> counter-move -> quiets -> bad captures. History tables: main history, capture history, continuation history.
+Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features: null-move pruning, reverse futility, futility, LMR (separate quiet/capture tables, threat-aware adjustments), LMP, SEE pruning, ProbCut, history pruning, IIR, singular extensions, recapture extensions, alpha-reduce (reduce after alpha raise), failing heuristic (aggressive pruning when eval is deteriorating), fail-high score blending (dampen inflated cutoff scores). Quiescence with SEE filtering, evasion handling, and beta blending. Move ordering: TT move -> good captures -> killers -> counter-move -> quiets -> bad captures. History tables: main history, capture history, continuation history, pawn-hash correction history.
 
 ### Lazy SMP
 All threads share only the TT (lockless via XOR-verified packed atomics). Board, SearchInfo, pawn table, and NNUE accumulator stack are per-thread.
 
 ### NNUE
-HalfKA (12288 -> 2x256 -> 32 -> 32 -> 1). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. Lazy accumulator: MakeMove stores deltas, Materialize() applies on demand (saves ~17% NPS). King moves trigger full recompute. Hidden layer 1 (512→32) uses int8 quantized weights with VPMADDUBSW (AVX2) / SMULL+SADALP (NEON) for doubled throughput. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
+HalfKA (12288 -> 2x256 -> 32 -> 32 -> 8). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. 8 material-based output buckets. Lazy accumulator: MakeMove stores deltas, Materialize() applies on demand (saves ~17% NPS). King moves trigger full recompute. Hidden layer 1 (512→32) uses int8 quantized weights with VPMADDUBSW (AVX2) / SMULL+SADALP (NEON) for doubled throughput. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
 
 ### Training Data Formats
 - **Binpack** (`.bin`): Fixed-size 32-byte records, no file header. Stores packed board position (occupancy bitmap + piece nibbles), score (int16), result (uint8). Files can be concatenated with `cat`. Features extracted at training time. Block-shuffled reader (64KB = 2048 records/block) for efficient I/O.
