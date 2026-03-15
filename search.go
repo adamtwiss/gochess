@@ -1396,6 +1396,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		}
 
+		// Bad noisy flag: identify losing captures for tighter futility pruning.
+		// SEE is only called when the cheap guards (depth, eval) suggest pruning is possible.
+		isBadNoisy := false
+		if isCap && !inCheck && ply > 0 && depth <= 4 && move != ttMove &&
+			!move.IsPromotion() && bestScore > -MateScore+100 &&
+			staticEval > -Infinity && staticEval+depth*50 <= alpha {
+			isBadNoisy = !b.SEESign(move, 0)
+		}
+
 		b.MakeMove(move)
 
 		// Check extension: extend search by 1 ply when move gives check
@@ -1415,6 +1424,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 			givesCheck = checkSq[pt]&SquareBB(move.To()) != 0 ||
 				discoverers&SquareBB(move.From()) != 0
+		}
+
+		// Bad noisy futility: prune losing captures when eval is far below alpha.
+		// These captures lose material, so they need a bigger eval advantage to be worth searching.
+		if isBadNoisy && !givesCheck {
+			b.UnmakeMove(move)
+			continue
 		}
 
 		// Futility pruning: use estimated post-LMR depth for tighter margin
@@ -1561,6 +1577,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 				// Reduce more when TT move is a capture — quiet alternatives less likely to be good
 				if ttMoveNoisy {
+					reduction++
+				}
+
+				// Reduce more when opponent has few non-pawn pieces (simplified positions have less tactics)
+				opp := b.SideToMove ^ 1
+				oppNonPawn := (b.Pieces[pieceOf(WhiteKnight, opp)] | b.Pieces[pieceOf(WhiteBishop, opp)] |
+					b.Pieces[pieceOf(WhiteRook, opp)] | b.Pieces[pieceOf(WhiteQueen, opp)]).Count()
+				if oppNonPawn < 2 {
 					reduction++
 				}
 
