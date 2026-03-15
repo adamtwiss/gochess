@@ -1052,6 +1052,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	staticEval := -Infinity
 	rawEval := -Infinity
 	improving := false
+	failing := false
 	if !inCheck {
 		if ttHit && ttEntry.StaticEval > -MateScore+100 {
 			rawEval = int(ttEntry.StaticEval)
@@ -1069,6 +1070,12 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if ply >= 2 {
 			improving = staticEval > info.StaticEvals[ply-2]
 		}
+
+		// "Failing" heuristic: detect significant position deterioration.
+		// When eval has dropped well below 2-ply-ago eval, be more aggressive
+		// with reductions and pruning — our moves are being refuted.
+		failing = !inCheck && ply >= 2 && info.StaticEvals[ply-2] > -MateScore+100 &&
+			staticEval < info.StaticEvals[ply-2]-(60+40*depth)
 	} else {
 		if ply <= MaxPly {
 			info.StaticEvals[ply] = -Infinity
@@ -1436,6 +1443,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			if improving && depth >= 3 {
 				lmpLimit += lmpLimit / 2
 			}
+			if failing {
+				lmpLimit = lmpLimit * 2 / 3
+			}
 			if moveCount > lmpLimit {
 				info.LMPPrunes++
 				b.UnmakeMove(move)
@@ -1517,6 +1527,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// Reduce less when the position is improving (eval > eval 2 plies ago)
 				if improving {
 					reduction--
+				}
+
+				// Reduce more when position is deteriorating significantly
+				if failing {
+					reduction++
 				}
 
 				// Reduce less when eval is unstable (sharp swing from parent)
