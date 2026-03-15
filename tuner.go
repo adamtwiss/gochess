@@ -1872,11 +1872,39 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 		}
 	})
 
-	// Print diagnostic: score distribution from scoreFromTrace and game results
+	// Print diagnostic: score distribution, result stats, and score-result correlation
 	{
 		var minScore, maxScore float64
 		sumScore := 0.0
 		wins, draws, losses := 0, 0, 0
+		winScoreSum, lossScoreSum := 0.0, 0.0
+		// Bucket scores for correlation check
+		type bucket struct {
+			wins, draws, losses int
+		}
+		buckets := map[string]*bucket{}
+		getBucket := func(s float64) string {
+			switch {
+			case s < -500:
+				return "<-500"
+			case s < -200:
+				return "-500..-200"
+			case s < -50:
+				return "-200..-50"
+			case s < 50:
+				return "-50..50"
+			case s < 200:
+				return "50..200"
+			case s < 500:
+				return "200..500"
+			default:
+				return ">500"
+			}
+		}
+		for _, name := range []string{"<-500", "-500..-200", "-200..-50", "-50..50", "50..200", "200..500", ">500"} {
+			buckets[name] = &bucket{}
+		}
+
 		for i := range sample {
 			s := scoreFromTrace(&sample[i], t.Values)
 			if i == 0 || s < minScore {
@@ -1886,13 +1914,19 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 				maxScore = s
 			}
 			sumScore += s
+			b := buckets[getBucket(s)]
 			switch {
 			case sample[i].Result == 1.0:
 				wins++
+				winScoreSum += s
+				b.wins++
 			case sample[i].Result == 0.5:
 				draws++
+				b.draws++
 			default:
 				losses++
+				lossScoreSum += s
+				b.losses++
 			}
 		}
 		fmt.Printf("  K diagnostic: %d samples, scores min=%.1f avg=%.1f max=%.1f\n",
@@ -1900,6 +1934,23 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 		fmt.Printf("  Results: W=%d D=%d L=%d (%.1f%% decisive)\n",
 			wins, draws, losses,
 			float64(wins+losses)/float64(len(sample))*100)
+		if wins > 0 {
+			fmt.Printf("  Avg score in wins: %.1f, avg score in losses: %.1f\n",
+				winScoreSum/float64(wins), lossScoreSum/float64(losses))
+		}
+		fmt.Printf("  Score-result correlation by bucket:\n")
+		for _, name := range []string{"<-500", "-500..-200", "-200..-50", "-50..50", "50..200", "200..500", ">500"} {
+			b := buckets[name]
+			total := b.wins + b.draws + b.losses
+			if total == 0 {
+				continue
+			}
+			winPct := float64(b.wins) / float64(total) * 100
+			fmt.Printf("    %12s: n=%6d  W=%.1f%% D=%.1f%% L=%.1f%%\n",
+				name, total, winPct,
+				float64(b.draws)/float64(total)*100,
+				float64(b.losses)/float64(total)*100)
+		}
 	}
 
 	// Always tune K against game results (not score targets).
