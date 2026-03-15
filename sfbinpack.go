@@ -2218,10 +2218,17 @@ func (s *SFBinpackSource) Close() error {
 }
 
 // NewEpochReader creates a shuffle-buffered epoch reader.
+// File order is shuffled each epoch for better training diversity.
 func (s *SFBinpackSource) NewEpochReader(rng *rand.Rand, trainFraction float64) TrainingEpochReader {
 	trainPos := int(float64(s.totalPos) * trainFraction)
+	// Shuffle file order each epoch so training sees data in different sequences
+	shuffledPaths := make([]string, len(s.paths))
+	copy(shuffledPaths, s.paths)
+	rng.Shuffle(len(shuffledPaths), func(i, j int) {
+		shuffledPaths[i], shuffledPaths[j] = shuffledPaths[j], shuffledPaths[i]
+	})
 	return &sfBinpackEpochReader{
-		paths:    s.paths,
+		paths:    shuffledPaths,
 		rng:      rng,
 		bufSize:  s.bufSize,
 		trainPos: trainPos,

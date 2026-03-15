@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -367,11 +369,8 @@ func runNNUETrain(args []string) {
 		*dataFiles = "training.bin"
 	}
 
-	// Parse comma-separated file list
-	paths := strings.Split(*dataFiles, ",")
-	for i := range paths {
-		paths[i] = strings.TrimSpace(paths[i])
-	}
+	// Parse comma-separated file list, expanding globs
+	paths := expandDataPaths(*dataFiles)
 
 	// Create trainer
 	trainer := chess.NewNNUETrainer(*seed)
@@ -1007,6 +1006,42 @@ func runDumpBinpack(args []string) {
 }
 
 // allHaveExtension checks if all paths share the given extension.
+// expandDataPaths splits a comma-separated list of file paths, expanding any
+// glob patterns. Quote the argument to prevent shell expansion:
+//
+//	./tuner nnue-train -data "/training/sf/*.binpack"
+func expandDataPaths(dataFiles string) []string {
+	parts := strings.Split(dataFiles, ",")
+	var paths []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		// Check if path contains glob characters
+		if strings.ContainsAny(p, "*?[") {
+			matches, err := filepath.Glob(p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: invalid glob pattern %q: %v\n", p, err)
+				continue
+			}
+			if len(matches) == 0 {
+				fmt.Fprintf(os.Stderr, "Warning: glob %q matched no files\n", p)
+				continue
+			}
+			sort.Strings(matches)
+			paths = append(paths, matches...)
+		} else {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no data files found\n")
+		os.Exit(1)
+	}
+	return paths
+}
+
 func allHaveExtension(paths []string, ext string) bool {
 	for _, p := range paths {
 		if !strings.HasSuffix(strings.ToLower(p), ext) {
