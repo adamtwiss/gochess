@@ -1861,14 +1861,18 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 		sampleSize = maxSample
 	}
 
-	// Load sample into memory
+	// Load sample into memory. Deep-copy MG/EG slices since the streaming
+	// callback reuses backing arrays between batches.
 	sample := make([]TunerTrace, 0, sampleSize)
 	tf.streamRecords(0, sampleSize, streamBatchSize, func(batch []TunerTrace) {
 		for i := range batch {
 			if len(sample) >= sampleSize {
 				return
 			}
-			sample = append(sample, batch[i])
+			t := batch[i]
+			t.MG = append([]SparseEntry(nil), batch[i].MG...)
+			t.EG = append([]SparseEntry(nil), batch[i].EG...)
+			sample = append(sample, t)
 		}
 	})
 
