@@ -1849,18 +1849,59 @@ func sigmoid(score, K float64) float64 {
 }
 
 // TuneK finds the optimal scaling constant K by minimizing MSE on training data.
+// Uses a random sample of up to 1M records for speed — K is stable well below this.
 func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
+	// Sample up to 1M training records for K estimation
+	sampleSize := tf.NumTrain
+	const maxSample = 1_000_000
+	if sampleSize > maxSample {
+		sampleSize = maxSample
+	}
+
+	// Load sample into memory
+	sample := make([]TunerTrace, 0, sampleSize)
+	tf.streamRecords(0, sampleSize, streamBatchSize, func(batch []TunerTrace) {
+		for i := range batch {
+			if len(sample) >= sampleSize {
+				return
+			}
+			sample = append(sample, batch[i])
+		}
+	})
+
+	// Error function on the sample
+	sampleError := func(K float64) float64 {
+		totalErr := 0.0
+		for i := range sample {
+			score := scoreFromTrace(&sample[i], t.Values)
+			predicted := sigmoid(score, K)
+			target := sample[i].Result
+			if scoreBlend > 0 && sample[i].Score != 0 {
+				scoreTarget := sigmoid(float64(sample[i].Score), K)
+				target = (1-scoreBlend)*target + scoreBlend*scoreTarget
+			}
+			diff := target - predicted
+			totalErr += diff * diff
+		}
+		return totalErr / float64(len(sample))
+	}
+
 	// Golden section search for optimal K in [50, 800]
 	lo, hi := 50.0, 800.0
 	gr := (math.Sqrt(5) + 1) / 2
+	iter := 0
 
 	for hi-lo > 0.1 {
 		c := hi - (hi-lo)/gr
 		d := lo + (hi-lo)/gr
-		if t.ComputeTrainError(tf, c, scoreBlend) < t.ComputeTrainError(tf, d, scoreBlend) {
+		if sampleError(c) < sampleError(d) {
 			hi = d
 		} else {
 			lo = c
+		}
+		iter++
+		if iter%5 == 0 {
+			fmt.Printf("  K search: iter %d, range [%.1f, %.1f]\n", iter, lo, hi)
 		}
 	}
 	return (lo + hi) / 2
