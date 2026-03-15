@@ -38,6 +38,8 @@ func main() {
 		runRescore(os.Args[2:])
 	case "shuffle":
 		runShuffle(os.Args[2:])
+	case "dump-binpack":
+		runDumpBinpack(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -55,6 +57,7 @@ Commands:
   check-net    Health check: evaluate test positions and flag scale issues
   rescore      Re-search positions in a .bin file and update scores in-place
   shuffle      Fisher-Yates shuffle a .bin file in-place (32-byte records)
+  dump-binpack Decode and print chains from a Stockfish .binpack file
 
 Run 'tuner <command> -h' for command-specific options.
 `)
@@ -348,6 +351,7 @@ func runNNUETrain(args []string) {
 	useLAMB := fs.Bool("lamb", false, "use LAMB optimizer instead of plain Adam")
 	freezeHidden := fs.Bool("freeze-hidden", false, "only train output bucket weights (freeze input + hidden layers)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
+	bufferSize := fs.Int("buffer", 1000000, "shuffle buffer size for .binpack files (positions)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner nnue-train [options]\n\nOptions:\n")
@@ -355,6 +359,7 @@ func runNNUETrain(args []string) {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  tuner nnue-train -data training.bin -epochs 100 -lr 0.001\n")
 		fmt.Fprintf(os.Stderr, "  tuner nnue-train -data a.bin,b.bin -epochs 100 -lr 0.001\n")
+		fmt.Fprintf(os.Stderr, "  tuner nnue-train -data test80-2024-01.binpack -epochs 100 -lr 0.001  # Stockfish format\n")
 	}
 	fs.Parse(args)
 
@@ -437,26 +442,45 @@ func runNNUETrain(args []string) {
 		os.Exit(0)
 	}()
 
-	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss)
+	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss, *bufferSize)
 }
 
-func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64) {
-	bf, err := chess.OpenBinpackFiles(paths...)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening binpack files: %v\n", err)
-		os.Exit(1)
+func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64, bufferSize int) {
+	// Detect format by extension
+	var src chess.TrainingDataSource
+	if allHaveExtension(paths, ".binpack") {
+		sfSrc, err := chess.NewSFBinpackSource(paths, bufferSize)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening SF binpack files: %v\n", err)
+			os.Exit(1)
+		}
+		src = sfSrc
+		fmt.Printf("SF binpack data: %d total positions from %d file(s)\n", src.NumRecords(), len(paths))
+		for _, p := range paths {
+			stat, _ := os.Stat(p)
+			fmt.Printf("  %s (%.1f MB)\n", p, float64(stat.Size())/(1024*1024))
+		}
+		if bufferSize > 0 {
+			fmt.Printf("  Shuffle buffer: %d positions\n", bufferSize)
+		}
+	} else {
+		bf, err := chess.OpenBinpackFiles(paths...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening binpack files: %v\n", err)
+			os.Exit(1)
+		}
+		src = bf
+		fmt.Printf("Binpack data: %d total positions from %d file(s)\n", src.NumRecords(), len(paths))
+		for _, p := range paths {
+			stat, _ := os.Stat(p)
+			fmt.Printf("  %s (%.1f MB, %d positions)\n", p, float64(stat.Size())/(1024*1024), stat.Size()/chess.BinpackRecordSize)
+		}
 	}
-	defer bf.Close()
-
-	fmt.Printf("Binpack data: %d total positions from %d file(s)\n", bf.NumRecords(), len(paths))
-	for _, p := range paths {
-		stat, _ := os.Stat(p)
-		fmt.Printf("  %s (%.1f MB, %d positions)\n", p, float64(stat.Size())/(1024*1024), stat.Size()/chess.BinpackRecordSize)
-	}
+	defer src.Close()
 
 	if requestedK <= 0 {
 		fmt.Printf("\nTuning K (scaling constant)...\n")
-		actualK = trainer.TuneKBinpack(bf, cfg.Lambda)
+		actualK = trainer.TuneKBinpack(src, cfg.Lambda)
 		cfg.K = actualK
 		fmt.Printf("Using K = %.2f\n", actualK)
 	} else {
@@ -477,7 +501,7 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 
 	start := time.Now()
 	epochStart := time.Now()
-	trainer.TrainBinpack(bf, cfg, func(epoch int, trainLoss, valLoss float64) {
+	trainer.TrainBinpack(src, cfg, func(epoch int, trainLoss, valLoss float64) {
 		elapsed := time.Since(epochStart)
 		epochStart = time.Now()
 		marker := ""
@@ -959,3 +983,37 @@ func runShuffle(args []string) {
 	elapsed := time.Since(start)
 	fmt.Printf("\r  Done. Shuffled %d records in %v\n", n, elapsed.Round(time.Millisecond))
 }
+
+func runDumpBinpack(args []string) {
+	fs := flag.NewFlagSet("dump-binpack", flag.ExitOnError)
+	dataFile := fs.String("data", "", "Stockfish .binpack file to decode")
+	numChains := fs.Int("n", 5, "number of chains to dump")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: tuner dump-binpack [options]\n\nDecode and print chains from a Stockfish .binpack file for diagnostics.\n\nOptions:\n")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if *dataFile == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	if err := chess.DumpSFBinpack(*dataFile, *numChains); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// allHaveExtension checks if all paths share the given extension.
+func allHaveExtension(paths []string, ext string) bool {
+	for _, p := range paths {
+		if !strings.HasSuffix(strings.ToLower(p), ext) {
+			return false
+		}
+	}
+	return len(paths) > 0
+}
+
+// Ensure path package isn't needed — using strings.HasSuffix above.

@@ -1098,8 +1098,8 @@ func (trainer *NNUETrainer) LoadWeights(net *NNUENet) {
 	trainer.Net = DequantizeNetwork(net)
 }
 
-// TrainBinpack runs the NNUE training loop using binpack files directly.
-func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
+// TrainBinpack runs the NNUE training loop using any TrainingDataSource.
+func (trainer *NNUETrainer) TrainBinpack(src TrainingDataSource, cfg NNUETrainConfig,
 	onEpoch func(epoch int, trainLoss, valLoss float64)) {
 
 	trainer.useLAMB = cfg.UseLAMB
@@ -1120,7 +1120,7 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 	rng := rand.New(rand.NewSource(42))
 
 	// Pre-load validation samples once (reused across all epochs)
-	valSamples, _ := bf.ValidationSamples(trainFraction)
+	valSamples, _ := src.ValidationSamples(trainFraction)
 
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		// Check for early stop signal
@@ -1132,7 +1132,7 @@ func (trainer *NNUETrainer) TrainBinpack(bf *BinpackFile, cfg NNUETrainConfig,
 			}
 		}
 
-		reader := bf.NewEpochReader(rng, trainFraction)
+		reader := src.NewEpochReader(rng, trainFraction)
 		numTrain := reader.NumTrainRecords()
 		if cfg.MaxPositions > 0 && cfg.MaxPositions < numTrain {
 			numTrain = cfg.MaxPositions
@@ -1261,22 +1261,17 @@ func (trainer *NNUETrainer) computeValidationLossFromSamples(valSamples []*NNUET
 }
 
 // TuneKBinpack finds the optimal sigmoid scaling constant K using binpack files.
-func (trainer *NNUETrainer) TuneKBinpack(bf *BinpackFile, lambda float64) float64 {
-	// Sample up to 50K positions from the first file
-	sampleSize := bf.NumRecords()
+func (trainer *NNUETrainer) TuneKBinpack(src TrainingDataSource, lambda float64) float64 {
+	// Sample up to 50K positions using an epoch reader
+	sampleSize := src.NumRecords()
 	if sampleSize > 50000 {
 		sampleSize = 50000
 	}
 
-	// Read samples
-	samples := make([]*NNUETrainSample, 0, sampleSize)
-	for i := 0; i < sampleSize; i++ {
-		rec, err := bf.ReadRecord(i)
-		if err != nil {
-			continue
-		}
-		samples = append(samples, ExtractFeaturesFromBinpack(rec))
-	}
+	// Read samples via epoch reader (reads sequentially, works for all sources)
+	rng := rand.New(rand.NewSource(123))
+	reader := src.NewEpochReader(rng, 1.0)
+	samples, _ := reader.NextBatch(sampleSize, nil)
 
 	computeError := func(K float64) float64 {
 		totalLoss := 0.0
@@ -1312,7 +1307,7 @@ func (trainer *NNUETrainer) TuneKBinpack(bf *BinpackFile, lambda float64) float6
 		return totalLoss / float64(len(samples))
 	}
 
-	fmt.Printf("  Sampling %d/%d positions\n", len(samples), bf.NumRecords())
+	fmt.Printf("  Sampling %d/%d positions\n", len(samples), src.NumRecords())
 
 	// Golden section search
 	phi := (math.Sqrt(5) + 1) / 2

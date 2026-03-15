@@ -404,39 +404,6 @@ type blockRef struct {
 	numRecords int
 }
 
-// NewEpochReader creates a new block-shuffled reader for one training epoch.
-// trainFraction specifies what fraction of each file to use for training
-// (the rest is reserved for validation). Use 1.0 to read everything.
-func (bf *BinpackFile) NewEpochReader(rng *rand.Rand, trainFraction float64) *BinpackEpochReader {
-	reader := &BinpackEpochReader{
-		bf:  bf,
-		rng: rng,
-	}
-
-	// Build block list from all files
-	for fi, numRecs := range bf.fileSizes {
-		trainRecs := int(float64(numRecs) * trainFraction)
-		for start := 0; start < trainRecs; start += BinpackBlockSize {
-			count := BinpackBlockSize
-			if start+count > trainRecs {
-				count = trainRecs - start
-			}
-			reader.blocks = append(reader.blocks, blockRef{
-				fileIdx:    fi,
-				startRec:   start,
-				numRecords: count,
-			})
-		}
-	}
-
-	// Shuffle block order
-	rng.Shuffle(len(reader.blocks), func(i, j int) {
-		reader.blocks[i], reader.blocks[j] = reader.blocks[j], reader.blocks[i]
-	})
-
-	return reader
-}
-
 // NumTrainRecords returns the total number of training records this reader will yield.
 func (r *BinpackEpochReader) NumTrainRecords() int {
 	total := 0
@@ -523,5 +490,42 @@ func (bf *BinpackFile) ValidationSamples(trainFraction float64) ([]*NNUETrainSam
 	}
 
 	return samples, nil
+}
+
+// BinpackFile implements TrainingDataSource so it can be used interchangeably
+// with SFBinpackSource in the training pipeline.
+
+// NewEpochReader wraps the existing block-shuffled reader to satisfy TrainingDataSource.
+func (bf *BinpackFile) NewEpochReader(rng *rand.Rand, trainFraction float64) TrainingEpochReader {
+	return bf.NewBlockEpochReader(rng, trainFraction)
+}
+
+// NewBlockEpochReader creates a block-shuffled reader (original NewEpochReader logic).
+func (bf *BinpackFile) NewBlockEpochReader(rng *rand.Rand, trainFraction float64) *BinpackEpochReader {
+	reader := &BinpackEpochReader{
+		bf:  bf,
+		rng: rng,
+	}
+
+	for fi, numRecs := range bf.fileSizes {
+		trainRecs := int(float64(numRecs) * trainFraction)
+		for start := 0; start < trainRecs; start += BinpackBlockSize {
+			count := BinpackBlockSize
+			if start+count > trainRecs {
+				count = trainRecs - start
+			}
+			reader.blocks = append(reader.blocks, blockRef{
+				fileIdx:    fi,
+				startRec:   start,
+				numRecords: count,
+			})
+		}
+	}
+
+	rng.Shuffle(len(reader.blocks), func(i, j int) {
+		reader.blocks[i], reader.blocks[j] = reader.blocks[j], reader.blocks[i]
+	})
+
+	return reader
 }
 
