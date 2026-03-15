@@ -1850,6 +1850,9 @@ func sigmoid(score, K float64) float64 {
 
 // TuneK finds the optimal scaling constant K by minimizing MSE on training data.
 // Uses a random sample of up to 1M records for speed — K is stable well below this.
+// When scoreBlend=1.0 (score-only target), K is tuned against game results instead,
+// since wrapping both target and prediction in the same sigmoid lets K trivially
+// minimize error by flattening everything to 0.5.
 func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 	// Sample up to 1M training records for K estimation
 	sampleSize := tf.NumTrain
@@ -1869,17 +1872,15 @@ func (t *Tuner) TuneK(tf *TraceFile, scoreBlend float64) float64 {
 		}
 	})
 
-	// Error function on the sample
+	// Always tune K against game results (not score targets).
+	// K maps eval scores to win probabilities — it only has meaning
+	// relative to a fixed target. With score-only targets, K cancels out.
 	sampleError := func(K float64) float64 {
 		totalErr := 0.0
 		for i := range sample {
 			score := scoreFromTrace(&sample[i], t.Values)
 			predicted := sigmoid(score, K)
 			target := sample[i].Result
-			if scoreBlend > 0 && sample[i].Score != 0 {
-				scoreTarget := sigmoid(float64(sample[i].Score), K)
-				target = (1-scoreBlend)*target + scoreBlend*scoreTarget
-			}
 			diff := target - predicted
 			totalErr += diff * diff
 		}
