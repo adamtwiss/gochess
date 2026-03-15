@@ -1,102 +1,116 @@
 # Active TODO
 
 ## NNUE Training (in progress)
-* Rescoring 24M d10 positions at depth 8 with classical eval (~7h, running on hercules)
-* Once rescored: train v4 net with MSE lambda=0 on classical-scored data
-* Retune search thresholds (RFP, futility, razoring, aspiration, etc.) for correct eval scale
-* Evaluate 8-bucket vs single-output once net is mature
 * Consider 2x512 hidden layer upgrade after v4 buckets are proven
 
 ## Training Data Pipeline
-* Build more classical-scored training data (target 50-80M positions)
-* Consider diverse position generation: FRC starts, random piece removal, random move injection
+* New Texel run with extra data
 * Future: self-distillation cycle (rescore with well-calibrated NNUE, retrain)
 
 ## Testing
-* Gauntlet vs external engines (~3500: Wasp, Ethereal, Caissa, Midnight, etc.)
 * Review ARM/NEON performance on Macbook (jupiter A55 is slow but that's a phone CPU)
 
 ## Infrastructure
 * Finish Distributed SPRT framework
-* Move net files to git LFS?
+* Move net files to git LFS or some other means (AWS bucket?)
 
 ## Search Ideas (untested, from backlog)
-* contHist2 updates on cutoff/penalty
-* LMR reduction-- for checks instead of skip
-* ProbCut MVV-LVA ordering
-See memory/move_ordering_backlog.md for full list
-
-
+ See memory/move_ordering_backlog.md for full list
 
 
 
 Key commands:
 
 * Titan Self play cmd:  
-     nohup ./tuner selfplay -games 1000000 -depth 10 -concurrency 32 -output /training/d10/training-titan-20260311.bin -syzygy /tablebases &
+     nohup ./tuner selfplay -games 1000000 -depth 10 -concurrency 32 -output /training/d10/training-titan-20260311.bin -syzygy /tablebases -classical &
+   with blunders:
+     ./tuner selfplay -games 50000 -depth 8 -concurrency 32 -blunder-rate 0.15 -output /training/d8/blunders.bin -classical 
 * Rescoring: 
     ./tuner rescore -data /training/d8/old100ms.bin -depth 8 -concurrency 16 -classical
+* NNUE training (LR = 0.01->0.003->0.001)
+   ./tuner nnue-train -data /training/d8/current.bin -epochs 10 -lr 0.001 -lambda 0 -output net-v4-class2.nnue -batch 131072 -resume net-v4-class2.nnue
+
+
+
+Latest Tune output:
+
+./tune.sh
+Binpack data: 112683585 total positions from 1 file(s)
+  /training/d8/current2.bin (3438.8 MB, 112683585 positions)
+
+Using K = 400.00 (sigmoid scaling)
+
+Training NNUE: epochs=8 lr=0.0100 batch=131072 lambda=0.00 loss=MSE-cp
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+info string warning: 1/16384 hidden weights clamped to int8 range
+1         0.21902859      0.15525635      15m9.571s *best
+info string warning: 8/16384 hidden weights clamped to int8 range
+2         0.14771312      0.14492222      14m58.004s *best
+info string warning: 25/16384 hidden weights clamped to int8 range
+3         0.13988067      0.14408197      14m49.778s *best
+info string warning: 54/16384 hidden weights clamped to int8 range
+4         0.13552056      0.13937333      14m57.897s *best
+info string warning: 82/16384 hidden weights clamped to int8 range
+5         0.13235625      0.13585937      14m52.627s *best
+info string warning: 93/16384 hidden weights clamped to int8 range
+6         0.13004022      0.13484466      14m53.643s *best
+info string warning: 106/16384 hidden weights clamped to int8 range
+7         0.12815737      0.13369920      14m52.148s *best
+info string warning: 117/16384 hidden weights clamped to int8 range
+8         0.12651738      0.13321406      14m54.58s *best
+
+Training completed in 1h59m28s
+info string warning: 117/16384 hidden weights clamped to int8 range
+Final network saved to net2.nnue (6.0 MB)
+Best val loss at epoch 8 (saved to net2.nnue.best)
+info string warning: 117/16384 hidden weights clamped to int8 range
+info string NNUE fingerprint 9926e120bbbdfaed from net2.nnue
+Resumed weights from net2.nnue
+Binpack data: 112683585 total positions from 1 file(s)
+  /training/d8/current2.bin (3438.8 MB, 112683585 positions)
+
+Using K = 400.00 (sigmoid scaling)
+
+Training NNUE: epochs=4 lr=0.0030 batch=131072 lambda=0.00 loss=MSE-cp
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+info string warning: 133/16384 hidden weights clamped to int8 range
+1         0.11995287      0.12907498      14m40.95s *best
+info string warning: 140/16384 hidden weights clamped to int8 range
+2         0.11788143      0.12879537      14m32.429s *best
+info string warning: 148/16384 hidden weights clamped to int8 range
+3         0.11703455      0.12838357      14m36.527s *best
+info string warning: 150/16384 hidden weights clamped to int8 range
+4         0.11623768      0.12818316      14m31.888s *best
+
+Training completed in 58m22s
+info string warning: 150/16384 hidden weights clamped to int8 range
+Final network saved to net2.nnue (6.0 MB)
+Best val loss at epoch 4 (saved to net2.nnue.best)
+info string warning: 150/16384 hidden weights clamped to int8 range
+info string NNUE fingerprint 9926e120bbbdfaff from net2.nnue
+Resumed weights from net2.nnue
+Binpack data: 112683585 total positions from 1 file(s)
+  /training/d8/current2.bin (3438.8 MB, 112683585 positions)
+
+Using K = 400.00 (sigmoid scaling)
+
+Training NNUE: epochs=4 lr=0.0010 batch=131072 lambda=0.00 loss=MSE-cp
+Epoch     Train Loss      Val Loss        Time
+-----     ----------      --------        ----
+info string warning: 155/16384 hidden weights clamped to int8 range
+1         0.11356271      0.12707856      14m44.644s *best
+info string warning: 159/16384 hidden weights clamped to int8 range
+2         0.11292152      0.12691067      14m31.635s *best
+info string warning: 163/16384 hidden weights clamped to int8 range
+3         0.11249181      0.12674518      14m33.315s *best
+info string warning: 168/16384 hidden weights clamped to int8 range
+4         0.11208332      0.12659203      14m36.655s *best
+
+
 
 # Work Ideas:
-
-
-## Retune after fixing NNUE scale
-
-
-  High Impact (margins scale linearly with eval)
-
-  ┌──────────────────┬─────────────────────┬─────────────────────────────────────────────┐
-  │    Threshold     │       Current       │                What it does                 │
-  ├──────────────────┼─────────────────────┼─────────────────────────────────────────────┤
-  │ RFP margin       │ depth×85 / depth×60 │ Prune if eval exceeds beta by this much     │
-  ├──────────────────┼─────────────────────┼─────────────────────────────────────────────┤
-  │ Futility         │ 100 + lmrDepth×100  │ Prune quiet moves when losing by this much  │
-  ├──────────────────┼─────────────────────┼─────────────────────────────────────────────┤
-  │ Razoring         │ 400 + depth×100     │ Drop to QS when losing badly                │
-  ├──────────────────┼─────────────────────┼─────────────────────────────────────────────┤
-  │ ProbCut          │ beta + 200          │ Skip positions winning by a lot             │
-  ├──────────────────┼─────────────────────┼─────────────────────────────────────────────┤
-  │ NMP eval divisor │ /200                │ Extra null-move reduction per cp above beta │
-  ├──────────────────┼─────────────────────┼─────────────────────────────────────────────┤
-  │ Aspiration delta │ 15                  │ Initial search window width                 │
-  └──────────────────┴─────────────────────┴─────────────────────────────────────────────┘
-
-  Medium Impact (thresholds in cp space)
-
-  ┌────────────────────┬────────────┬────────────────────────────────────┐
-  │     Threshold      │  Current   │            What it does            │
-  ├────────────────────┼────────────┼────────────────────────────────────┤
-  │ SEE capture        │ -depth×100 │ Prune bad captures                 │
-  ├────────────────────┼────────────┼────────────────────────────────────┤
-  │ SEE quiet          │ -20×depth² │ Prune bad quiet moves              │
-  ├────────────────────┼────────────┼────────────────────────────────────┤
-  │ Singular margin    │ depth×3    │ How much worse other moves must be │
-  ├────────────────────┼────────────┼────────────────────────────────────┤
-  │ Eval instability   │ 200cp      │ Triggers wider QS SEE threshold    │
-  ├────────────────────┼────────────┼────────────────────────────────────┤
-  │ Delta pruning (QS) │ +200       │ QS futility margin                 │
-  ├────────────────────┼────────────┼────────────────────────────────────┤
-  │ Contempt           │ 10         │ Draw avoidance penalty             │
-  └────────────────────┴────────────┴────────────────────────────────────┘
-
-  Time Management (in cp, medium impact)
-
-  ┌──────────────────────┬──────────────┬───────────────────────────────────────┐
-  │      Threshold       │   Current    │             What it does              │
-  ├──────────────────────┼──────────────┼───────────────────────────────────────┤
-  │ Score delta stable   │ ≤10cp        │ Reduce time when score barely changes │
-  ├──────────────────────┼──────────────┼───────────────────────────────────────┤
-  │ Score delta volatile │ >25cp, >50cp │ Extend time when score swings         │
-  └──────────────────────┴──────────────┴───────────────────────────────────────┘
-
-  Low Impact (not eval-dependent)
-
-  LMR C=1.5, LMP 3+d², history -2000×depth, captHist -2000 — these are move-count or history-score based, not directly
-  cp-dependent.
-
-  That's roughly 12-15 thresholds to retune. The good news: they're all independent 1-line changes we can SPRT in
-  parallel. The RFP, futility, and razoring margins are the most impactful — if the eval scale is ~3-5x larger with
-  correct calibration, those margins need to scale proportionally.
 
 
 
@@ -183,53 +197,45 @@ But value of positions decays after a while.
     -pgnout gauntlet.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
 
- 
- cutechess-cli \
+## new Sparring partners
+cutechess-cli \
     -tournament gauntlet \
-    -engine name=GoChess cmd=./chess arg=-syzygy arg=/tablebases proto=uci \
-    -engine name=GoChess-classic cmd=./chess arg=-classical proto=uci arg=-syzygy arg=/tablebases \
-    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
-    -engine name=Rodent3 cmd=rodentIII  proto=uci \
+    -engine name=GoChess cmd=./chess  arg=-syzygy arg=/tablebases proto=uci \
     -engine name=Crafty cmd=./crafty dir=/home/adam/chess/engines/crafty proto=xboard \
     -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
-    -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
+    -engine name=Demolito cmd=~/chess/engines/Demolito/src/demolito proto=uci \
+    -engine name=Monolith cmd=~/chess/engines/Monolith/Source/Monolith proto=uci \
+    -engine name=Pounce cmd=/home/adam/.cargo/bin/pounce proto=uci \
+    -engine name=Laser cmd=~/chess/engines/laser-chess-engine/src/laser proto=uci \
     -each tc=0/10+0.1  \
-    -rounds 100 -concurrency 16 \
-    -openings file=testdata/noob_3moves.epd format=epd order=random \
-    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
-    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
- 
-  cutechess-cli \
-    -tournament gauntlet \
-    -engine name=GoChess cmd=./chess arg=-syzygy arg=/tablebases proto=uci \
-    -engine name=Midnight cmd=~/chess/engines/MidnightChessEngine/midnight proto=uci \
-    -each tc=0/10+0.1  \
-    -rounds 200 -concurrency 16 \
+    -rounds 200 -concurrency 32 \
     -openings file=testdata/noob_3moves.epd format=epd order=random \
     -pgnout gauntlet.pgn -recover -ratinginterval 20 \
     -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
 
-
-## Round Robin
 
 cutechess-cli \
-    -engine name=GoChess cmd=./chess  arg=-syzygy arg=/tablebases proto=uci \
+    -tournament gauntlet \
+    -engine name=GoChess cmd=~/code/gochess/chess  arg=-syzygy arg=/tablebases proto=uci \
+    -engine name=Altair cmd=~/chess/engines/AltairChessEngine/Altair proto=uci \
+    -engine name=Igel cmd=~/chess/engines/igel/igel proto=uci \
+    -engine name=Reckless cmd=~/chess/engines/Reckless/reckless proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 200 -concurrency 8 \
+    -openings file=~/code/gochess/testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true    
+ 
+ ## Massive RR
+ cutechess-cli \
+    -engine name=GoChess cmd=./chess arg=-syzygy arg=/tablebases proto=uci \
     -engine name=GoChess-classic cmd=./chess arg=-classical proto=uci arg=-syzygy arg=/tablebases \
     -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
     -engine name=Rodent3 cmd=rodentIII  proto=uci \
     -engine name=Crafty cmd=./crafty dir=/home/adam/chess/engines/crafty proto=xboard \
     -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
     -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
-    -each tc=0/10+0.1  \
-    -rounds 50 -concurrency 32 \
-    -openings file=testdata/noob_3moves.epd format=epd order=random \
-    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
-    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
-
-
-## Other Engines (excluded as too strong/good)
-
-~3500+
+    -engine name=Tucano cmd=./tucano_sse4 dir=/home/adam/chess/engines/Tucano/src proto=uci \
     -engine name=Wasp cmd=./wasp dir=/home/adam/chess/engines/wasp proto=uci \
     -engine name=Arasan cmd=~/chess/engines/arasan-chess/bin/arasanx-64 proto=uci \
     -engine name=Ethereal cmd=~/chess/engines/Ethereal/src/Ethereal proto=uci \
@@ -238,16 +244,42 @@ cutechess-cli \
     -engine name=Midnight cmd=~/chess/engines/MidnightChessEngine/midnight proto=uci \
     -engine name=Texel cmd=~/chess/engines/texel/build/texel proto=uci \
     -engine name=Caissa cmd=~/chess/engines/Caissa/src/caissa proto=uci \
+    -engine name=Koivisto cmd=~/chess/engines/Koivisto/bin/Koivisto_9.2-linux proto=uci \
+    -engine name=Stormphrax cmd=~/chess/engines/Stormphrax/stormphrax-7.0.70-native proto=uci \
+    -engine name=Seer cmd=~/chess/engines/seer-nnue/build/seer proto=uci \
+    -engine name=Minic cmd=~/chess/engines/Minic/Dist/Minic3/minic_dev_linux_x64 proto=uci \
+    -engine name=Rubichess cmd=~/chess/engines/RubiChess/src/RubiChess proto=uci \
+    -engine name=Demolito cmd=~/chess/engines/Demolito/src/demolito proto=uci \
+    -engine name=Monolith cmd=~/chess/engines/Monolith/Source/Monolith proto=uci \
+    -engine name=Pounce cmd=/home/adam/.cargo/bin/pounce proto=uci \
+    -engine name=Berserk dir=~/chess/engines/berserk-13/src cmd=./berserk proto=uci \
+    -engine name=Obsidian cmd=~/chess/engines/Obsidian/Obsidian proto=uci \
+    -engine name=BlackMarlin cmd=~/chess/engines/blackmarlin/blackmarlin proto=uci \
+    -engine name=Weiss cmd=~/chess/engines/weiss/src/weiss proto=uci \
+    -engine name=Altair cmd=~/chess/engines/AltairChessEngine/Altair proto=uci \
+    -engine name=Igel cmd=~/chess/engines/igel/igel proto=uci \
+    -engine name=Reckless cmd=~/chess/engines/Reckless/reckless proto=uci \
+    -each tc=0/10+0.1  \
+    -rounds 10 -concurrency 32 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout gauntlet.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 -resign movecount=3 score=500 twosided=true
+ 
 
-Sparring Partners:
-    -engine name=GoChess cmd=./chess  arg=-syzygy arg=/tablebases proto=uci \
-    -engine name=GoChess-classic cmd=./chess arg=-classical proto=uci arg=-syzygy arg=/tablebases \
-    -engine name=GnuChess cmd=gnuchessu dir=/usr/share/games/gnuchess proto=uci \
-    -engine name=Rodent3 cmd=rodentIII  proto=uci \
-    -engine name=Crafty cmd=./crafty dir=/home/adam/chess/engines/crafty proto=xboard \
-    -engine name=ExChess cmd=./exchess dir=/home/adam/chess/engines/exchess proto=xboard \
-    -engine name=Greko cmd=./GreKo-Linux-64 dir=/home/adam/chess/engines/greko-2021.12/bin proto=uci \
-    -engine name=Pounce cmd=/home/adam/.cargo/bin/pounce proto=uci 
+  # net test
+  cutechess-cli \
+    -engine name=NewNet3 cmd=./chess proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net3.nnue   \
+    -engine name=NewNet2 cmd=./chess proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net2.nnue   \
+    -engine name=DefaultNet cmd=./chess proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net.nnue  \
+    -each tc=0/10+0.1 \
+    -rounds 5000 -concurrency 32 \
+    -openings file=testdata/noob_3moves.epd format=epd order=random \
+    -pgnout sprt_net.pgn -recover -ratinginterval 20 \
+    -draw movenumber=20 movecount=10 score=10 \
+    -resign movecount=3 score=500 twosided=true
+
+
+
 
 
 Osprey (too weak)
@@ -432,15 +464,99 @@ Rank Name                          Elo     +/-   Games   Score    Draw
    7 GnuChess                     -275      47     300   17.0%   12.0%
 
 
-## H2H comparisons versus other engines 
+# March 14th (ran on atlas) - post v4 re-tuning
+
+## Ususal Suspects
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                       121      18    1200   66.7%   22.6%
+   1 Crafty                        -33      44     200   45.3%   18.5%
+   2 Rodent3                       -35      41     200   45.0%   28.0%
+   3 ExChess                       -54      40     200   42.3%   31.5%
+   4 GoChess-classic              -147      44     200   30.0%   27.0%
+   5 Greko                        -228      51     200   21.3%   18.5%
+   6 GnuChess                     -288      59     200   16.0%   12.0%
+
+## Every Engine
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   1 Obsidian                      365      48     270   89.1%   19.6%
+   2 Berserk                       328      46     270   86.9%   21.1%
+   3 Caissa                        320      47     270   86.3%   19.3%
+   4 Rubichess                     284      41     270   83.7%   25.9%
+   5 Koivisto                      251      42     270   80.9%   23.3%
+   6 Stormphrax                    249      40     270   80.7%   26.7%
+   7 Seer                          207      39     270   76.7%   25.9%
+   8 BlackMarlin                   150      38     270   70.4%   25.2%
+   9 Arasan                        140      38     270   69.1%   24.1%
+  10 Wasp                           92      38     270   63.0%   22.2%
+  11 Tucano                         72      37     270   60.2%   21.1%
+  12 Winter                         60      37     270   58.5%   23.7%
+  13 Midnight                       48      37     270   56.9%   22.6%
+  14 Weiss                          43      37     270   56.1%   22.6%
+  15 Minic                          26      37     270   53.7%   20.7%
+  16 Texel                           5      37     270   50.7%   20.0%
+  17 Ethereal                        1      38     270   50.2%   18.1%
+  18 Laser                         -53      39     270   42.4%   15.2%
+  19 Demolito                     -108      41     270   35.0%   11.5%
+  20 Monolith                     -193      46     270   24.8%    8.1%
+  21 GoChess                      -225      46     270   21.5%   11.9%
+  22 Crafty                       -225      48     270   21.5%    8.9%
+  23 ExChess                      -245      49     270   19.6%    9.6%
+  24 Rodent3                      -291      53     270   15.7%    8.5%
+  25 GoChess-classic              -304      55     270   14.8%    6.7%
+  26 Pounce                       -306      55     270   14.6%    7.8%
+  27 Greko                        -368      63     270   10.7%    5.9%
+  28 GnuChess                     -469      81     270    6.3%    4.4%
+
+## H2Hs vs closest rivals above us:
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                      -173      25     600   27.0%   29.0%
+   1 Laser                         263      50     200   82.0%   22.0%
+   2 Demolito                      207      43     200   76.8%   30.5%
+   3 Monolith                       72      39     200   60.3%   34.5%
+
+## H2H after further engine review inspired ideas
+
+## H2H comparisons versus other closely matched engines 
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                         5      19    1000   50.7%   20.2%
+   1 Demolito                      260      54     200   81.8%   16.5%
+   2 Monolith                       44      42     200   56.3%   26.5%
+   3 Pounce                        -76      42     200   39.3%   25.5%
+   4 Crafty                        -85      46     200   38.0%   14.0%
+   5 ExChess                      -137      46     200   31.3%   18.5%
+
+15th March - new model + couple more SPRT changes:
+
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                        38      19    1000   55.5%   23.2%
+   1 Demolito                      145      43     200   69.8%   29.5%
+   2 Monolith                       28      43     200   54.0%   20.0%
+   3 Crafty                       -109      45     200   34.8%   20.5%
+   4 ExChess                      -119      44     200   33.5%   25.0%
+   5 Pounce                       -143      46     200   30.5%   21.0%
+
+rematch + laser added .
+ 
+Rank Name                          Elo     +/-   Games   Score    Draw
+   0 GoChess                        -8      17    1200   48.8%   20.9%
+   1 Laser                         301      55     200   85.0%   18.0%
+   2 Demolito                      200      46     200   76.0%   26.0%
+   3 Monolith                      -12      42     200   48.3%   25.5%
+   4 ExChess                      -104      45     200   35.5%   19.0%
+   5 Pounce                       -133      46     200   31.8%   19.5%
+   6 Crafty                       -141      47     200   30.8%   17.5%
+
 
 Ratings of other engines are based on CCRL (40 moves in 15 mins). Ponder off
 
 Wasp 3460          # We get hammered!
-GoChess (3120)           
-Rodent 3107        # H2H we score about +14   -> 3120
-Crafty 3040        # H2H we score about +12   ->  3052
-ExChess 2994       # H2H we score about +49   ->  3045
-Greko  2787        # H2H we score about +160   -> 2970
-GNU chess  2824    # H2H we score about +250   -> 3070
-Osprey XXXX        # H2H we were about +800
+GoChess (3120)  
+Monolith 3114      # H2H prett level           -> 3114         
+Rodent 3107        # H2H we score about +100   -> 3200
+Pounce 3185        # H2H we are +135           -> 3300 
+Crafty 3040        # H2H we score about +140   ->  3280
+ExChess 2994       # H2H we score about +110   ->  3100
