@@ -1758,6 +1758,21 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 			resultU8 = 1
 		}
 
+		// Filter: skip positions with extreme scores or in check
+		if plyScore > 3000 || plyScore < -3000 {
+			// Still need to apply move to keep position tracking correct
+			if i < numPlies-1 {
+				applySfMoveFromOurMove(pos, m)
+			}
+			continue
+		}
+		if board != nil && board.InCheck() {
+			if i < numPlies-1 {
+				applySfMoveFromOurMove(pos, m)
+			}
+			continue
+		}
+
 		// Extract features for this position
 		sample := pos.extractFeatures(plyScore, resultU8)
 		samples = append(samples, sample)
@@ -1912,8 +1927,14 @@ func (r *SFBinpackReader) Next() (*NNUETrainSample, error) {
 			// ply at entry[4:6] — unused
 			result := uint8(int16(binary.LittleEndian.Uint16(entry[6:8])))
 
+			// Filter: skip positions with extreme scores or in check
+			skip := score > 3000 || score < -3000
+
 			// Extract features from current position (before applying this entry's move)
-			sample := r.pos.extractFeatures(score, result)
+			var sample *NNUETrainSample
+			if !skip {
+				sample = r.pos.extractFeatures(score, result)
+			}
 
 			// Apply move to advance to next position
 			r.chainLeft--
@@ -1923,6 +1944,9 @@ func (r *SFBinpackReader) Next() (*NNUETrainSample, error) {
 				}
 			}
 
+			if skip {
+				continue // loop to next chain entry
+			}
 			return sample, nil
 		}
 
