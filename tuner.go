@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // TunerParam describes a single tunable parameter.
@@ -680,33 +681,91 @@ func PreprocessBinToFile(t *Tuner, inputBin, outputBin string) error {
 		return err
 	}
 
-	// Write records in shuffled order: training first, then validation
+	// Write records in shuffled order: training first, then validation.
+	// Parallelized: process batches of records with worker goroutines,
+	// then write results sequentially to maintain order.
 	var trainBytesTotal uint64
-	var rec [BinpackRecordSize]byte
-	for i, idx := range indices {
-		copy(rec[:], data[idx*BinpackRecordSize:(idx+1)*BinpackRecordSize])
+	numWorkers := runtime.NumCPU()
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+	const batchSize = 4096
+	startTime := time.Now()
+	processed := 0
 
-		b, score, resultByte, err := UnpackPosition(rec)
-		if err != nil {
-			out.Close()
-			os.Remove(tmpFile)
-			return fmt.Errorf("invalid record at index %d: %w", idx, err)
+	for batchStart := 0; batchStart < len(indices); batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > len(indices) {
+			batchEnd = len(indices)
+		}
+		batch := indices[batchStart:batchEnd]
+
+		// Parallel: compute traces for this batch
+		type traceResult struct {
+			trace TunerTrace
+			err   error
+		}
+		results := make([]traceResult, len(batch))
+		var wg sync.WaitGroup
+		work := make(chan int, len(batch))
+		for w := 0; w < numWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var rec [BinpackRecordSize]byte
+				for j := range work {
+					idx := batch[j]
+					copy(rec[:], data[idx*BinpackRecordSize:(idx+1)*BinpackRecordSize])
+					b, score, resultByte, err := UnpackPosition(rec)
+					if err != nil {
+						results[j] = traceResult{err: fmt.Errorf("invalid record at index %d: %w", idx, err)}
+						continue
+					}
+					trace := t.computeTrace(b)
+					trace.Score = score
+					trace.Result = float64(ResultToFloat(resultByte))
+					results[j] = traceResult{trace: trace}
+				}
+			}()
+		}
+		for j := range batch {
+			work <- j
+		}
+		close(work)
+		wg.Wait()
+
+		// Sequential: write results in order
+		for j, r := range results {
+			if r.err != nil {
+				out.Close()
+				os.Remove(tmpFile)
+				return r.err
+			}
+			n, err := writeTraceRecord(bw, &r.trace)
+			if err != nil {
+				out.Close()
+				os.Remove(tmpFile)
+				return err
+			}
+			globalIdx := batchStart + j
+			if globalIdx < numTrain {
+				trainBytesTotal += uint64(n)
+			}
 		}
 
-		trace := t.computeTrace(b)
-		trace.Score = score
-		trace.Result = float64(ResultToFloat(resultByte))
-
-		n, err := writeTraceRecord(bw, &trace)
-		if err != nil {
-			out.Close()
-			os.Remove(tmpFile)
-			return err
-		}
-		if i < numTrain {
-			trainBytesTotal += uint64(n)
+		processed += len(batch)
+		// Progress report every ~100K records
+		if processed%(100000-100000%batchSize) < batchSize || processed == totalRecords {
+			elapsed := time.Since(startTime)
+			rate := float64(processed) / elapsed.Seconds()
+			remaining := time.Duration(float64(totalRecords-processed) / rate * float64(time.Second))
+			fmt.Printf("\r  %d / %d records (%.1f%%) — %.0f rec/s — ETA %v   ",
+				processed, totalRecords,
+				float64(processed)/float64(totalRecords)*100,
+				rate, remaining.Round(time.Second))
 		}
 	}
+	fmt.Println() // newline after progress
 
 	if err := bw.Flush(); err != nil {
 		out.Close()
