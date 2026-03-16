@@ -378,6 +378,80 @@ func (pos *sfLightPos) applyMove(sfMove uint16) error {
 
 // extractFeatures converts sfLightPos + score + result into NNUETrainSample.
 // Score and result in the binpack are STM-relative; we convert to white-relative.
+// packBinRecord packs the position into our 32-byte .bin format directly,
+// without constructing a full Board. Score and result are STM-relative and
+// will be converted to white-relative.
+func (pos *sfLightPos) packBinRecord(score int16, result uint8) [BinpackRecordSize]byte {
+	var rec [BinpackRecordSize]byte
+
+	// Convert STM-relative to white-relative
+	whiteScore := score
+	whiteResult := result
+	if pos.sideToMove == Black {
+		whiteScore = -score
+		whiteResult = 2 - result
+	}
+
+	// Build occupancy bitmap
+	var occ uint64
+	for sq := 0; sq < 64; sq++ {
+		if pos.squares[sq] != Empty {
+			occ |= 1 << uint(sq)
+		}
+	}
+	binary.LittleEndian.PutUint64(rec[0:8], occ)
+
+	// Pack piece nibbles: iterate set bits in LSB order
+	tmp := occ
+	nibbleIdx := 0
+	for tmp != 0 {
+		sq := bits.TrailingZeros64(tmp)
+		tmp &= tmp - 1
+
+		piece := byte(pos.squares[sq])
+		bytePos := 8 + nibbleIdx/2
+		if nibbleIdx%2 == 0 {
+			rec[bytePos] = piece
+		} else {
+			rec[bytePos] |= piece << 4
+		}
+		nibbleIdx++
+	}
+
+	// Side to move
+	if pos.sideToMove == Black {
+		rec[24] = 1
+	}
+
+	// Castling
+	rec[25] = byte(pos.castling)
+
+	// En passant file
+	if pos.epSquare == NoSquare {
+		rec[26] = binpackNoEP
+	} else {
+		rec[26] = byte(pos.epSquare.File())
+	}
+
+	// Halfmove clock
+	rec[27] = pos.rule50
+
+	// Score (clamped)
+	s := whiteScore
+	if s > binpackMaxScore {
+		s = binpackMaxScore
+	}
+	if s < binpackMinScore {
+		s = binpackMinScore
+	}
+	binary.LittleEndian.PutUint16(rec[28:30], uint16(s))
+
+	// Result
+	rec[30] = whiteResult
+
+	return rec
+}
+
 func (pos *sfLightPos) extractFeatures(score int16, result uint8) *NNUETrainSample {
 	// Convert STM-relative to white-relative
 	whiteScore := score
@@ -1272,6 +1346,11 @@ type BINPReader struct {
 
 	// Filtering options
 	FilterChecks bool // if true, skip positions where side to move is in check
+
+	// Bin record conversion mode: produce [32]byte records instead of NNUETrainSamples
+	binRecordMode  bool
+	pendingRecords [][BinpackRecordSize]byte
+	pridx          int // index into pendingRecords
 }
 
 // openBINPReader opens a BINP-format file for reading.
@@ -1491,6 +1570,35 @@ func (r *BINPReader) parseStemAt(offset int) (*NNUETrainSample, int, bool) {
 		resultU8 = 2
 	default:
 		resultU8 = 1
+	}
+
+	if r.binRecordMode {
+		// Bin record conversion mode
+		stemRec := pos.packBinRecord(score, resultU8)
+
+		if numPlies > 0 && compMove != 0 {
+			movetextPos := pos
+			if err := movetextPos.applyBINPMove(compMove); err != nil {
+				r.pendingRecords = append(r.pendingRecords[:0], stemRec)
+				r.pridx = 0
+				return nil, consumed, true
+			}
+			movetextRecs, movetextLen, err := r.decodeMovetextRecords(
+				&movetextPos, score, result, numPlies, r.chunk[offset+34:])
+			if err != nil {
+				r.pendingRecords = append(r.pendingRecords[:0], stemRec)
+				r.pridx = 0
+				return nil, consumed, true
+			}
+			consumed += movetextLen
+			r.pendingRecords = append(r.pendingRecords[:0], stemRec)
+			r.pendingRecords = append(r.pendingRecords, movetextRecs...)
+			r.pridx = 0
+		} else {
+			r.pendingRecords = append(r.pendingRecords[:0], stemRec)
+			r.pridx = 0
+		}
+		return nil, consumed, true
 	}
 
 	// Extract features for the stem position
@@ -1789,6 +1897,106 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 	}
 
 	return samples, br.numReadBytes(), nil
+}
+
+// decodeMovetextRecords is like decodeMovetextPositions but produces [32]byte bin records.
+func (r *BINPReader) decodeMovetextRecords(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) ([][BinpackRecordSize]byte, int, error) {
+	if len(data) == 0 {
+		return nil, 0, fmt.Errorf("no data for movetext")
+	}
+
+	br := newBinpBitReader(data)
+	records := make([][BinpackRecordSize]byte, 0, numPlies)
+	currentResult := lastResult
+	mLastScore := -lastScore
+
+	for i := 0; i < numPlies; i++ {
+		board, err := pos.toBoard()
+		if err != nil {
+			return records, br.numReadBytes(), err
+		}
+
+		m := binpDecodeMoveFromBoard(br, board)
+		if m == NoMove || br.overflow {
+			return records, br.numReadBytes(), fmt.Errorf("failed to decode move at ply %d", i)
+		}
+
+		scoreDelta := br.readVLE()
+		if br.overflow {
+			return records, br.numReadBytes(), fmt.Errorf("overflow reading score at ply %d", i)
+		}
+		plyScore := mLastScore + unsignedToSigned(scoreDelta)
+		mLastScore = -plyScore
+
+		currentResult = -currentResult
+
+		var resultU8 uint8
+		switch currentResult {
+		case -1:
+			resultU8 = 0
+		case 0:
+			resultU8 = 1
+		case 1:
+			resultU8 = 2
+		default:
+			resultU8 = 1
+		}
+
+		if plyScore > 3000 || plyScore < -3000 {
+			if i < numPlies-1 {
+				applySfMoveFromOurMove(pos, m)
+			}
+			continue
+		}
+		if board != nil && board.InCheck() {
+			if i < numPlies-1 {
+				applySfMoveFromOurMove(pos, m)
+			}
+			continue
+		}
+
+		rec := pos.packBinRecord(plyScore, resultU8)
+		records = append(records, rec)
+
+		if i < numPlies-1 {
+			applySfMoveFromOurMove(pos, m)
+		}
+	}
+
+	return records, br.numReadBytes(), nil
+}
+
+// NextBinRecord returns the next position as a [32]byte .bin record.
+// Only valid when binRecordMode is true.
+func (r *BINPReader) NextBinRecord() ([BinpackRecordSize]byte, error) {
+	for {
+		// Drain pending records first
+		if r.pridx < len(r.pendingRecords) {
+			rec := r.pendingRecords[r.pridx]
+			r.pridx++
+			if r.pridx >= len(r.pendingRecords) {
+				r.pendingRecords = r.pendingRecords[:0]
+				r.pridx = 0
+			}
+			return rec, nil
+		}
+
+		// Read next stem from chunk
+		if len(r.chunk)-r.offset < 34 {
+			if err := r.readNextChunk(); err != nil {
+				var empty [BinpackRecordSize]byte
+				return empty, err
+			}
+		}
+
+		// tryParseStem populates pendingRecords in bin record mode
+		_, ok := r.tryParseStem()
+		if !ok {
+			r.offset = len(r.chunk)
+			continue
+		}
+		// Loop back to drain pendingRecords
+	}
 }
 
 // skipMovetextBitsStatic parses through movetext bits to determine byte length.
@@ -2677,4 +2885,182 @@ func dumpLegacyBinpack(path string, n int) error {
 
 	fmt.Printf("Showed %d chains, %d positions\n", chainNum, posNum)
 	return nil
+}
+
+// ConvertSFBinpack converts a Stockfish .binpack file to our internal .bin format.
+// Filters are applied: positions with |score| > 3000 or in check are skipped.
+// progress is called periodically with (written, skipped) counts; may be nil.
+func ConvertSFBinpack(inputPath, outputPath string, progress func(written, skipped int64)) error {
+	binp, err := isBINPFormat(inputPath)
+	if err != nil {
+		return err
+	}
+
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+	w := bufio.NewWriterSize(outFile, 1<<20) // 1MB buffer
+
+	var written, skipped int64
+
+	report := func() {
+		if progress != nil {
+			progress(written, skipped)
+		}
+	}
+
+	if binp {
+		err = convertBINPToBin(inputPath, w, &written, &skipped, report)
+	} else {
+		err = convertLegacyToBin(inputPath, w, &written, &skipped, report)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flushing output: %w", err)
+	}
+	report()
+	return nil
+}
+
+// convertLegacyToBin converts a legacy PackedSfen .binpack file to .bin.
+func convertLegacyToBin(path string, w *bufio.Writer, written, skipped *int64, report func()) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	reader := bufio.NewReaderSize(f, 1<<20)
+
+	var pos sfLightPos
+	chainLeft := 0
+
+	for {
+		if chainLeft > 0 {
+			// Read chain entry: score(2) + move(2) + ply(2) + result(2) = 8 bytes
+			var entry [8]byte
+			if _, err := io.ReadFull(reader, entry[:]); err != nil {
+				if err == io.EOF || err == io.ErrUnexpectedEOF {
+					return nil
+				}
+				return fmt.Errorf("reading chain entry: %w", err)
+			}
+
+			score := int16(binary.LittleEndian.Uint16(entry[0:2]))
+			sfMove := binary.LittleEndian.Uint16(entry[2:4])
+			result := uint8(int16(binary.LittleEndian.Uint16(entry[6:8])))
+
+			skip := score > 3000 || score < -3000
+			if !skip {
+				rec := pos.packBinRecord(score, result)
+				if _, err := w.Write(rec[:]); err != nil {
+					return fmt.Errorf("writing record: %w", err)
+				}
+				*written++
+			} else {
+				*skipped++
+			}
+
+			chainLeft--
+			if sfMove != 0 && chainLeft > 0 {
+				if err := pos.applyMove(sfMove); err != nil {
+					return fmt.Errorf("applying move: %w", err)
+				}
+			}
+
+			if *written%100000 == 0 {
+				report()
+			}
+			continue
+		}
+
+		// Start a new chain
+		var chainLen uint16
+		if err := binary.Read(reader, binary.LittleEndian, &chainLen); err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				return nil
+			}
+			return fmt.Errorf("reading chain length: %w", err)
+		}
+		if chainLen == 0 {
+			return nil
+		}
+
+		// Read anchor PackedSfen (32 bytes)
+		var sfen [32]byte
+		if _, err := io.ReadFull(reader, sfen[:]); err != nil {
+			return fmt.Errorf("reading packed sfen: %w", err)
+		}
+
+		pos, err = decodeSfen(sfen)
+		if err != nil {
+			return fmt.Errorf("decoding sfen: %w", err)
+		}
+
+		// Read anchor entry
+		var entry [8]byte
+		if _, err := io.ReadFull(reader, entry[:]); err != nil {
+			return fmt.Errorf("reading anchor entry: %w", err)
+		}
+
+		score := int16(binary.LittleEndian.Uint16(entry[0:2]))
+		anchorMove := binary.LittleEndian.Uint16(entry[2:4])
+		result := uint8(int16(binary.LittleEndian.Uint16(entry[6:8])))
+
+		chainLeft = int(chainLen) - 1
+
+		// Pack anchor position
+		rec := pos.packBinRecord(score, result)
+		if _, err := w.Write(rec[:]); err != nil {
+			return fmt.Errorf("writing record: %w", err)
+		}
+		*written++
+
+		if chainLeft > 0 && anchorMove != 0 {
+			if err := pos.applyMove(anchorMove); err != nil {
+				return fmt.Errorf("applying anchor move: %w", err)
+			}
+		}
+
+		if *written%100000 == 0 {
+			report()
+		}
+	}
+}
+
+// convertBINPToBin converts a BINP-format .binpack file to .bin.
+// Uses the existing BINPReader but with a record-output mode.
+func convertBINPToBin(path string, w *bufio.Writer, written, skipped *int64, report func()) error {
+	br, err := openBINPReader(path)
+	if err != nil {
+		return err
+	}
+	defer br.Close()
+
+	// Enable bin record mode
+	br.binRecordMode = true
+	br.pendingRecords = make([][BinpackRecordSize]byte, 0, 256)
+
+	for {
+		rec, err := br.NextBinRecord()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+
+		if _, err := w.Write(rec[:]); err != nil {
+			return fmt.Errorf("writing record: %w", err)
+		}
+		*written++
+
+		if *written%100000 == 0 {
+			report()
+		}
+	}
 }

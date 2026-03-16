@@ -30,6 +30,8 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./tuner nnue-train -data training.bin -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume
 cat a.bin b.bin > combined.bin                                               # Concatenate .bin files
 
+./tuner convert-binpack -input data.binpack -output data.bin                  # Convert SF .binpack to .bin
+./tuner convert-binpack -input data.binpack                                   # Output defaults to data.bin
 ./tuner rescore -data training.bin -depth 10 -concurrency 8 -hash 512        # Rescore .bin in-place
 ./tuner rescore -data training.bin -depth 8 -concurrency 4 -syzygy /path/to/tb  # Rescore with Syzygy
 ./tuner shuffle -data training.bin                                            # Shuffle .bin in-place

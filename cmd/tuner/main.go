@@ -42,6 +42,8 @@ func main() {
 		runShuffle(os.Args[2:])
 	case "dump-binpack":
 		runDumpBinpack(os.Args[2:])
+	case "convert-binpack":
+		runConvertBinpack(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -59,7 +61,8 @@ Commands:
   check-net    Health check: evaluate test positions and flag scale issues
   rescore      Re-search positions in a .bin file and update scores in-place
   shuffle      Fisher-Yates shuffle a .bin file in-place (32-byte records)
-  dump-binpack Decode and print chains from a Stockfish .binpack file
+  dump-binpack    Decode and print chains from a Stockfish .binpack file
+  convert-binpack Convert Stockfish .binpack to internal .bin format
 
 Run 'tuner <command> -h' for command-specific options.
 `)
@@ -1053,3 +1056,43 @@ func allHaveExtension(paths []string, ext string) bool {
 }
 
 // Ensure path package isn't needed — using strings.HasSuffix above.
+
+func runConvertBinpack(args []string) {
+	fs := flag.NewFlagSet("convert-binpack", flag.ExitOnError)
+	input := fs.String("input", "", "input Stockfish .binpack file (required)")
+	output := fs.String("output", "", "output .bin file (default: input with .bin extension)")
+	fs.Parse(args)
+
+	if *input == "" {
+		fmt.Fprintln(os.Stderr, "Error: -input is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	outPath := *output
+	if outPath == "" {
+		outPath = strings.TrimSuffix(*input, ".binpack") + ".bin"
+	}
+
+	fmt.Printf("Converting %s -> %s\n", *input, outPath)
+	start := time.Now()
+
+	err := chess.ConvertSFBinpack(*input, outPath, func(written, skipped int64) {
+		elapsed := time.Since(start)
+		rate := float64(written+skipped) / elapsed.Seconds()
+		fmt.Printf("\r  %dK written, %dK skipped (%.0f pos/s)   ",
+			written/1000, skipped/1000, rate)
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Report final stats
+	info, _ := os.Stat(outPath)
+	fmt.Printf("\nDone in %v. Output: %s (%d positions, %.1f MB)\n",
+		time.Since(start).Round(time.Millisecond),
+		outPath,
+		info.Size()/int64(chess.BinpackRecordSize),
+		float64(info.Size())/(1024*1024))
+}
