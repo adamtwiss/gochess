@@ -1148,15 +1148,19 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		if score >= beta {
+			// NMP score dampening: blend toward beta to prevent inflated scores.
+			// NMP scores are inherently noisy due to the null move assumption.
+			dampened := (score*2 + beta) / 3
+
 			// Verification search at high depths to guard against zugzwang.
 			// Re-search at reduced depth without null move to confirm the cutoff.
 			if depth >= 12 {
 				vScore := b.negamax(depth-1-R, ply, beta-1, beta, info)
 				if vScore >= beta {
-					return beta
+					return dampened
 				}
 			} else {
-				return beta
+				return dampened
 			}
 		} else {
 			// NMP failed low: opponent had a strong reply. Extract it from TT.

@@ -1509,3 +1509,74 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: Pre-M75 merge base (old worktree). NOT directly comparable to current main.
 - **Source**: Pre-merge bracket test
 - **Notes**: Tested against an older baseline before the depth*75 merge. The current main has depth≤4/margin*75, while this tested depth≤6/margin*50 against the old depth≤4/margin*50 base. The +37.2 Elo gain is vs that old base, not vs current. Worth retesting depth≤6/margin*75 against current main to see if extending the depth range adds further value on top of the wider margin.
+
+### Bad Noisy Margin depth*100 (REJECTED)
+- **Change**: Widen bad-noisy futility margin from `depth*75` to `depth*100`.
+- **Result**: **H0 at 167 games, -37.6 Elo ±33.6, LOS 1.5%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: d82ab70 (Texel-tuned eval + BINP reader)
+- **Source**: Bracket test of merged bad-noisy margin
+- **Notes**: Too aggressive. At depth 4, this prunes captures when eval is 400cp below alpha — too wide, catching captures that actually have tactical merit. The optimum is confirmed at depth*75. Don't test wider.
+
+### Failing Heuristic in Capture LMR (REJECTED)
+- **Change**: Add `if failing { reduction++ }` to the capture LMR block, matching the quiet LMR adjustment.
+- **Result**: **H0 at 292 games, -22.6 Elo ±26.9, LOS 5.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: d82ab70 (Texel-tuned eval + BINP reader)
+- **Source**: Capture LMR asymmetry analysis
+- **Notes**: The failing signal doesn't transfer to captures. When the position is deteriorating, quiets deserve more reduction (they're unlikely to save us), but captures remain tactically relevant — even in collapsing positions, a good capture can change the evaluation. The asymmetry between quiet and capture LMR is intentional, not a gap.
+
+### TT-Noisy in Capture LMR (REJECTED)
+- **Change**: Add `if ttMoveNoisy { reduction++ }` to capture LMR, matching quiet LMR's +1 reduction when TT move is a capture.
+- **Result**: **H0 at 261 games, -29.4 Elo ±29.5, LOS 2.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 46122f5 (SF binpack filter fix)
+- **Source**: Capture LMR asymmetry analysis
+- **Notes**: Third capture LMR extension rejected (after failing flag -22.6, now ttMoveNoisy -29.4). The pattern is clear: quiet LMR adjustments do NOT transfer to capture LMR. When the TT move is a capture, other captures remain tactically important — reducing them loses critical lines. The capture LMR table with capture history is the right granularity; adding coarser signals hurts.
+
+### Bad Noisy Depth 6 vs Current Main (REJECTED)
+- **Change**: Extend bad-noisy from `depth <= 4` to `depth <= 6`, keeping margin `depth*75`.
+- **Result**: **H0 at 1460 games, -1.0 Elo ±12.2, LOS 43.9%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 46122f5 (current main with depth≤4/margin*75)
+- **Notes**: Dead flat. The depth≤4 threshold is optimal — deeper bad-noisy catches too few additional positions to matter. The earlier +37.2 vs old base was measuring the margin change, not the depth change.
+
+### Opponent Material LMR Threshold <4 (REJECTED)
+- **Change**: Widen from `oppNonPawn < 3` to `oppNonPawn < 4`.
+- **Result**: **H0 at 2710 games, +1.9 Elo ±8.8, LOS 66.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 46122f5
+- **Notes**: Very long test, very flat. Threshold <3 is optimal. <4 includes too many normal middlegame positions where the reduction is inappropriate.
+
+### FH Blend Depth Gate 2 (REJECTED)
+- **Change**: Lower FH blend depth gate from `depth >= 3` to `depth >= 2`.
+- **Result**: **H0 at 1280 games, -1.4 Elo ±12.7, LOS 41.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 46122f5
+- **Notes**: Flat. Depth-2 FH is too close to QS where beta blending already operates. The depth≥3 gate correctly separates the two dampening mechanisms.
+
+### TT Cutoff History Bonus (REJECTED)
+- **Change**: Give history bonus to TT move (quiet or capture) when TT probe causes a beta cutoff, matching Stockfish PR #5791.
+- **Result**: **H0 at 1025 games, -3.1 Elo ±14.3, LOS 33.9%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 46122f5
+- **Notes**: Slightly negative despite being a proven SF feature. Our persist-history fix means history tables are already well-populated across searches, reducing the value of additional TT-cutoff updates. Different engine, different optima.
+
+### Improving-Aware Capture LMR (REJECTED)
+- **Change**: Add `if improving { reduction-- }` to capture LMR, reducing less for captures in improving positions.
+- **Result**: **H0 at 668 games, -6.8 Elo ±17.3, LOS 22.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 47f9d14
+- **Source**: Capture LMR asymmetry analysis — first test reducing *less* instead of *more*
+- **Notes**: Fourth capture LMR extension rejected (failing -22.6, ttMoveNoisy -29.4, now improving -6.8). Even reducing captures *less* in improving positions hurts. Capture LMR is fully self-contained — the capture history alone is the correct and only adjustment mechanism. No quiet LMR signal transfers in either direction. Stop testing capture LMR modifications.
+
+### NMP Return Value Dampening (MERGED)
+- **Change**: Blend NMP return value toward beta: `return (score*2 + beta) / 3` instead of `return beta`.
+- **Result**: **H1 at 1059 games, +12.8 Elo ±14.1, LOS 96.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 47f9d14
+- **Source**: Score dampening pattern (TT dampen +22.1, FH blend +14.7, QS blend +4.9, now NMP +12.8)
+- **Notes**: Fourth score dampening win. NMP scores are noisy because the null-move assumption is approximate. Blending the return toward beta prevents inflated cutoff scores from propagating. The dampening pattern is now proven at every boundary: TT cutoffs, fail-highs, QS stand-pat, and NMP.
+
+### Capture LMR C=1.70 (REJECTED)
+- **Change**: Tighten capture LMR constant from 1.80 to 1.70 (more aggressive reduction).
+- **Result**: **H0 at 1104 games, -2.5 Elo ±14.0, LOS 36.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 47f9d14
+- **Notes**: Dead flat. C=1.80 is optimal. Capture LMR is fully calibrated.
+
+### History Gravity Divisor 12288 (REJECTED)
+- **Change**: Reduce history gravity divisor from 16384 to 12288 (faster decay of old history data).
+- **Result**: **H0 at 404 games, -13.8 Elo ±21.7, LOS 10.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 47f9d14
+- **Notes**: Negative. Faster decay loses valuable persistent history data. D=16384 is optimal — history needs to accumulate across many searches to be reliable.
