@@ -2434,22 +2434,14 @@ func countBINPPositions(path string) (int, error) {
 			break
 		}
 
-		// Estimate stems per chunk: read first few stems to get average chain size,
-		// then extrapolate for the rest.
-		// For counting purposes, we only need an approximate total for progress bars
-		// and train/val splitting. The actual reading handles exact counts.
-		//
-		// Simple estimate: each stem is 34 bytes, each ply of movetext averages ~1 byte
-		// (5 bits move + 5-10 bits VLE score ≈ 10-15 bits). Average chain has ~100 plies.
-		// So average chain = 34 + 100 * 1.5 = 184 bytes.
-		// stems_per_chunk ≈ chunkSize / 184
-		//
-		// For accuracy, skip the chunk and use the estimate.
-		stemsEstimate := chunkSize / 184
-		if stemsEstimate < 1 {
-			stemsEstimate = 1
+		// Can't scan individual stems without decoding movetext (variable length).
+		// Use chunk size to estimate: empirically ~4 bytes per position for T80 data
+		// (34-byte stems + compact movetext with ~100 plies per chain).
+		posEstimate := chunkSize / 4
+		if posEstimate < 1 {
+			posEstimate = 1
 		}
-		total += stemsEstimate
+		total += posEstimate
 
 		// Skip chunk data
 		if _, err := r.Discard(chunkSize); err != nil {
