@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"math"
@@ -44,6 +45,8 @@ func main() {
 		runDumpBinpack(os.Args[2:])
 	case "convert-binpack":
 		runConvertBinpack(os.Args[2:])
+	case "convert-bullet":
+		runConvertBullet(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -1109,4 +1112,125 @@ func runConvertBinpack(args []string) {
 		outPath,
 		info.Size()/int64(chess.BinpackRecordSize),
 		float64(info.Size())/(1024*1024))
+}
+
+func runConvertBullet(args []string) {
+	fs := flag.NewFlagSet("convert-bullet", flag.ExitOnError)
+	input := fs.String("input", "", "Bullet quantised.bin file (required)")
+	output := fs.String("output", "net.nnue", "output .nnue file")
+	fs.Parse(args)
+
+	if *input == "" {
+		fmt.Fprintln(os.Stderr, "Error: -input is required")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(*input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", *input, err)
+		os.Exit(1)
+	}
+
+	// Expected sizes for our exact architecture (no layerstack buckets on hidden layers)
+	const (
+		inputSize  = 12288
+		hiddenSize = 256
+		hidden2    = 32
+		hidden3    = 32
+		buckets    = 8
+	)
+
+	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b (i16)
+		hiddenSize*2*hidden2*2 + hidden2*4 + // l1w (i16) + l1b (i32)
+		hidden2*hidden3*2 + hidden3*4 + // l2w (i16) + l2b (i32)
+		hidden3*buckets*2 + buckets*4 // l3w (i16) + l3b (i32)
+
+	fmt.Printf("Input file: %d bytes, expected: %d bytes\n", len(data), expectedSize)
+	if len(data) < expectedSize {
+		fmt.Fprintf(os.Stderr, "Error: file too small (got %d, need %d)\n", len(data), expectedSize)
+		os.Exit(1)
+	}
+
+	// Parse the Bullet quantised.bin — sequential i16/i32 arrays
+	net := &chess.NNUENet{}
+	offset := 0
+
+	// l0w: [12288][256] i16
+	for i := 0; i < inputSize; i++ {
+		for j := 0; j < hiddenSize; j++ {
+			net.InputWeights[i][j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+
+	// l0b: [256] i16
+	for j := 0; j < hiddenSize; j++ {
+		net.InputBiases[j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+		offset += 2
+	}
+
+	// l1w: [512][32] i16
+	for i := 0; i < hiddenSize*2; i++ {
+		for j := 0; j < hidden2; j++ {
+			net.HiddenWeights[i][j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+
+	// l1b: [32] i32
+	for j := 0; j < hidden2; j++ {
+		net.HiddenBiases[j] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	// l2w: [32][32] i16
+	for i := 0; i < hidden2; i++ {
+		for j := 0; j < hidden3; j++ {
+			net.Hidden2Weights[i][j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+
+	// l2b: [32] i32
+	for j := 0; j < hidden3; j++ {
+		net.Hidden2Biases[j] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	// l3w: [32][8] i16 in Bullet -> [8][32] i16 in our format (transpose)
+	var l3wRaw [hidden3][buckets]int16
+	for i := 0; i < hidden3; i++ {
+		for b := 0; b < buckets; b++ {
+			l3wRaw[i][b] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+	// Transpose to [bucket][hidden3]
+	for b := 0; b < buckets; b++ {
+		for i := 0; i < hidden3; i++ {
+			net.OutputWeights[b][i] = l3wRaw[i][b]
+		}
+	}
+
+	// l3b: [8] i32
+	for b := 0; b < buckets; b++ {
+		net.OutputBias[b] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	fmt.Printf("Parsed %d bytes of %d\n", offset, len(data))
+
+	// Prepare transposed weights for SIMD
+	net.PrepareWeights()
+
+	// Save in our .nnue format
+	if err := chess.SaveNNUE(*output, net); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving: %v\n", err)
+		os.Exit(1)
+	}
+
+	fi, _ := os.Stat(*output)
+	fmt.Printf("Saved %s (%d bytes)\n", *output, fi.Size())
+	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
 }
