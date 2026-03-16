@@ -132,43 +132,63 @@ func (net *NNUENetV5) RecomputeAccumulator(b *Board, acc *NNUEAccumulatorV5, per
 			continue
 		}
 
+		addWeights1024(dst, &net.InputWeights[idx])
+	}
+}
+
+// addWeights1024 adds 1024 int16 weights to an accumulator slice.
+// Uses SIMD when available (4 × 256-wide operations).
+func addWeights1024(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
+	if nnueUseSIMD {
+		// 4 × 256-wide SIMD additions
+		nnueAccAdd256(&acc[0], &weights[0])
+		nnueAccAdd256(&acc[256], &weights[256])
+		nnueAccAdd256(&acc[512], &weights[512])
+		nnueAccAdd256(&acc[768], &weights[768])
+	} else {
 		for i := 0; i < NNUEv5HiddenSize; i++ {
-			dst[i] += net.InputWeights[idx][i]
+			acc[i] += weights[i]
 		}
 	}
 }
 
-// AddFeatureV5 adds a feature to the v5 accumulator for both perspectives.
+// subWeights1024 subtracts 1024 int16 weights from an accumulator slice.
+func subWeights1024(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
+	if nnueUseSIMD {
+		nnueAccSub256(&acc[0], &weights[0])
+		nnueAccSub256(&acc[256], &weights[256])
+		nnueAccSub256(&acc[512], &weights[512])
+		nnueAccSub256(&acc[768], &weights[768])
+	} else {
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			acc[i] -= weights[i]
+		}
+	}
+}
+
+// AddFeature adds a feature to the v5 accumulator for both perspectives.
 func (net *NNUENetV5) AddFeature(acc *NNUEAccumulatorV5, piece Piece, sq Square, wKingSq, bKingSq Square) {
 	wIdx := HalfKAIndex(White, wKingSq, piece, sq)
 	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			acc.White[i] += net.InputWeights[wIdx][i]
-		}
+		addWeights1024(&acc.White, &net.InputWeights[wIdx])
 	}
 	if bIdx >= 0 {
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			acc.Black[i] += net.InputWeights[bIdx][i]
-		}
+		addWeights1024(&acc.Black, &net.InputWeights[bIdx])
 	}
 }
 
-// RemoveFeatureV5 removes a feature from the v5 accumulator for both perspectives.
+// RemoveFeature removes a feature from the v5 accumulator for both perspectives.
 func (net *NNUENetV5) RemoveFeature(acc *NNUEAccumulatorV5, piece Piece, sq Square, wKingSq, bKingSq Square) {
 	wIdx := HalfKAIndex(White, wKingSq, piece, sq)
 	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			acc.White[i] -= net.InputWeights[wIdx][i]
-		}
+		subWeights1024(&acc.White, &net.InputWeights[wIdx])
 	}
 	if bIdx >= 0 {
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			acc.Black[i] -= net.InputWeights[bIdx][i]
-		}
+		subWeights1024(&acc.Black, &net.InputWeights[bIdx])
 	}
 }
 
