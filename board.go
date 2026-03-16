@@ -156,19 +156,39 @@ type Board struct {
 	UndoStack []UndoInfo
 
 	// NNUE evaluation (nil when disabled — zero overhead)
-	NNUENet *NNUENet
-	NNUEAcc *NNUEAccumulatorStack
+	// V4 (deep) or V5 (shallow wide) — only one is set at a time
+	NNUENet   *NNUENet
+	NNUEAcc   *NNUEAccumulatorStack
+	NNUENetV5 *NNUENetV5
+	NNUEAccV5 *NNUEAccumulatorStackV5
 }
 
-// AttachNNUE wires an NNUE network into this board, creating an accumulator
+// AttachNNUE wires an NNUE v4 network into this board, creating an accumulator
 // stack and computing the initial accumulator state.
 func (b *Board) AttachNNUE(net *NNUENet) {
 	b.NNUENet = net
+	b.NNUENetV5 = nil // clear v5 if switching
+	b.NNUEAccV5 = nil
 	if net != nil {
 		b.NNUEAcc = NewNNUEAccumulatorStack(512)
 		net.RecomputeAccumulator(b.NNUEAcc.Current(), b)
 	} else {
 		b.NNUEAcc = nil
+	}
+}
+
+// AttachNNUEV5 wires a v5 (shallow wide) NNUE network into this board.
+func (b *Board) AttachNNUEV5(net *NNUENetV5) {
+	b.NNUENetV5 = net
+	b.NNUENet = nil // clear v4 if switching
+	b.NNUEAcc = nil
+	if net != nil {
+		b.NNUEAccV5 = NewNNUEAccumulatorStackV5(512)
+		net.RecomputeAccumulator(b, b.NNUEAccV5.Current(), White)
+		net.RecomputeAccumulator(b, b.NNUEAccV5.Current(), Black)
+		b.NNUEAccV5.Current().Computed = true
+	} else {
+		b.NNUEAccV5 = nil
 	}
 }
 
@@ -203,6 +223,10 @@ func (b *Board) Clear() {
 	// Reset NNUE accumulator stack
 	if b.NNUEAcc != nil {
 		b.NNUEAcc.Reset()
+	}
+	if b.NNUEAccV5 != nil {
+		b.NNUEAccV5.top = 0
+		b.NNUEAccV5.Current().Computed = false
 	}
 }
 
@@ -293,6 +317,11 @@ func (b *Board) Reset() {
 	if b.NNUENet != nil && b.NNUEAcc != nil {
 		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
 	}
+	if b.NNUENetV5 != nil && b.NNUEAccV5 != nil {
+		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), White)
+		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), Black)
+		b.NNUEAccV5.Current().Computed = true
+	}
 }
 
 // SetFEN parses a FEN string and sets the board position
@@ -378,6 +407,11 @@ func (b *Board) SetFEN(fen string) error {
 	// Recompute NNUE accumulator
 	if b.NNUENet != nil && b.NNUEAcc != nil {
 		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
+	}
+	if b.NNUENetV5 != nil && b.NNUEAccV5 != nil {
+		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), White)
+		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), Black)
+		b.NNUEAccV5.Current().Computed = true
 	}
 	return nil
 }

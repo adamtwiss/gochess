@@ -349,6 +349,9 @@ func (b *Board) Evaluate() int {
 // EvaluateRelative returns the evaluation from the perspective of the side to move.
 // Positive values are good for the side to move.
 func (b *Board) EvaluateRelative() int {
+	if UseNNUE && b.NNUENetV5 != nil && b.NNUEAccV5 != nil {
+		return b.NNUEEvaluateRelativeV5()
+	}
 	if UseNNUE && b.NNUENet != nil && b.NNUEAcc != nil {
 		return b.NNUEEvaluateRelative()
 	}

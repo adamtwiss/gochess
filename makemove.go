@@ -34,6 +34,10 @@ func (b *Board) MakeMove(m Move) {
 			b.NNUEAcc.Push()
 		}
 	}
+	if b.NNUEAccV5 != nil {
+		// V5: always push empty (recompute on demand) — no incremental updates yet
+		b.NNUEAccV5.Push()
+	}
 
 	// Store undo info
 	undo := UndoInfo{
@@ -326,6 +330,9 @@ func (b *Board) UnmakeMove(m Move) {
 	// below have zero NNUE overhead.
 	if b.NNUEAcc != nil {
 		b.NNUEAcc.Pop()
+	}
+	if b.NNUEAccV5 != nil {
+		b.NNUEAccV5.Pop()
 	}
 
 	from := m.From()

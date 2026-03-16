@@ -107,10 +107,12 @@ func (e *UCIEngine) SetBook(book *OpeningBook) {
 	e.book = book
 }
 
-// SetNNUE loads an NNUE network and wires it into the engine's board.
+// SetNNUE loads an NNUE v4 network and wires it into the engine's board.
 func (e *UCIEngine) SetNNUE(net *NNUENet) {
 	e.nnueNet = net
 	e.board.NNUENet = net
+	e.board.NNUENetV5 = nil
+	e.board.NNUEAccV5 = nil
 	if net != nil {
 		if e.board.NNUEAcc == nil {
 			e.board.NNUEAcc = NewNNUEAccumulatorStack(512)
@@ -119,6 +121,24 @@ func (e *UCIEngine) SetNNUE(net *NNUENet) {
 		e.send("info string SetNNUE fingerprint %s", net.Fingerprint())
 	} else {
 		e.board.NNUEAcc = nil
+	}
+}
+
+// SetNNUEV5 loads an NNUE v5 (shallow wide) network.
+func (e *UCIEngine) SetNNUEV5(net *NNUENetV5) {
+	e.board.NNUENetV5 = net
+	e.board.NNUENet = nil
+	e.board.NNUEAcc = nil
+	e.nnueNet = nil
+	if net != nil {
+		e.board.NNUEAccV5 = NewNNUEAccumulatorStackV5(512)
+		net.RecomputeAccumulator(&e.board, e.board.NNUEAccV5.Current(), White)
+		net.RecomputeAccumulator(&e.board, e.board.NNUEAccV5.Current(), Black)
+		e.board.NNUEAccV5.Current().Computed = true
+		UseNNUE = true
+		e.send("info string SetNNUEV5 fingerprint %s", net.Fingerprint())
+	} else {
+		e.board.NNUEAccV5 = nil
 	}
 }
 
