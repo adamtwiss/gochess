@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // NNUETrainNet holds float32 weights for training (higher precision than int16 inference).
@@ -1141,6 +1143,8 @@ func (trainer *NNUETrainer) TrainBinpack(src TrainingDataSource, cfg NNUETrainCo
 		totalLoss := 0.0
 		numSamples := 0
 		processed := 0
+		epochStart := time.Now()
+		lastProgress := time.Now()
 
 		// Pre-allocate sample buffer for batches
 		sampleBuf := make([]*NNUETrainSample, 0, cfg.BatchSize)
@@ -1196,10 +1200,25 @@ func (trainer *NNUETrainer) TrainBinpack(src TrainingDataSource, cfg NNUETrainCo
 			}
 			aggregateGradientsParallel(&totalGrads, workerGrads[:numWorkers])
 
+			// Progress update every 60 seconds for long epochs
+			if time.Since(lastProgress) > 60*time.Second {
+				elapsed := time.Since(epochStart)
+				rate := float64(numSamples) / elapsed.Seconds()
+				avgLoss := totalLoss / float64(numSamples)
+				fmt.Fprintf(os.Stderr, "\r  epoch %d: %dM positions, %.0f pos/sec, loss=%.4f, %v elapsed   ",
+					epoch, numSamples/1000000, rate, avgLoss, elapsed.Round(time.Second))
+				lastProgress = time.Now()
+			}
+
 			// Scale gradients and apply Adam updates
 			scale := 1.0 / float64(actualBatch)
 			trainer.step++
 			trainer.applyAdamUpdates(&totalGrads, scale, cfg.LR)
+		}
+
+		// Clear progress line
+		if time.Since(epochStart) > 60*time.Second {
+			fmt.Fprintf(os.Stderr, "\r%80s\r", "")
 		}
 
 		// Compute losses
