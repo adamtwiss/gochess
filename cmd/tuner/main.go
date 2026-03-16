@@ -460,7 +460,6 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 		}
 		if sampleRate > 0 && sampleRate < 1.0 {
 			sfSrc.SampleRate = sampleRate
-			fmt.Printf("  Sampling %.0f%% of positions per epoch\n", sampleRate*100)
 		}
 		src = sfSrc
 		fmt.Printf("SF binpack data: ~%d estimated positions from %d file(s) (actual count after epoch 1)\n", src.NumRecords(), len(paths))
@@ -470,6 +469,9 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 		}
 		if bufferSize > 0 {
 			fmt.Printf("  Shuffle buffer: %d positions\n", bufferSize)
+		}
+		if sampleRate > 0 && sampleRate < 1.0 {
+			fmt.Printf("  Sampling: %.0f%% of positions per epoch\n", sampleRate*100)
 		}
 	} else {
 		bf, err := chess.OpenBinpackFiles(paths...)
@@ -502,8 +504,12 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 	if cfg.Lambda == 0 && !cfg.CrossEntropy {
 		lossType = "MSE-cp"
 	}
-	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f loss=%s\n",
-		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda, lossType)
+	sampleStr := ""
+	if sampleRate > 0 && sampleRate < 1.0 {
+		sampleStr = fmt.Sprintf(" sample=%.0f%%", sampleRate*100)
+	}
+	fmt.Printf("\nTraining NNUE: epochs=%d lr=%.4f batch=%d lambda=%.2f loss=%s%s\n",
+		cfg.Epochs, cfg.LR, cfg.BatchSize, cfg.Lambda, lossType, sampleStr)
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "Epoch", "Train Loss", "Val Loss", "Time")
 	fmt.Printf("%-8s  %-14s  %-14s  %s\n", "-----", "----------", "--------", "----")
 
