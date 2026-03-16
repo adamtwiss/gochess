@@ -500,6 +500,55 @@ func (pos *sfLightPos) extractFeatures(score int16, result uint8) *NNUETrainSamp
 	return sample
 }
 
+// extractFeaturesFromBoard extracts NNUE training features from a Board struct.
+// Equivalent to sfLightPos.extractFeatures but works with the incremental Board
+// representation, avoiding the expensive toBoard() conversion per ply.
+func extractFeaturesFromBoard(b *Board, score int16, result uint8) *NNUETrainSample {
+	whiteScore := score
+	whiteResult := result
+	if b.SideToMove == Black {
+		whiteScore = -score
+		whiteResult = 2 - result
+	}
+
+	wKingSq := b.Pieces[WhiteKing].LSB()
+	bKingSq := b.Pieces[BlackKing].LSB()
+
+	pieceCount := 0
+	occ := b.AllPieces
+	for occ != 0 {
+		pieceCount++
+		occ &= occ - 1
+	}
+
+	sample := &NNUETrainSample{
+		SideToMove:    b.SideToMove,
+		Result:        ResultToFloat(whiteResult),
+		Score:         float32(whiteScore),
+		HasScore:      true,
+		PieceCount:    pieceCount,
+		WhiteFeatures: make([]int, 0, pieceCount),
+		BlackFeatures: make([]int, 0, pieceCount),
+	}
+
+	for sq := Square(0); sq < 64; sq++ {
+		p := b.Squares[sq]
+		if p == Empty {
+			continue
+		}
+		wIdx := HalfKAIndex(White, wKingSq, p, sq)
+		bIdx := HalfKAIndex(Black, bKingSq, p, sq)
+		if wIdx >= 0 {
+			sample.WhiteFeatures = append(sample.WhiteFeatures, wIdx)
+		}
+		if bIdx >= 0 {
+			sample.BlackFeatures = append(sample.BlackFeatures, bIdx)
+		}
+	}
+
+	return sample
+}
+
 // ============================================================================
 // BINP format: compressed position + movetext
 // ============================================================================
@@ -1833,10 +1882,17 @@ func binpDecodeMoveFromBoard(br *binpBitReader, b *Board) Move {
 
 // decodeMovetextPositions decodes all movetext continuation positions from a chain.
 // Uses the hierarchical piece+destination encoding matching Stockfish's binpack format.
+// Uses incremental Board updates (MakeMove) instead of toBoard() per ply for performance.
 // Returns the decoded samples, byte length consumed, and any error.
 func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) ([]*NNUETrainSample, int, error) {
 	if len(data) == 0 {
 		return nil, 0, fmt.Errorf("no data for movetext")
+	}
+
+	// Build the Board ONCE from the sfLightPos, then use MakeMove incrementally
+	board, err := pos.toBoard()
+	if err != nil {
+		return nil, 0, err
 	}
 
 	br := newBinpBitReader(data)
@@ -1845,11 +1901,6 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 	mLastScore := -lastScore // matches Stockfish: m_lastScore starts as -entry.score
 
 	for i := 0; i < numPlies; i++ {
-		board, err := pos.toBoard()
-		if err != nil {
-			return samples, br.numReadBytes(), err
-		}
-
 		// Decode move using hierarchical piece+destination encoding
 		m := binpDecodeMoveFromBoard(br, board)
 		if m == NoMove || br.overflow {
@@ -1881,27 +1932,20 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 		}
 
 		// Filter: skip positions with extreme scores or in check
-		if plyScore > 3000 || plyScore < -3000 {
-			// Still need to apply move to keep position tracking correct
-			if i < numPlies-1 {
-				applySfMoveFromOurMove(pos, m)
-			}
-			continue
-		}
-		if r.FilterChecks && board != nil && board.InCheck() {
-			if i < numPlies-1 {
-				applySfMoveFromOurMove(pos, m)
-			}
-			continue
+		skip := plyScore > 3000 || plyScore < -3000
+		if !skip && r.FilterChecks && board.InCheck() {
+			skip = true
 		}
 
-		// Extract features for this position
-		sample := pos.extractFeatures(plyScore, resultU8)
-		samples = append(samples, sample)
+		if !skip {
+			// Extract features directly from the Board (no toBoard conversion)
+			sample := extractFeaturesFromBoard(board, plyScore, resultU8)
+			samples = append(samples, sample)
+		}
 
-		// Apply move to advance position for next ply
+		// Apply move to advance board for next ply (always, even if filtered)
 		if i < numPlies-1 {
-			applySfMoveFromOurMove(pos, m)
+			board.MakeMove(m)
 		}
 	}
 
