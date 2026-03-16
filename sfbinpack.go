@@ -1458,6 +1458,10 @@ type BINPReader struct {
 	pendingRecords [][BinpackRecordSize]byte
 	pridx          int // index into pendingRecords
 
+	// Chain-level sampling
+	SampleRate float64    // if > 0 and < 1, skip this fraction of chains
+	sampleRng  *rand.Rand // RNG for sampling decisions
+
 	// Diagnostics
 	MovetextDecodeFailures int64
 	MovetextDecodeSuccess  int64
@@ -1658,6 +1662,18 @@ func (r *BINPReader) parseStemAt(offset int) (*NNUETrainSample, int, bool) {
 
 	consumed := 34 // stem + numPlies
 	r.StemsRead++
+
+	// Chain-level sampling: skip entire chains without decoding movetext.
+	// Use byte estimate to advance past movetext data. The tryParseStem scanner
+	// recovers if the estimate is slightly off.
+	if r.SampleRate > 0 && r.SampleRate < 1 && r.sampleRng != nil && r.sampleRng.Float64() > r.SampleRate {
+		if numPlies > 0 {
+			// Estimate movetext bytes: ~1.5 bytes per ply on average
+			consumed += numPlies * 3 / 2
+		}
+		r.StemsFiltered++
+		return nil, consumed, true
+	}
 
 	// Check if stem should be filtered (but still need to decode movetext for byte length)
 	stemFiltered := score > 3000 || score < -3000
@@ -2207,6 +2223,14 @@ func (r *SFBinpackReader) SetFilterChecks(v bool) {
 	}
 }
 
+// SetSampleRate configures chain-level random sampling on the underlying BINP reader.
+func (r *SFBinpackReader) SetSampleRate(rate float64, rng *rand.Rand) {
+	if r.binpReader != nil {
+		r.binpReader.SampleRate = rate
+		r.binpReader.sampleRng = rng
+	}
+}
+
 // OpenSFBinpack opens a Stockfish .binpack file for sequential reading.
 // Auto-detects the format by checking for the "BINP" magic header.
 func OpenSFBinpack(path string) (*SFBinpackReader, error) {
@@ -2715,6 +2739,9 @@ func (r *sfBinpackEpochReader) refillBuffer() error {
 			return err
 		}
 		reader.SetFilterChecks(r.filterChecks)
+		if r.sampleRate > 0 && r.sampleRate < 1 {
+			reader.SetSampleRate(r.sampleRate, r.rng)
+		}
 		r.reader = reader
 		r.fileIdx = 0
 	}
@@ -2737,6 +2764,9 @@ func (r *sfBinpackEpochReader) refillBuffer() error {
 						return err
 					}
 					reader.SetFilterChecks(r.filterChecks)
+					if r.sampleRate > 0 && r.sampleRate < 1 {
+						reader.SetSampleRate(r.sampleRate, r.rng)
+					}
 					r.reader = reader
 				}
 				continue
@@ -2745,12 +2775,6 @@ func (r *sfBinpackEpochReader) refillBuffer() error {
 		}
 
 		r.posRead++
-
-		// Random sampling: skip positions to reduce epoch size while maintaining diversity
-		if r.sampleRate > 0 && r.sampleRate < 1 && r.rng.Float64() > r.sampleRate {
-			continue
-		}
-
 		r.buffer = append(r.buffer, sample)
 	}
 
