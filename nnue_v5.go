@@ -80,13 +80,23 @@ func (s *NNUEAccumulatorStackV5) Current() *NNUEAccumulatorV5 {
 	return &s.stack[s.top]
 }
 
-// Push advances the stack for MakeMove.
+// Push advances the stack for MakeMove (no copy — needs recompute).
 func (s *NNUEAccumulatorStackV5) Push() {
 	s.top++
 	if s.top >= len(s.stack) {
 		s.stack = append(s.stack, NNUEAccumulatorV5{})
 	}
 	s.stack[s.top].Computed = false
+}
+
+// PushCopy advances the stack and copies the current accumulator for incremental update.
+func (s *NNUEAccumulatorStackV5) PushCopy() {
+	prev := s.stack[s.top]
+	s.top++
+	if s.top >= len(s.stack) {
+		s.stack = append(s.stack, NNUEAccumulatorV5{})
+	}
+	s.stack[s.top] = prev // copy White, Black, Computed
 }
 
 // Pop restores the stack for UnmakeMove.
