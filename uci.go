@@ -513,8 +513,9 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		book, err := LoadOpeningBook(value)
 		if err != nil {
-			e.send("info string failed to load book: %v", err)
-			return
+			e.send("info string ERROR: failed to load book from %s: %v", value, err)
+			fmt.Fprintf(os.Stderr, "Fatal: failed to load book from %s: %v\n", value, err)
+			os.Exit(1)
 		}
 		e.book = book
 		e.send("info string book loaded: %d positions", book.Size())
@@ -531,8 +532,9 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 		}
 		net, err := LoadNNUE(value)
 		if err != nil {
-			e.send("info string failed to load NNUE: %v", err)
-			return
+			e.send("info string ERROR: failed to load NNUE from %s: %v", value, err)
+			fmt.Fprintf(os.Stderr, "Fatal: failed to load NNUE from %s: %v\n", value, err)
+			os.Exit(1)
 		}
 		e.nnueNet = net
 		e.board.NNUENet = net

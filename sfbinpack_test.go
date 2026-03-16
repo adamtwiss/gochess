@@ -337,7 +337,7 @@ func TestSFBinpackSourceInterface(t *testing.T) {
 	binary.Write(f, binary.LittleEndian, uint16(0))
 	f.Close()
 
-	src, err := NewSFBinpackSource([]string{tmpFile}, 100)
+	src, err := NewSFBinpackSource([]string{tmpFile}, 100, false)
 	if err != nil {
 		t.Fatal(err)
 	}
