@@ -1612,3 +1612,78 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: c5bd250
 - **Source**: Bracket test of TT near-miss margin
 - **Notes**: Wider margin accepts more TT entries that are 1 ply short of the required depth. At 80cp, entries that exceed beta by 80+ cp are trusted as cutoffs. This works because large TT score margins indicate high-confidence positions where the extra ply is unlikely to change the result. Previous margin of 64 was from initial calibration and was never bracketed until now.
+
+### TT Near-Miss Margin 112 (REJECTED)
+- **Change**: Widen TT near-miss margin from 80 to 112cp.
+- **Result**: **H0 at 388 games, -16.1 Elo ±23.1, LOS 8.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d (TT near-miss 80 merged)
+- **Notes**: Too wide — accepts inaccurate TT entries. Margin 80 is the optimum (64→80 gained +18.3, 80→96 trending negative, 80→112 rejected).
+
+### QS Delta 280 (REJECTED)
+- **Change**: Widen QS delta pruning margin from 240 to 280.
+- **Result**: **H0 at 1041 games, -3.7 Elo ±14.8, LOS 31.3%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d (TT near-miss 80 merged)
+- **Notes**: QS delta 240 is optimal. Wider margin prunes too aggressively in QS. Confirmed: 200→240 gained +31.2, 240→280 rejected.
+
+### Futility 60+d*60 (REJECTED)
+- **Change**: Tighten futility margin from `80+lmrDepth*80` to `60+lmrDepth*60`.
+- **Result**: **H0 at 1543 games, -0.5 Elo ±11.7, LOS 47.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: Dead flat at 1543 games. Futility 80+d*80 is optimal. Initial +8.7 signal was noise.
+
+### QS Delta 200 (REJECTED)
+- **Change**: Tighten QS delta pruning margin from 240 to 200.
+- **Result**: **H0 at 282 games, -23.4 Elo ±27.0, LOS 4.5%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: QS delta fully bracketed: 200 (H0, -23.4), 240 (optimal), 280 (H0, -3.7). Don't retest.
+
+### RFP Tighter 85/55 (REJECTED)
+- **Change**: Tighten RFP margins from depth*100/depth*70 to depth*85/depth*55.
+- **Result**: **H0 at 288 games, -23.0 Elo ±26.9, LOS 4.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: RFP margins confirmed optimal at 100/70. Previous test (100→110) was also H0. Don't retest.
+
+### ProbCut Margin 150 (REJECTED)
+- **Change**: Tighten ProbCut margin from beta+170 to beta+150.
+- **Result**: **H0 at 415 games, -15.1 Elo ±22.7, LOS 9.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: ProbCut margin 170 is optimal. Previous test (200→170) gained +10.0. Tighter margin prunes too aggressively.
+
+### TT Near-Miss Margin 96 (REJECTED)
+- **Change**: Widen TT near-miss margin from 80 to 96cp.
+- **Result**: **H0 at 2590 games, +1.6 Elo ±9.3, LOS 63.3%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d (TT near-miss 80 merged)
+- **Notes**: Very long test. Early noise peaked at +7.6/91% LOS but regressed to flat. Margin 80 is optimal (64→80 gained +18.3, 80→96 flat, 80→112 rejected).
+
+### LMR Quiet C=1.60 (REJECTED)
+- **Change**: Relax quiet LMR constant from 1.50 to 1.60 (less aggressive reduction).
+- **Result**: **H0 at 239 games, -29.1 Elo ±29.6, LOS 2.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: Strongly negative. Less aggressive LMR wastes search depth. The optimum is at or below 1.50 — both C=1.40 (+6.3) and C=1.30 (+26.1 early) are positive.
+
+### LMR Quiet C=1.40 (REJECTED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.40.
+- **Result**: **H0 at 960 games, -2.9 Elo ±14.3, LOS 34.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: Dead flat despite early +8.7 signal. C=1.50 confirmed from above (C=1.60 H0) and this side (C=1.40 H0). However, C=1.30 is showing +9.3 — the response may be non-monotonic or the optimum is a sharper change.
+
+### LMR Quiet C=1.20 (REJECTED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.20.
+- **Result**: **H0 at 826 games, -4.6 Elo ±15.7, LOS 28.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d
+- **Notes**: Too aggressive. C=1.30 (+11.1) is the sweet spot; C=1.20 overshoots. Quiet LMR bracket: 1.20 (H0), 1.30 (building +11.1), 1.35 (+4.7), 1.40 (H0), 1.50 (current), 1.60 (H0).
+
+### LMR Quiet C=1.30 (MERGED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.30 (more aggressive reduction).
+- **Result**: **H1 at 1016 games, +13.3 Elo ±14.7, LOS 96.3%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d (TT near-miss 80 merged)
+- **Source**: LMR constant bracket test
+- **Notes**: Continues the LMR progression: C=2.0 → 1.75 (+16.2) → 1.50 (+44.4) → 1.30 (+13.3). Perfectly bracketed: 1.25 (H0, -3.6), 1.30 (H1, +13.3), 1.35 (H0, +1.2), 1.40 (H0, -2.9). NNUE accuracy enables more aggressive reduction.
+
+### LMR Quiet C=1.35 (REJECTED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.35.
+- **Result**: **H0 at 2063 games, +1.2 Elo ±9.9.** SPRT bounds: elo0=-5, elo1=15.
+
+### LMR Quiet C=1.25 (REJECTED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.25.
+- **Result**: **H0 at 959 games, -3.6 Elo ±14.8.** SPRT bounds: elo0=-5, elo1=15.

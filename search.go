@@ -81,7 +81,7 @@ func init() {
 	// C controls aggressiveness: lower = more reduction.
 
 	// Quiet table: NNUE-tuned C=1.5 (was 2.0→1.75→1.5)
-	const quietC = 1.5
+	const quietC = 1.3
 	for depth := 1; depth < 64; depth++ {
 		for moveNum := 1; moveNum < 64; moveNum++ {
 			if depth >= 3 && moveNum >= 3 {
