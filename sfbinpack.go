@@ -1941,7 +1941,15 @@ func binpDecodeMoveFromBoard(br *binpBitReader, b *Board) Move {
 // Uses the hierarchical piece+destination encoding matching Stockfish's binpack format.
 // Uses incremental Board updates (MakeMove) instead of toBoard() per ply for performance.
 // Returns the decoded samples, byte length consumed, and any error.
-func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) ([]*NNUETrainSample, int, error) {
+func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) (result []*NNUETrainSample, bytesRead int, retErr error) {
+	// Recover from panics in MakeMove (can happen if decoded move is invalid
+	// due to position divergence deep in long chains)
+	defer func() {
+		if rec := recover(); rec != nil {
+			retErr = fmt.Errorf("panic in movetext decode: %v", rec)
+		}
+	}()
+
 	if len(data) == 0 {
 		return nil, 0, fmt.Errorf("no data for movetext")
 	}
@@ -2011,7 +2019,12 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 
 // decodeMovetextRecords is like decodeMovetextPositions but produces [32]byte bin records.
 // Uses incremental Board updates (MakeMove) for performance.
-func (r *BINPReader) decodeMovetextRecords(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) ([][BinpackRecordSize]byte, int, error) {
+func (r *BINPReader) decodeMovetextRecords(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) (result [][BinpackRecordSize]byte, bytesRead int, retErr error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			retErr = fmt.Errorf("panic in movetext record decode: %v", rec)
+		}
+	}()
 	if len(data) == 0 {
 		return nil, 0, fmt.Errorf("no data for movetext")
 	}
