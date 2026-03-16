@@ -1269,6 +1269,9 @@ type BINPReader struct {
 	// Movetext decoding state: queued samples from current chain
 	pending []*NNUETrainSample
 	pidx    int // index into pending
+
+	// Filtering options
+	FilterChecks bool // if true, skip positions where side to move is in check
 }
 
 // openBINPReader opens a BINP-format file for reading.
@@ -1470,9 +1473,11 @@ func (r *BINPReader) parseStemAt(offset int) (*NNUETrainSample, int, bool) {
 	}
 
 	// Filter: skip positions where side to move is in check (static eval meaningless)
-	board, err := pos.toBoard()
-	if err == nil && board.InCheck() {
-		return nil, consumed, true // valid stem, skip it
+	if r.FilterChecks {
+		board, err := pos.toBoard()
+		if err == nil && board.InCheck() {
+			return nil, consumed, true // valid stem, skip it
+		}
 	}
 
 	// Convert result to our 0/1/2 format
@@ -1766,7 +1771,7 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 			}
 			continue
 		}
-		if board != nil && board.InCheck() {
+		if r.FilterChecks && board != nil && board.InCheck() {
 			if i < numPlies-1 {
 				applySfMoveFromOurMove(pos, m)
 			}
@@ -1865,6 +1870,13 @@ type SFBinpackReader struct {
 	// BINP format support
 	isBINP     bool
 	binpReader *BINPReader
+}
+
+// SetFilterChecks enables/disables the in-check position filter on the underlying reader.
+func (r *SFBinpackReader) SetFilterChecks(v bool) {
+	if r.binpReader != nil {
+		r.binpReader.FilterChecks = v
+	}
 }
 
 // OpenSFBinpack opens a Stockfish .binpack file for sequential reading.
@@ -2187,14 +2199,17 @@ func applySfMoveFromOurMove(pos *sfLightPos, m Move) {
 
 // SFBinpackSource implements TrainingDataSource for Stockfish .binpack files.
 type SFBinpackSource struct {
-	paths     []string
-	totalPos  int
-	bufSize   int
+	paths        []string
+	totalPos     int
+	bufSize      int
+	filterChecks bool
 }
 
 // NewSFBinpackSource creates a new source for Stockfish .binpack files.
 // Scans files to count total positions (fast header-only scan).
-func NewSFBinpackSource(paths []string, bufSize int) (*SFBinpackSource, error) {
+// filterChecks enables skipping positions where side to move is in check (expensive;
+// use for unfiltered data, disable for pre-filtered SF .min.v2 files).
+func NewSFBinpackSource(paths []string, bufSize int, filterChecks bool) (*SFBinpackSource, error) {
 	total, err := countBinpackPositions(paths)
 	if err != nil {
 		return nil, fmt.Errorf("counting positions: %w", err)
@@ -2203,8 +2218,9 @@ func NewSFBinpackSource(paths []string, bufSize int) (*SFBinpackSource, error) {
 		bufSize = 1_000_000
 	}
 	return &SFBinpackSource{
-		paths:    paths,
-		totalPos: total,
+		paths:        paths,
+		totalPos:     total,
+		filterChecks: filterChecks,
 		bufSize:  bufSize,
 	}, nil
 }
@@ -2228,10 +2244,11 @@ func (s *SFBinpackSource) NewEpochReader(rng *rand.Rand, trainFraction float64) 
 		shuffledPaths[i], shuffledPaths[j] = shuffledPaths[j], shuffledPaths[i]
 	})
 	return &sfBinpackEpochReader{
-		paths:    shuffledPaths,
-		rng:      rng,
-		bufSize:  s.bufSize,
-		trainPos: trainPos,
+		paths:        shuffledPaths,
+		rng:          rng,
+		bufSize:      s.bufSize,
+		trainPos:     trainPos,
+		filterChecks: s.filterChecks,
 	}
 }
 
@@ -2299,10 +2316,11 @@ func sfBinpackReadRange(paths []string, startPos, endPos int) ([]*NNUETrainSampl
 
 // sfBinpackEpochReader provides shuffle-buffered streaming over SF .binpack files.
 type sfBinpackEpochReader struct {
-	paths    []string
-	rng      *rand.Rand
-	bufSize  int
-	trainPos int // number of training positions (first trainPos of total)
+	paths        []string
+	rng          *rand.Rand
+	bufSize      int
+	trainPos     int // number of training positions (first trainPos of total)
+	filterChecks bool
 
 	// Internal state
 	buffer  []*NNUETrainSample
@@ -2365,6 +2383,7 @@ func (r *sfBinpackEpochReader) refillBuffer() error {
 		if err != nil {
 			return err
 		}
+		reader.SetFilterChecks(r.filterChecks)
 		r.reader = reader
 		r.fileIdx = 0
 	}
@@ -2386,6 +2405,7 @@ func (r *sfBinpackEpochReader) refillBuffer() error {
 					if err != nil {
 						return err
 					}
+					reader.SetFilterChecks(r.filterChecks)
 					r.reader = reader
 				}
 				continue

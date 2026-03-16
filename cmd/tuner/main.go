@@ -354,6 +354,7 @@ func runNNUETrain(args []string) {
 	freezeHidden := fs.Bool("freeze-hidden", false, "only train output bucket weights (freeze input + hidden layers)")
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
 	bufferSize := fs.Int("buffer", 1000000, "shuffle buffer size for .binpack files (positions)")
+	filterChecks := fs.Bool("filter-checks", false, "skip positions where side to move is in check (use for unfiltered data)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner nnue-train [options]\n\nOptions:\n")
@@ -441,14 +442,14 @@ func runNNUETrain(args []string) {
 		os.Exit(0)
 	}()
 
-	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss, *bufferSize)
+	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss, *bufferSize, *filterChecks)
 }
 
-func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64, bufferSize int) {
+func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64, bufferSize int, filterChecks bool) {
 	// Detect format by extension
 	var src chess.TrainingDataSource
 	if allHaveExtension(paths, ".binpack") {
-		sfSrc, err := chess.NewSFBinpackSource(paths, bufferSize)
+		sfSrc, err := chess.NewSFBinpackSource(paths, bufferSize, filterChecks)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening SF binpack files: %v\n", err)
 			os.Exit(1)
