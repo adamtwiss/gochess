@@ -2528,6 +2528,7 @@ type SFBinpackSource struct {
 	totalPos     int
 	bufSize      int
 	filterChecks bool
+	SampleRate   float64 // if > 0 and < 1, randomly sample this fraction of positions per epoch
 }
 
 // NewSFBinpackSource creates a new source for Stockfish .binpack files.
@@ -2574,6 +2575,7 @@ func (s *SFBinpackSource) NewEpochReader(rng *rand.Rand, trainFraction float64) 
 		bufSize:      s.bufSize,
 		trainPos:     trainPos,
 		filterChecks: s.filterChecks,
+		sampleRate:   s.SampleRate,
 	}
 }
 
@@ -2646,6 +2648,7 @@ type sfBinpackEpochReader struct {
 	bufSize      int
 	trainPos     int // number of training positions (first trainPos of total)
 	filterChecks bool
+	sampleRate   float64 // if > 0 and < 1, randomly skip positions (1.0 = keep all)
 
 	// Internal state
 	buffer  []*NNUETrainSample
@@ -2656,8 +2659,11 @@ type sfBinpackEpochReader struct {
 	started bool
 }
 
-// NumTrainRecords returns the number of training positions per epoch.
+// NumTrainRecords returns the expected number of training positions per epoch.
 func (r *sfBinpackEpochReader) NumTrainRecords() int {
+	if r.sampleRate > 0 && r.sampleRate < 1 {
+		return int(float64(r.trainPos) * r.sampleRate)
+	}
 	return r.trainPos
 }
 
@@ -2738,8 +2744,14 @@ func (r *sfBinpackEpochReader) refillBuffer() error {
 			return err
 		}
 
-		r.buffer = append(r.buffer, sample)
 		r.posRead++
+
+		// Random sampling: skip positions to reduce epoch size while maintaining diversity
+		if r.sampleRate > 0 && r.sampleRate < 1 && r.rng.Float64() > r.sampleRate {
+			continue
+		}
+
+		r.buffer = append(r.buffer, sample)
 	}
 
 	// Shuffle buffer

@@ -358,6 +358,7 @@ func runNNUETrain(args []string) {
 	resumeFile := fs.String("resume", "", "resume training from existing .nnue network file")
 	bufferSize := fs.Int("buffer", 1000000, "shuffle buffer size for .binpack files (positions)")
 	filterChecks := fs.Bool("filter-checks", false, "skip positions where side to move is in check (use for unfiltered data)")
+	sampleRate := fs.Float64("sample", 1.0, "fraction of positions to train on per epoch (0.1 = 10%, default 1.0 = all)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: tuner nnue-train [options]\n\nOptions:\n")
@@ -445,10 +446,10 @@ func runNNUETrain(args []string) {
 		os.Exit(0)
 	}()
 
-	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss, *bufferSize, *filterChecks)
+	runNNUETrainBinpack(trainer, paths, cfg, *outputFile, actualK, *kValue, &mu, &bestNet, &bestEpoch, &bestValLoss, *bufferSize, *filterChecks, *sampleRate)
 }
 
-func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64, bufferSize int, filterChecks bool) {
+func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.NNUETrainConfig, outputFile string, actualK, requestedK float64, mu *sync.Mutex, bestNet **chess.NNUENet, bestEpoch *int, bestValLoss *float64, bufferSize int, filterChecks bool, sampleRate float64) {
 	// Detect format by extension
 	var src chess.TrainingDataSource
 	if allHaveExtension(paths, ".binpack") {
@@ -456,6 +457,10 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening SF binpack files: %v\n", err)
 			os.Exit(1)
+		}
+		if sampleRate > 0 && sampleRate < 1.0 {
+			sfSrc.SampleRate = sampleRate
+			fmt.Printf("  Sampling %.0f%% of positions per epoch\n", sampleRate*100)
 		}
 		src = sfSrc
 		fmt.Printf("SF binpack data: ~%d estimated positions from %d file(s) (actual count after epoch 1)\n", src.NumRecords(), len(paths))
