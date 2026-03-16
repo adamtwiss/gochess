@@ -1580,3 +1580,35 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 404 games, -13.8 Elo ±21.7, LOS 10.7%.** SPRT bounds: elo0=-5, elo1=15.
 - **Baseline**: 47f9d14
 - **Notes**: Negative. Faster decay loses valuable persistent history data. D=16384 is optimal — history needs to accumulate across many searches to be reliable.
+
+### NMP Dampening Stronger (score+beta)/2 (REJECTED)
+- **Change**: Stronger NMP dampening: `(score+beta)/2` instead of merged `(score*2+beta)/3`.
+- **Result**: **H0 at 208 games, -33.5 Elo ±31.4, LOS 1.9%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: c5bd250 (NMP dampen merged)
+- **Source**: Bracket test of NMP dampening
+- **Notes**: Too much dampening. The merged (score*2+beta)/3 gives 2/3 weight to score, 1/3 to beta. This variant at 1/2 each over-dampens, losing real information from the NMP score. The optimum is confirmed at (score*2+beta)/3.
+
+### Correction History Depth Gate 2 (REJECTED)
+- **Change**: Lower correction history depth gate from `depth >= 3` to `depth >= 2`.
+- **Result**: **H0 at 277 games, -23.9 Elo ±27.0, LOS 4.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: c5bd250
+- **Notes**: Depth-2 search results are too noisy for reliable correction updates. The depth≥3 gate correctly filters out shallow noise. D=16384 and depth≥3 are both confirmed optimal for correction history.
+
+### Capture LMR C=1.90 (REJECTED)
+- **Change**: Relax capture LMR constant from 1.80 to 1.90 (less aggressive reduction).
+- **Result**: **H0 at 749 games, -6.0 Elo ±16.7, LOS 24.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: c5bd250
+- **Notes**: Capture LMR fully bracketed from both sides: C=1.70 (H0, -2.5), C=1.80 (optimal), C=1.90 (H0, -6.0). Don't retest.
+
+### NMP Dampening Weaker (score*3+beta)/4 (REJECTED)
+- **Change**: Less aggressive NMP dampening: `(score*3+beta)/4` instead of merged `(score*2+beta)/3`.
+- **Result**: **H0 at 825 games, -5.1 Elo ±15.9, LOS 26.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: c5bd250
+- **Notes**: NMP dampening fully bracketed from both sides: (score+beta)/2 (H0, -33.5), (score*2+beta)/3 (H1, +12.8), (score*3+beta)/4 (H0, -5.1). The 2:1 ratio is optimal. Don't retest.
+
+### TT Near-Miss Margin 80 (MERGED)
+- **Change**: Widen TT near-miss cutoff margin from 64 to 80 centipawns.
+- **Result**: **H1 at 570 games, +18.3 Elo ±18.5, LOS 97.4%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: c5bd250
+- **Source**: Bracket test of TT near-miss margin
+- **Notes**: Wider margin accepts more TT entries that are 1 ply short of the required depth. At 80cp, entries that exceed beta by 80+ cp are trusted as cutoffs. This works because large TT score margins indicate high-confidence positions where the extra ply is unlikely to change the result. Previous margin of 64 was from initial calibration and was never bracketed until now.

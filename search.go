@@ -1021,7 +1021,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				score > -MateScore+100 && score < MateScore-100 {
 				// TT near-miss cutoffs: accept entries 1 ply short with a score margin.
 				// If the score exceeds the bound by 64cp per ply gap, it's likely still valid.
-				margin := 64
+				margin := 80
 				if entry.Flag == TTLower && score-margin >= beta {
 					return score - margin
 				}
