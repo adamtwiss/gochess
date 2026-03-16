@@ -864,16 +864,37 @@ func runCheckNet(args []string) {
 	}
 
 	netPath := fs.Arg(0)
-	net, err := chess.LoadNNUEAnyVersion(netPath)
+
+	// Detect version and load appropriate net type
+	version, err := chess.DetectNNUEVersion(netPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	var netV4 *chess.NNUENet
+	var netV5 *chess.NNUENetV5
+
+	if version == 5 {
+		netV5, err = chess.LoadNNUEV5(netPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading v5 net: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "info string NNUE v5 fingerprint %s from %s\n", netV5.Fingerprint(), netPath)
+	} else {
+		netV4, err = chess.LoadNNUEAnyVersion(netPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	type testPos struct {
 		name    string
 		fen     string
-		expectMin int // minimum reasonable score (negative = losing side)
-		expectMax int // maximum reasonable score
+		expectMin int
+		expectMax int
 	}
 
 	positions := []testPos{
@@ -891,11 +912,19 @@ func runCheckNet(args []string) {
 		var b chess.Board
 		b.Reset()
 		b.SetFEN(fen)
+
+		if netV5 != nil {
+			acc := chess.NNUEAccumulatorV5{}
+			netV5.RecomputeAccumulator(&b, &acc, chess.White)
+			netV5.RecomputeAccumulator(&b, &acc, chess.Black)
+			return netV5.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		}
+
 		accStack := chess.NewNNUEAccumulatorStack(8)
 		b.NNUEAcc = accStack
-		b.NNUENet = net
-		net.RecomputeAccumulator(accStack.Current(), &b)
-		return net.Evaluate(accStack.Current(), b.SideToMove, b.AllPieces.Count())
+		b.NNUENet = netV4
+		netV4.RecomputeAccumulator(accStack.Current(), &b)
+		return netV4.Evaluate(accStack.Current(), b.SideToMove, b.AllPieces.Count())
 	}
 
 	fmt.Printf("NNUE Health Check: %s\n\n", netPath)
