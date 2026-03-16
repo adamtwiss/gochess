@@ -452,6 +452,63 @@ func (pos *sfLightPos) packBinRecord(score int16, result uint8) [BinpackRecordSi
 	return rec
 }
 
+// packBinRecordFromBoard packs a Board into a 32-byte .bin record.
+// Equivalent to sfLightPos.packBinRecord but works with the incremental Board.
+func packBinRecordFromBoard(b *Board, score int16, result uint8) [BinpackRecordSize]byte {
+	var rec [BinpackRecordSize]byte
+
+	whiteScore := score
+	whiteResult := result
+	if b.SideToMove == Black {
+		whiteScore = -score
+		whiteResult = 2 - result
+	}
+
+	// Occupancy bitmap from Board's AllPieces
+	occ := uint64(b.AllPieces)
+	binary.LittleEndian.PutUint64(rec[0:8], occ)
+
+	// Pack piece nibbles
+	tmp := occ
+	nibbleIdx := 0
+	for tmp != 0 {
+		sq := bits.TrailingZeros64(tmp)
+		tmp &= tmp - 1
+
+		piece := byte(b.Squares[sq])
+		bytePos := 8 + nibbleIdx/2
+		if nibbleIdx%2 == 0 {
+			rec[bytePos] = piece
+		} else {
+			rec[bytePos] |= piece << 4
+		}
+		nibbleIdx++
+	}
+
+	if b.SideToMove == Black {
+		rec[24] = 1
+	}
+	rec[25] = byte(b.Castling)
+	if b.EnPassant == NoSquare {
+		rec[26] = binpackNoEP
+	} else {
+		rec[26] = byte(b.EnPassant.File())
+	}
+	rec[27] = uint8(b.HalfmoveClock)
+
+	s := whiteScore
+	if s > binpackMaxScore {
+		s = binpackMaxScore
+	}
+	if s < binpackMinScore {
+		s = binpackMinScore
+	}
+	binary.LittleEndian.PutUint16(rec[28:30], uint16(s))
+	rec[30] = whiteResult
+
+	return rec
+}
+
 func (pos *sfLightPos) extractFeatures(score int16, result uint8) *NNUETrainSample {
 	// Convert STM-relative to white-relative
 	whiteScore := score
@@ -1953,9 +2010,16 @@ func (r *BINPReader) decodeMovetextPositions(pos *sfLightPos, lastScore int16, l
 }
 
 // decodeMovetextRecords is like decodeMovetextPositions but produces [32]byte bin records.
+// Uses incremental Board updates (MakeMove) for performance.
 func (r *BINPReader) decodeMovetextRecords(pos *sfLightPos, lastScore int16, lastResult int16, numPlies int, data []byte) ([][BinpackRecordSize]byte, int, error) {
 	if len(data) == 0 {
 		return nil, 0, fmt.Errorf("no data for movetext")
+	}
+
+	// Build Board ONCE, then use MakeMove incrementally
+	board, err := pos.toBoard()
+	if err != nil {
+		return nil, 0, err
 	}
 
 	br := newBinpBitReader(data)
@@ -1964,11 +2028,6 @@ func (r *BINPReader) decodeMovetextRecords(pos *sfLightPos, lastScore int16, las
 	mLastScore := -lastScore
 
 	for i := 0; i < numPlies; i++ {
-		board, err := pos.toBoard()
-		if err != nil {
-			return records, br.numReadBytes(), err
-		}
-
 		m := binpDecodeMoveFromBoard(br, board)
 		if m == NoMove || br.overflow {
 			return records, br.numReadBytes(), fmt.Errorf("failed to decode move at ply %d", i)
@@ -1995,24 +2054,19 @@ func (r *BINPReader) decodeMovetextRecords(pos *sfLightPos, lastScore int16, las
 			resultU8 = 1
 		}
 
-		if plyScore > 3000 || plyScore < -3000 {
-			if i < numPlies-1 {
-				applySfMoveFromOurMove(pos, m)
-			}
-			continue
-		}
-		if board != nil && board.InCheck() {
-			if i < numPlies-1 {
-				applySfMoveFromOurMove(pos, m)
-			}
-			continue
+		skip := plyScore > 3000 || plyScore < -3000
+		if !skip && board.InCheck() {
+			skip = true
 		}
 
-		rec := pos.packBinRecord(plyScore, resultU8)
-		records = append(records, rec)
+		if !skip {
+			rec := packBinRecordFromBoard(board, plyScore, resultU8)
+			records = append(records, rec)
+		}
 
+		// Apply move to advance board for next ply
 		if i < numPlies-1 {
-			applySfMoveFromOurMove(pos, m)
+			board.MakeMove(m)
 		}
 	}
 
