@@ -1351,6 +1351,12 @@ type BINPReader struct {
 	binRecordMode  bool
 	pendingRecords [][BinpackRecordSize]byte
 	pridx          int // index into pendingRecords
+
+	// Diagnostics
+	MovetextDecodeFailures int64
+	MovetextDecodeSuccess  int64
+	StemsRead              int64
+	StemsFiltered          int64
 }
 
 // openBINPReader opens a BINP-format file for reading.
@@ -1545,17 +1551,14 @@ func (r *BINPReader) parseStemAt(offset int) (*NNUETrainSample, int, bool) {
 	}
 
 	consumed := 34 // stem + numPlies
+	r.StemsRead++
 
-	// Filter: skip positions with extreme scores (mates, decided games)
-	if score > 3000 || score < -3000 {
-		return nil, consumed, true // valid stem, skip it
-	}
-
-	// Filter: skip positions where side to move is in check (static eval meaningless)
-	if r.FilterChecks {
+	// Check if stem should be filtered (but still need to decode movetext for byte length)
+	stemFiltered := score > 3000 || score < -3000
+	if !stemFiltered && r.FilterChecks {
 		board, err := pos.toBoard()
 		if err == nil && board.InCheck() {
-			return nil, consumed, true // valid stem, skip it
+			stemFiltered = true
 		}
 	}
 
@@ -1601,23 +1604,29 @@ func (r *BINPReader) parseStemAt(offset int) (*NNUETrainSample, int, bool) {
 		return nil, consumed, true
 	}
 
-	// Extract features for the stem position
-	stemSample := pos.extractFeatures(score, resultU8)
+	// Extract features for the stem position (skip if filtered)
+	var stemSample *NNUETrainSample
+	if !stemFiltered {
+		stemSample = pos.extractFeatures(score, resultU8)
+	} else {
+		r.StemsFiltered++
+	}
 
-	// Decode movetext positions if present
+	// Decode movetext positions if present (always decode to get correct byte length)
 	if numPlies > 0 && compMove != 0 {
 		movetextPos := pos
 		if err := movetextPos.applyBINPMove(compMove); err != nil {
-			// Can't apply stem move — return stem only, skip rest of chunk
+			r.MovetextDecodeFailures++
 			return stemSample, consumed, true
 		}
 		movetextSamples, movetextLen, err := r.decodeMovetextPositions(
 			&movetextPos, score, result, numPlies, r.chunk[offset+34:])
 		if err != nil {
-			// Movetext decoding failed — return stem only
+			r.MovetextDecodeFailures++
 			return stemSample, consumed, true
 		}
 		consumed += movetextLen
+		r.MovetextDecodeSuccess++
 		if len(movetextSamples) > 0 {
 			r.pending = movetextSamples
 			r.pidx = 0
@@ -2119,7 +2128,12 @@ func OpenSFBinpack(path string) (*SFBinpackReader, error) {
 // Close closes the reader.
 func (r *SFBinpackReader) Close() error {
 	if r.isBINP {
-		return r.binpReader.Close()
+		br := r.binpReader
+		if br.StemsRead > 0 {
+			fmt.Fprintf(os.Stderr, "info string BINP stats: stems=%d filtered=%d movetext_ok=%d movetext_fail=%d\n",
+				br.StemsRead, br.StemsFiltered, br.MovetextDecodeSuccess, br.MovetextDecodeFailures)
+		}
+		return br.Close()
 	}
 	return r.file.Close()
 }
