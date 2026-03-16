@@ -206,31 +206,36 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	}
 
 	// Compute output: dot product of CReLU(accumulators) with output weights + bias
-	output := int32(net.OutputBias[bucket])
-
-	// STM perspective (first half of output weights)
-	for i := 0; i < NNUEv5HiddenSize; i++ {
-		// CReLU: clamp to [0, QA=255]
-		v := int32(stmAcc[i])
-		if v < nnueV5ClipMin {
-			v = nnueV5ClipMin
+	var output int32
+	if nnueUseSIMD {
+		// SIMD: clamped dot product for each perspective
+		output = net.OutputBias[bucket]
+		output += nnueV5CReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
+		output += nnueV5CReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+	} else {
+		output = net.OutputBias[bucket]
+		// STM perspective (first half of output weights)
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			v := int32(stmAcc[i])
+			if v < nnueV5ClipMin {
+				v = nnueV5ClipMin
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			output += v * int32(net.OutputWeights[bucket][i])
 		}
-		if v > nnueV5ClipMax {
-			v = nnueV5ClipMax
+		// NTM perspective (second half of output weights)
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			v := int32(ntmAcc[i])
+			if v < nnueV5ClipMin {
+				v = nnueV5ClipMin
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 		}
-		output += v * int32(net.OutputWeights[bucket][i])
-	}
-
-	// NTM perspective (second half of output weights)
-	for i := 0; i < NNUEv5HiddenSize; i++ {
-		v := int32(ntmAcc[i])
-		if v < nnueV5ClipMin {
-			v = nnueV5ClipMin
-		}
-		if v > nnueV5ClipMax {
-			v = nnueV5ClipMax
-		}
-		output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 	}
 
 	// Scale: divide by QA*QB to get the raw network output, then multiply by eval_scale
