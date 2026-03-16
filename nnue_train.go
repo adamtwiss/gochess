@@ -1100,7 +1100,7 @@ func (trainer *NNUETrainer) LoadWeights(net *NNUENet) {
 
 // TrainBinpack runs the NNUE training loop using any TrainingDataSource.
 func (trainer *NNUETrainer) TrainBinpack(src TrainingDataSource, cfg NNUETrainConfig,
-	onEpoch func(epoch int, trainLoss, valLoss float64)) {
+	onEpoch func(epoch int, trainLoss, valLoss float64, numPositions int)) {
 
 	trainer.useLAMB = cfg.UseLAMB
 	trainFraction := 0.9
@@ -1211,7 +1211,7 @@ func (trainer *NNUETrainer) TrainBinpack(src TrainingDataSource, cfg NNUETrainCo
 		valLoss := trainer.computeValidationLossFromSamples(valSamples, cfg)
 
 		if onEpoch != nil {
-			onEpoch(epoch, trainLoss, valLoss)
+			onEpoch(epoch, trainLoss, valLoss, numSamples)
 		}
 	}
 }

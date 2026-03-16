@@ -458,7 +458,7 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 			os.Exit(1)
 		}
 		src = sfSrc
-		fmt.Printf("SF binpack data: %d total positions from %d file(s)\n", src.NumRecords(), len(paths))
+		fmt.Printf("SF binpack data: ~%d estimated positions from %d file(s) (actual count after epoch 1)\n", src.NumRecords(), len(paths))
 		for _, p := range paths {
 			stat, _ := os.Stat(p)
 			fmt.Printf("  %s (%.1f MB)\n", p, float64(stat.Size())/(1024*1024))
@@ -504,7 +504,7 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 
 	start := time.Now()
 	epochStart := time.Now()
-	trainer.TrainBinpack(src, cfg, func(epoch int, trainLoss, valLoss float64) {
+	trainer.TrainBinpack(src, cfg, func(epoch int, trainLoss, valLoss float64, numPositions int) {
 		elapsed := time.Since(epochStart)
 		epochStart = time.Now()
 		marker := ""
@@ -517,6 +517,9 @@ func runNNUETrainBinpack(trainer *chess.NNUETrainer, paths []string, cfg chess.N
 			marker = " *best"
 		}
 		mu.Unlock()
+		if epoch == 1 {
+			fmt.Printf("info string %d positions in epoch (%.1fM)\n", numPositions, float64(numPositions)/1e6)
+		}
 		if epoch <= 10 || epoch%10 == 0 || epoch == cfg.Epochs {
 			fmt.Printf("%-8d  %-14.8f  %-14.8f  %s%s\n", epoch, trainLoss, valLoss, elapsed.Round(time.Millisecond), marker)
 		}
