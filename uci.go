@@ -548,6 +548,25 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 			e.nnueNet = nil
 			e.board.NNUENet = nil
 			e.board.NNUEAcc = nil
+			e.board.NNUENetV5 = nil
+			e.board.NNUEAccV5 = nil
+			return
+		}
+		// Detect version and load appropriate net type
+		version, verr := DetectNNUEVersion(value)
+		if verr != nil {
+			e.send("info string ERROR: failed to load NNUE from %s: %v", value, verr)
+			fmt.Fprintf(os.Stderr, "ERROR: failed to load NNUE from %s: %v\n", value, verr)
+			os.Exit(1)
+		}
+		if version == 5 {
+			netV5, err := LoadNNUEV5(value)
+			if err != nil {
+				e.send("info string ERROR: failed to load NNUE v5 from %s: %v", value, err)
+				fmt.Fprintf(os.Stderr, "ERROR: failed to load NNUE v5 from %s: %v\n", value, err)
+				os.Exit(1)
+			}
+			e.SetNNUEV5(netV5)
 			return
 		}
 		net, err := LoadNNUEAnyVersion(value)
