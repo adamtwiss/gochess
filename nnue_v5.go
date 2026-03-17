@@ -210,29 +210,37 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	}
 
 	// Compute output: dot product of activation(accumulators) with output weights + bias
-	// CReLU: clamp(x, 0, QA) * weight
-	// SCReLU: clamp(x, 0, QA)² / QA * weight (squaring improves gradient flow)
+	// CReLU: clamp(x, 0, QA) * weight — dot product at scale QA*QB
+	// SCReLU: clamp(x, 0, QA)² * weight, then /QA — matches Bullet's reference.
+	//   Squaring produces values at scale QA², so the dot is at QA²*QB.
+	//   A single /QA after the full sum reduces to QA*QB (same as CReLU).
+	//   This preserves precision vs dividing per-neuron (Bullet simple.rs pattern).
+	//   Requires int64 since max sum = 2048 * 255² * 127 ≈ 16.9B > int32 max.
 	var output int32
 	if net.UseSCReLU {
-		output = net.OutputBias[bucket]
 		if nnueUseSIMD {
-			output += nnueV5SCReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
-			output += nnueV5SCReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+			// SIMD uses >>8 (÷256) per-element to stay in int16/int32.
+			// Correct divisor is QA=255, so we compensate: x*256/255 = x + x/255.
+			// This brings the SIMD result in line with the Bullet reference.
+			dot := nnueV5SCReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
+			dot += nnueV5SCReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+			dot += dot / nnueV5InputScale // compensate >>8 vs /255
+			output = net.OutputBias[bucket] + dot
 		} else {
+			var sum int64
 			for i := 0; i < NNUEv5HiddenSize; i++ {
 				v := int32(stmAcc[i])
 				if v < 0 { v = 0 }
 				if v > nnueV5ClipMax { v = nnueV5ClipMax }
-				v = v * v / nnueV5InputScale // SCReLU: x²/QA
-				output += v * int32(net.OutputWeights[bucket][i])
+				sum += int64(v*v) * int64(net.OutputWeights[bucket][i])
 			}
 			for i := 0; i < NNUEv5HiddenSize; i++ {
 				v := int32(ntmAcc[i])
 				if v < 0 { v = 0 }
 				if v > nnueV5ClipMax { v = nnueV5ClipMax }
-				v = v * v / nnueV5InputScale
-				output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
+				sum += int64(v*v) * int64(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 			}
+			output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
 		}
 	} else {
 		output = net.OutputBias[bucket]
