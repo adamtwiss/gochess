@@ -98,3 +98,9 @@ func nnueV5CReLUDot1024(acc *int16, weights *int16) int32
 //
 //go:noescape
 func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
+
+// nnueV5CReLUDotN computes CReLU dot product for any width (multiple of 16).
+//   sum = sum_i( clamp(acc[i], 0, 255) * weights[i] ) for i=0..count-1
+//
+//go:noescape
+func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
