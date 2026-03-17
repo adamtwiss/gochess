@@ -1687,3 +1687,21 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### LMR Quiet C=1.25 (REJECTED)
 - **Change**: Tighten quiet LMR constant from 1.50 to 1.25.
 - **Result**: **H0 at 959 games, -3.6 Elo ±14.8.** SPRT bounds: elo0=-5, elo1=15.
+
+### V5: Futility 60+d*60 (MERGED)
+- **Change**: Tighten futility margin from `80+lmrDepth*80` to `60+lmrDepth*60`.
+- **Result**: **H1 at 935 games, +12.3 Elo ±13.6, LOS 96.1%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 932c12c with v5 sb120 net
+- **Notes**: Was H0 (-0.5 Elo) with v4 net. V5's stronger eval allows tighter futility pruning — confirms the prediction that better eval shifts search parameter optima. First v5-specific search win.
+
+### V5: LMR Quiet C=1.20 (REJECTED)
+- **Change**: Tighten quiet LMR from C=1.30 to C=1.20.
+- **Result**: **H0 at 167 games, -37.6 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 932c12c with v5 sb120 net
+- **Notes**: Still too aggressive even with v5. C=1.30 remains optimal.
+
+### V5: TT Near-Miss Margin 96 (REJECTED)
+- **Change**: Widen TT near-miss from 80 to 96cp.
+- **Result**: **H0 at 721 games, -3.9 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 932c12c with v5 sb120 net
+- **Notes**: Still flat with v5. Margin 80 confirmed optimal regardless of eval quality.
