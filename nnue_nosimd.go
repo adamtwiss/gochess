@@ -21,3 +21,4 @@ func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *i
 func nnueV5CReLUDot1024(acc *int16, weights *int16) int32 { panic("SIMD not available") }
 func nnueDotReLU32(input *int32, weights *int16) int32 { panic("SIMD not available") }
 func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32 { panic("SIMD not available") }
+func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32 { panic("SIMD not available") }

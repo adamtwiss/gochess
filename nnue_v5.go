@@ -232,13 +232,13 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 			sum += int64(v*v) * int64(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 		}
 		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
-	} else if nnueUseSIMD && NNUEv5HiddenSize == 1024 {
-		// SIMD fast path for 1024-wide CReLU
+	} else if nnueUseSIMD {
+		// SIMD CReLU dot product — works for any width that's a multiple of 16
 		output = net.OutputBias[bucket]
-		output += nnueV5CReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
-		output += nnueV5CReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+		output += nnueV5CReLUDotN(&stmAcc[0], &net.OutputWeights[bucket][0], NNUEv5HiddenSize)
+		output += nnueV5CReLUDotN(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize], NNUEv5HiddenSize)
 	} else {
-		// Scalar CReLU for any width
+		// Scalar CReLU for non-SIMD platforms
 		output = net.OutputBias[bucket]
 		for i := 0; i < NNUEv5HiddenSize; i++ {
 			v := int32(stmAcc[i])

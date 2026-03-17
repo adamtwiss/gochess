@@ -735,3 +735,43 @@ v5screlu_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
+// Generic width CReLU dot product.
+// Computes: sum = sum_i( clamp(acc[i], 0, 255) * weights[i] ) for i=0..count-1
+// count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueV5CReLUDotN(SB), NOSPLIT, $0-28
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $4, CX                         // count / 16 = iterations
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+	VPXOR Y5, Y5, Y5                    // Y5 = accumulator (int32 sum)
+
+v5dotn_loop:
+	VMOVDQU (AX), Y2                    // load 16 acc values
+	VPMAXSW Y0, Y2, Y2                  // max(0, x)
+	VPMINSW Y1, Y2, Y2                  // min(255, x) = CReLU
+	VMOVDQU (BX), Y3                    // load 16 weights
+	VPMADDWD Y2, Y3, Y4                 // multiply pairs, accumulate to 8 int32
+	VPADDD Y4, Y5, Y5                   // add to running sum
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ v5dotn_loop
+
+	// Horizontal sum of Y5
+	VEXTRACTI128 $1, Y5, X6
+	VPADDD X6, X5, X5
+	VPSHUFD $0x4E, X5, X6
+	VPADDD X6, X5, X5
+	VPSHUFD $0x01, X5, X6
+	VPADDD X6, X5, X5
+	VMOVD X5, AX
+	MOVL AX, ret+24(FP)
+
+	VZEROUPPER
+	RET
