@@ -84,3 +84,10 @@ func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *i
 //
 //go:noescape
 func nnueDotReLU32(input *int32, weights *int16) int32
+
+// nnueV5CReLUDot1024 computes the clamped dot product for v5 output:
+//   sum = sum_i( clamp(acc[i], 0, 255) * weights[i] ) for i=0..1023
+// Returns int32 result. Uses AVX2 VPMADDWD for efficient multiply-accumulate.
+//
+//go:noescape
+func nnueV5CReLUDot1024(acc *int16, weights *int16) int32

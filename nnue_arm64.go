@@ -83,3 +83,8 @@ func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *i
 //
 //go:noescape
 func nnueDotReLU32(input *int32, weights *int16) int32
+
+// nnueV5CReLUDot1024 computes clamped dot product for v5 output layer.
+// TODO: implement NEON version
+//go:noescape
+func nnueV5CReLUDot1024(acc *int16, weights *int16) int32

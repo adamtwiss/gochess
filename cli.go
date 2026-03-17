@@ -516,9 +516,14 @@ func (c *CLIEngine) cmdPerft(args []string) {
 	}
 }
 
-// SetNNUE loads an NNUE network for the CLI engine.
+// SetNNUE loads an NNUE v4 network for the CLI engine.
 func (c *CLIEngine) SetNNUE(net *NNUENet) {
 	c.nnueNet = net
+}
+
+// SetNNUEV5 loads an NNUE v5 network for the CLI engine.
+func (c *CLIEngine) SetNNUEV5(net *NNUENetV5) {
+	c.board.AttachNNUEV5(net)
 }
 
 func (c *CLIEngine) cmdNNUE(args []string) {

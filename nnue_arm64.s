@@ -810,3 +810,15 @@ TEXT ·nnueDotReLU32(SB), NOSPLIT, $0-24
 	MOVW R12, ret+16(FP)
 
 	RET
+
+// ============================================================================
+// nnueV5CReLUDot1024(acc *int16, weights *int16) int32
+// V5 clamped dot product — TODO: optimize with NEON
+// For now, returns 0 (fallback to Go code)
+// ============================================================================
+TEXT ·nnueV5CReLUDot1024(SB), NOSPLIT, $0-24
+	// Stub — this should not be called on ARM64 until NEON is implemented
+	// The Go fallback in Forward handles this case
+	MOVW $0, R0
+	MOVW R0, ret+16(FP)
+	RET

@@ -645,3 +645,52 @@ copysubsubadd_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// 16 x int16(255) for v5 ClippedReLU max clamp
+// ============================================================================
+DATA nnue_clamp_255<>+0(SB)/8, $0x00ff00ff00ff00ff
+DATA nnue_clamp_255<>+8(SB)/8, $0x00ff00ff00ff00ff
+DATA nnue_clamp_255<>+16(SB)/8, $0x00ff00ff00ff00ff
+DATA nnue_clamp_255<>+24(SB)/8, $0x00ff00ff00ff00ff
+GLOBL nnue_clamp_255<>(SB), NOPTR+RODATA, $32
+
+// ============================================================================
+// nnueV5CReLUDot1024(acc *int16, weights *int16) int32
+// Computes: sum = sum_i( clamp(acc[i], 0, 255) * weights[i] ) for i=0..1023
+// Uses VPMAXSW/VPMINSW for clamping, VPMADDWD for multiply-accumulate.
+// Returns the 32-bit sum.
+// 1024 elements / 16 per YMM = 64 iterations.
+// ============================================================================
+TEXT ·nnueV5CReLUDot1024(SB), NOSPLIT, $0-24
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+	VPXOR Y5, Y5, Y5                    // Y5 = accumulator (int32 sum)
+	MOVQ $64, CX                        // 64 iterations
+
+v5dot_loop:
+	VMOVDQU (AX), Y2                    // load 16 acc values
+	VPMAXSW Y0, Y2, Y2                  // max(0, x) 
+	VPMINSW Y1, Y2, Y2                  // min(255, x) = CReLU
+	VMOVDQU (BX), Y3                    // load 16 weights
+	VPMADDWD Y2, Y3, Y4                 // multiply pairs, accumulate to 8 int32
+	VPADDD Y4, Y5, Y5                   // add to running sum
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ v5dot_loop
+
+	// Horizontal sum of Y5 (8 x int32 -> 1 int32)
+	VEXTRACTI128 $1, Y5, X6             // high 128 bits
+	VPADDD X6, X5, X5                   // add high + low (4 x int32)
+	VPSHUFD $0x4E, X5, X6               // swap high/low 64-bit halves
+	VPADDD X6, X5, X5                   // 2 x int32
+	VPSHUFD $0x01, X5, X6               // swap 32-bit halves
+	VPADDD X6, X5, X5                   // 1 x int32
+	VMOVD X5, AX                        // move to register
+	MOVL AX, ret+16(FP)                 // return value
+
+	VZEROUPPER
+	RET

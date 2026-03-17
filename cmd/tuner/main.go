@@ -864,16 +864,37 @@ func runCheckNet(args []string) {
 	}
 
 	netPath := fs.Arg(0)
-	net, err := chess.LoadNNUEAnyVersion(netPath)
+
+	// Detect version and load appropriate net type
+	version, err := chess.DetectNNUEVersion(netPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	var netV4 *chess.NNUENet
+	var netV5 *chess.NNUENetV5
+
+	if version == 5 {
+		netV5, err = chess.LoadNNUEV5(netPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading v5 net: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "info string NNUE v5 fingerprint %s from %s\n", netV5.Fingerprint(), netPath)
+	} else {
+		netV4, err = chess.LoadNNUEAnyVersion(netPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	type testPos struct {
 		name    string
 		fen     string
-		expectMin int // minimum reasonable score (negative = losing side)
-		expectMax int // maximum reasonable score
+		expectMin int
+		expectMax int
 	}
 
 	positions := []testPos{
@@ -891,11 +912,19 @@ func runCheckNet(args []string) {
 		var b chess.Board
 		b.Reset()
 		b.SetFEN(fen)
+
+		if netV5 != nil {
+			acc := chess.NNUEAccumulatorV5{}
+			netV5.RecomputeAccumulator(&b, &acc, chess.White)
+			netV5.RecomputeAccumulator(&b, &acc, chess.Black)
+			return netV5.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		}
+
 		accStack := chess.NewNNUEAccumulatorStack(8)
 		b.NNUEAcc = accStack
-		b.NNUENet = net
-		net.RecomputeAccumulator(accStack.Current(), &b)
-		return net.Evaluate(accStack.Current(), b.SideToMove, b.AllPieces.Count())
+		b.NNUENet = netV4
+		netV4.RecomputeAccumulator(accStack.Current(), &b)
+		return netV4.Evaluate(accStack.Current(), b.SideToMove, b.AllPieces.Count())
 	}
 
 	fmt.Printf("NNUE Health Check: %s\n\n", netPath)
@@ -1118,6 +1147,7 @@ func runConvertBullet(args []string) {
 	fs := flag.NewFlagSet("convert-bullet", flag.ExitOnError)
 	input := fs.String("input", "", "Bullet quantised.bin file (required)")
 	output := fs.String("output", "net.nnue", "output .nnue file")
+	v5 := fs.Bool("v5", false, "convert as v5 (shallow wide 1024) instead of v4 (deep 256)")
 	fs.Parse(args)
 
 	if *input == "" {
@@ -1130,6 +1160,11 @@ func runConvertBullet(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", *input, err)
 		os.Exit(1)
+	}
+
+	if *v5 {
+		convertBulletV5(data, *output)
+		return
 	}
 
 	// Expected sizes for our exact architecture (no layerstack buckets on hidden layers)
@@ -1232,5 +1267,78 @@ func runConvertBullet(args []string) {
 
 	fi, _ := os.Stat(*output)
 	fmt.Printf("Saved %s (%d bytes)\n", *output, fi.Size())
+	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
+}
+
+func convertBulletV5(data []byte, outputPath string) {
+	const (
+		inputSize  = 12288
+		hiddenSize = 1024
+		buckets    = 8
+	)
+
+	// V5 layout from Bullet (with .transpose()):
+	// l0w: [inputSize][hiddenSize] i16 (transposed by Bullet SavedFormat)
+	// l0b: [hiddenSize] i16
+	// l1w: [2*hiddenSize][buckets] i16 (transposed by Bullet SavedFormat)
+	// l1b: [buckets] i32
+	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b
+		2*hiddenSize*buckets*2 + buckets*4 // l1w + l1b
+
+	fmt.Printf("Input file: %d bytes, expected: %d bytes\n", len(data), expectedSize)
+	if len(data) < expectedSize {
+		fmt.Fprintf(os.Stderr, "Error: file too small (got %d, need %d)\n", len(data), expectedSize)
+		os.Exit(1)
+	}
+
+	net := &chess.NNUENetV5{}
+	offset := 0
+
+	// l0w: [inputSize][hiddenSize] i16 (already transposed by Bullet)
+	for i := 0; i < inputSize; i++ {
+		for j := 0; j < hiddenSize; j++ {
+			net.InputWeights[i][j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+
+	// l0b: [hiddenSize] i16
+	for j := 0; j < hiddenSize; j++ {
+		net.InputBiases[j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+		offset += 2
+	}
+
+	// l1w: [2*hiddenSize][buckets] i16 (already transposed by Bullet)
+	// Our format: OutputWeights[bucket][2*hiddenSize] — need to transpose
+	var l1wRaw [2 * hiddenSize][buckets]int16
+	for i := 0; i < 2*hiddenSize; i++ {
+		for b := 0; b < buckets; b++ {
+			l1wRaw[i][b] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+	// Transpose: [concat_input][bucket] -> [bucket][concat_input]
+	for b := 0; b < buckets; b++ {
+		for i := 0; i < 2*hiddenSize; i++ {
+			net.OutputWeights[b][i] = l1wRaw[i][b]
+		}
+	}
+
+	// l1b: [buckets] i32
+	for b := 0; b < buckets; b++ {
+		net.OutputBias[b] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	fmt.Printf("Parsed %d bytes of %d\n", offset, len(data))
+
+	// Save in our v5 .nnue format
+	if err := chess.SaveNNUEV5(outputPath, net); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving: %v\n", err)
+		os.Exit(1)
+	}
+
+	fi, _ := os.Stat(outputPath)
+	fmt.Printf("Saved %s (%d bytes, v5)\n", outputPath, fi.Size())
 	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
 }

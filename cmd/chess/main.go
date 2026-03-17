@@ -92,19 +92,33 @@ func main() {
 
 	// Load NNUE network (before any mode branches)
 	var nnueNet *chess.NNUENet
+	var nnueNetV5 *chess.NNUENetV5
 	if *classical {
 		// Explicitly disable NNUE
 		chess.UseNNUE = false
 	} else if *nnueFile != "" {
-		// Explicit net path — must exist
-		var err error
-		nnueNet, err = chess.LoadNNUEAnyVersion(*nnueFile)
+		// Explicit net path — detect version and load
+		version, err := chess.DetectNNUEVersion(*nnueFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
 			os.Exit(1)
 		}
-		chess.GlobalNNUENet = nnueNet
-		fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
+		if version == 5 {
+			nnueNetV5, err = chess.LoadNNUEV5(*nnueFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading NNUE v5: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "NNUE v5 loaded from %s (fingerprint %s)\n", *nnueFile, nnueNetV5.Fingerprint())
+		} else {
+			nnueNet, err = chess.LoadNNUEAnyVersion(*nnueFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
+				os.Exit(1)
+			}
+			chess.GlobalNNUENet = nnueNet
+			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
+		}
 	} else {
 		// Try net.nnue next to the binary, then in CWD
 		defaultNet := filepath.Join(exeDir, "net.nnue")
@@ -176,7 +190,9 @@ func main() {
 		if book != nil {
 			engine.SetBook(book)
 		}
-		if nnueNet != nil {
+		if nnueNetV5 != nil {
+			engine.SetNNUEV5(nnueNetV5)
+		} else if nnueNet != nil {
 			engine.SetNNUE(nnueNet)
 		}
 		engine.Run()
@@ -185,7 +201,9 @@ func main() {
 
 	// Interactive CLI mode
 	cli := chess.NewCLIEngine()
-	if nnueNet != nil {
+	if nnueNetV5 != nil {
+		cli.SetNNUEV5(nnueNetV5)
+	} else if nnueNet != nil {
 		cli.SetNNUE(nnueNet)
 	}
 	cli.Run()
