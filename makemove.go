@@ -34,16 +34,15 @@ func (b *Board) MakeMove(m Move) {
 			b.NNUEAcc.Push()
 		}
 	}
-	kingBucketChangedV5 := false
 	if b.NNUEAccV5 != nil {
 		if isKingMove && (KingBucket(from) != KingBucket(to) ||
 			kingBucketMirrorFile[from] != kingBucketMirrorFile[to]) {
-			// King bucket changed — need full recompute after move
-			b.NNUEAccV5.Push()
-			kingBucketChangedV5 = true
+			// King bucket changed — push empty, will recompute on demand
+			b.NNUEAccV5.Push() // Computed=false, Dirty.Type=0
 		} else {
-			// Copy current accumulator for incremental update
+			// Push copy with dirty piece — lazy update on demand
 			b.NNUEAccV5.PushCopy()
+			b.NNUEAccV5.Current().Computed = false // needs materialization
 		}
 	}
 
@@ -276,74 +275,89 @@ func (b *Board) MakeMove(m Move) {
 		}
 	}
 
-	// V5 NNUE: eager incremental accumulator update
-	if b.NNUEAccV5 != nil && !kingBucketChangedV5 {
+	// V5 NNUE: store dirty piece for lazy materialization.
+	// The accumulator is updated on demand when Evaluate() needs it.
+	if b.NNUEAccV5 != nil {
 		acc := b.NNUEAccV5.Current()
-		net := b.NNUENetV5
-		// King squares (after the move has been applied)
-		wKingSq := b.Pieces[WhiteKing].LSB()
-		bKingSq := b.Pieces[BlackKing].LSB()
+		d := &acc.Dirty
 
-		if flags == FlagEnPassant {
-			// En passant: remove captured pawn, move our pawn
+		if isKingMove {
+			if flags == FlagCastle {
+				d.Type = 7
+				d.Piece = piece
+				d.From = from
+				d.To = to
+				if b.SideToMove == Black { // side already flipped; was White's move
+					if to == NewSquare(6, 0) {
+						d.RookFrom = NewSquare(7, 0)
+						d.RookTo = NewSquare(5, 0)
+					} else {
+						d.RookFrom = NewSquare(0, 0)
+						d.RookTo = NewSquare(3, 0)
+					}
+				} else {
+					if to == NewSquare(6, 7) {
+						d.RookFrom = NewSquare(7, 7)
+						d.RookTo = NewSquare(5, 7)
+					} else {
+						d.RookFrom = NewSquare(0, 7)
+						d.RookTo = NewSquare(3, 7)
+					}
+				}
+			} else if undo.Captured != Empty {
+				d.Type = 2
+				d.Piece = piece
+				d.From = from
+				d.To = to
+				d.CapPiece = undo.Captured
+				d.CapSq = to
+			} else {
+				d.Type = 6 // quiet king move same bucket
+				d.Piece = piece
+				d.From = from
+				d.To = to
+			}
+		} else if flags == FlagEnPassant {
 			capSq := to - 8
 			capPiece := Piece(BlackPawn)
-			if b.SideToMove == White { // side already flipped
+			if b.SideToMove == White {
 				capSq = to + 8
 				capPiece = WhitePawn
 			}
-			net.RemoveFeature(acc, capPiece, capSq, wKingSq, bKingSq)
-			net.RemoveFeature(acc, piece, from, wKingSq, bKingSq)
-			net.AddFeature(acc, piece, to, wKingSq, bKingSq)
+			d.Type = 3
+			d.Piece = piece
+			d.From = from
+			d.To = to
+			d.CapPiece = capPiece
+			d.CapSq = capSq
 		} else if flags&FlagPromotion != 0 {
 			promoPiece := m.PromotionPiece()
-			if b.SideToMove == White { // side already flipped
+			if b.SideToMove == White {
 				promoPiece += 6
 			}
-			net.RemoveFeature(acc, piece, from, wKingSq, bKingSq)
 			if undo.Captured != Empty {
-				net.RemoveFeature(acc, undo.Captured, to, wKingSq, bKingSq)
+				d.Type = 5
+				d.CapPiece = undo.Captured
+			} else {
+				d.Type = 4
 			}
-			net.AddFeature(acc, promoPiece, to, wKingSq, bKingSq)
-		} else if flags == FlagCastle {
-			// Castling: move king + move rook
-			net.RemoveFeature(acc, piece, from, wKingSq, bKingSq)
-			net.AddFeature(acc, piece, to, wKingSq, bKingSq)
-			// Determine rook squares
-			var rookFrom, rookTo Square
-			if b.SideToMove == Black { // was White's move
-				if to == NewSquare(6, 0) {
-					rookFrom, rookTo = NewSquare(7, 0), NewSquare(5, 0)
-				} else {
-					rookFrom, rookTo = NewSquare(0, 0), NewSquare(3, 0)
-				}
-				net.RemoveFeature(acc, WhiteRook, rookFrom, wKingSq, bKingSq)
-				net.AddFeature(acc, WhiteRook, rookTo, wKingSq, bKingSq)
-			} else { // was Black's move
-				if to == NewSquare(6, 7) {
-					rookFrom, rookTo = NewSquare(7, 7), NewSquare(5, 7)
-				} else {
-					rookFrom, rookTo = NewSquare(0, 7), NewSquare(3, 7)
-				}
-				net.RemoveFeature(acc, BlackRook, rookFrom, wKingSq, bKingSq)
-				net.AddFeature(acc, BlackRook, rookTo, wKingSq, bKingSq)
-			}
+			d.Piece = piece
+			d.From = from
+			d.To = to
+			d.PromoPc = promoPiece
 		} else if undo.Captured != Empty {
-			// Capture: remove captured, move our piece
-			net.RemoveFeature(acc, undo.Captured, to, wKingSq, bKingSq)
-			net.RemoveFeature(acc, piece, from, wKingSq, bKingSq)
-			net.AddFeature(acc, piece, to, wKingSq, bKingSq)
+			d.Type = 2
+			d.Piece = piece
+			d.From = from
+			d.To = to
+			d.CapPiece = undo.Captured
+			d.CapSq = to
 		} else {
-			// Quiet move: remove from, add to
-			net.RemoveFeature(acc, piece, from, wKingSq, bKingSq)
-			net.AddFeature(acc, piece, to, wKingSq, bKingSq)
+			d.Type = 1 // quiet move
+			d.Piece = piece
+			d.From = from
+			d.To = to
 		}
-	} else if b.NNUEAccV5 != nil && kingBucketChangedV5 {
-		// King bucket changed — full recompute
-		acc := b.NNUEAccV5.Current()
-		b.NNUENetV5.RecomputeAccumulator(b, acc, White)
-		b.NNUENetV5.RecomputeAccumulator(b, acc, Black)
-		acc.Computed = true
 	}
 }
 
