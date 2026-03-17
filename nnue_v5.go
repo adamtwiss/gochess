@@ -20,7 +20,7 @@ import (
 
 const (
 	// V5 network dimensions
-	NNUEv5HiddenSize = 1024 // per perspective (wider than v4's 256)
+	NNUEv5HiddenSize = 1536 // per perspective (wider than v4's 256)
 
 	// V5 quantization scale factors
 	nnueV5InputScale  = 255 // CReLU clips to [0, 255] — Bullet standard for CReLU/SCReLU
@@ -136,19 +136,17 @@ func (net *NNUENetV5) RecomputeAccumulator(b *Board, acc *NNUEAccumulatorV5, per
 			continue
 		}
 
-		addWeights1024(dst, &net.InputWeights[idx])
+		addWeightsV5(dst, &net.InputWeights[idx])
 	}
 }
 
-// addWeights1024 adds 1024 int16 weights to an accumulator slice.
-// Uses SIMD when available (4 × 256-wide operations).
-func addWeights1024(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
+// addWeightsV5 adds NNUEv5HiddenSize int16 weights to an accumulator slice.
+// Uses SIMD when available (N × 256-wide operations).
+func addWeightsV5(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
 	if nnueUseSIMD {
-		// 4 × 256-wide SIMD additions
-		nnueAccAdd256(&acc[0], &weights[0])
-		nnueAccAdd256(&acc[256], &weights[256])
-		nnueAccAdd256(&acc[512], &weights[512])
-		nnueAccAdd256(&acc[768], &weights[768])
+		for off := 0; off < NNUEv5HiddenSize; off += 256 {
+			nnueAccAdd256(&acc[off], &weights[off])
+		}
 	} else {
 		for i := 0; i < NNUEv5HiddenSize; i++ {
 			acc[i] += weights[i]
@@ -156,13 +154,12 @@ func addWeights1024(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int
 	}
 }
 
-// subWeights1024 subtracts 1024 int16 weights from an accumulator slice.
-func subWeights1024(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
+// subWeightsV5 subtracts NNUEv5HiddenSize int16 weights from an accumulator slice.
+func subWeightsV5(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
 	if nnueUseSIMD {
-		nnueAccSub256(&acc[0], &weights[0])
-		nnueAccSub256(&acc[256], &weights[256])
-		nnueAccSub256(&acc[512], &weights[512])
-		nnueAccSub256(&acc[768], &weights[768])
+		for off := 0; off < NNUEv5HiddenSize; off += 256 {
+			nnueAccSub256(&acc[off], &weights[off])
+		}
 	} else {
 		for i := 0; i < NNUEv5HiddenSize; i++ {
 			acc[i] -= weights[i]
@@ -176,10 +173,10 @@ func (net *NNUENetV5) AddFeature(acc *NNUEAccumulatorV5, piece Piece, sq Square,
 	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		addWeights1024(&acc.White, &net.InputWeights[wIdx])
+		addWeightsV5(&acc.White, &net.InputWeights[wIdx])
 	}
 	if bIdx >= 0 {
-		addWeights1024(&acc.Black, &net.InputWeights[bIdx])
+		addWeightsV5(&acc.Black, &net.InputWeights[bIdx])
 	}
 }
 
@@ -189,10 +186,10 @@ func (net *NNUENetV5) RemoveFeature(acc *NNUEAccumulatorV5, piece Piece, sq Squa
 	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		subWeights1024(&acc.White, &net.InputWeights[wIdx])
+		subWeightsV5(&acc.White, &net.InputWeights[wIdx])
 	}
 	if bIdx >= 0 {
-		subWeights1024(&acc.Black, &net.InputWeights[bIdx])
+		subWeightsV5(&acc.Black, &net.InputWeights[bIdx])
 	}
 }
 
@@ -216,50 +213,44 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	//   A single /QA after the full sum reduces to QA*QB (same as CReLU).
 	//   This preserves precision vs dividing per-neuron (Bullet simple.rs pattern).
 	//   Requires int64 since max sum = 2048 * 255² * 127 ≈ 16.9B > int32 max.
+	// Forward pass: CReLU or SCReLU activation + dot product with output weights.
+	// Uses scalar path for width-independence. SIMD only for 1024-wide (via nnueV5CReLUDot1024).
 	var output int32
 	if net.UseSCReLU {
-		if nnueUseSIMD {
-			// SIMD uses >>8 (÷256) per-element to stay in int16/int32.
-			// Correct divisor is QA=255, so we compensate: x*256/255 = x + x/255.
-			// This brings the SIMD result in line with the Bullet reference.
-			dot := nnueV5SCReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
-			dot += nnueV5SCReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
-			dot += dot / nnueV5InputScale // compensate >>8 vs /255
-			output = net.OutputBias[bucket] + dot
-		} else {
-			var sum int64
-			for i := 0; i < NNUEv5HiddenSize; i++ {
-				v := int32(stmAcc[i])
-				if v < 0 { v = 0 }
-				if v > nnueV5ClipMax { v = nnueV5ClipMax }
-				sum += int64(v*v) * int64(net.OutputWeights[bucket][i])
-			}
-			for i := 0; i < NNUEv5HiddenSize; i++ {
-				v := int32(ntmAcc[i])
-				if v < 0 { v = 0 }
-				if v > nnueV5ClipMax { v = nnueV5ClipMax }
-				sum += int64(v*v) * int64(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
-			}
-			output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
+		// SCReLU: accumulate x² * weight in int64, single /QA at end (Bullet pattern)
+		var sum int64
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			v := int32(stmAcc[i])
+			if v < 0 { v = 0 }
+			if v > nnueV5ClipMax { v = nnueV5ClipMax }
+			sum += int64(v*v) * int64(net.OutputWeights[bucket][i])
 		}
-	} else {
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			v := int32(ntmAcc[i])
+			if v < 0 { v = 0 }
+			if v > nnueV5ClipMax { v = nnueV5ClipMax }
+			sum += int64(v*v) * int64(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
+		}
+		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
+	} else if nnueUseSIMD && NNUEv5HiddenSize == 1024 {
+		// SIMD fast path for 1024-wide CReLU
 		output = net.OutputBias[bucket]
-		if nnueUseSIMD {
-			output += nnueV5CReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
-			output += nnueV5CReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
-		} else {
-			for i := 0; i < NNUEv5HiddenSize; i++ {
-				v := int32(stmAcc[i])
-				if v < nnueV5ClipMin { v = nnueV5ClipMin }
-				if v > nnueV5ClipMax { v = nnueV5ClipMax }
-				output += v * int32(net.OutputWeights[bucket][i])
-			}
-			for i := 0; i < NNUEv5HiddenSize; i++ {
-				v := int32(ntmAcc[i])
-				if v < nnueV5ClipMin { v = nnueV5ClipMin }
-				if v > nnueV5ClipMax { v = nnueV5ClipMax }
-				output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
-			}
+		output += nnueV5CReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
+		output += nnueV5CReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+	} else {
+		// Scalar CReLU for any width
+		output = net.OutputBias[bucket]
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			v := int32(stmAcc[i])
+			if v < 0 { v = 0 }
+			if v > nnueV5ClipMax { v = nnueV5ClipMax }
+			output += v * int32(net.OutputWeights[bucket][i])
+		}
+		for i := 0; i < NNUEv5HiddenSize; i++ {
+			v := int32(ntmAcc[i])
+			if v < 0 { v = 0 }
+			if v > nnueV5ClipMax { v = nnueV5ClipMax }
+			output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 		}
 	}
 

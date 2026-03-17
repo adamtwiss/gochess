@@ -1273,9 +1273,9 @@ func runConvertBullet(args []string) {
 
 func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 	const (
-		inputSize  = 12288
-		hiddenSize = 1024
-		buckets    = 8
+		inputSize  = chess.NNUEInputSize
+		hiddenSize = chess.NNUEv5HiddenSize
+		buckets    = chess.NNUEOutputBuckets
 	)
 
 	// V5 layout from Bullet (with .transpose()):
