@@ -1705,3 +1705,45 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 721 games, -3.9 Elo.** SPRT bounds: elo0=-5, elo1=15.
 - **Baseline**: 932c12c with v5 sb120 net
 - **Notes**: Still flat with v5. Margin 80 confirmed optimal regardless of eval quality.
+
+### V5: RFP Depth Gate 8 (REJECTED)
+- **Change**: Extend RFP depth gate from `depth <= 7` to `depth <= 8`.
+- **Result**: **H0 at 1377 games, -0.5 Elo ±11.9.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Completely flat. Depth 7 gate is optimal — depth 8 positions are too complex for static eval pruning even with v5.
+
+### V5: Bad Noisy Futility Depth 6 (REJECTED)
+- **Change**: Extend bad noisy futility depth from `depth <= 4` to `depth <= 6`.
+- **Result**: **H0 at 794 games, -5.3 Elo ±16.1.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Was flat with v4, now slightly negative with v5. Depth 4 confirmed optimal — deeper captures need full search.
+
+### V5: LMR Quiet C=1.25 (REJECTED)
+- **Change**: Tighten quiet LMR from C=1.30 to C=1.25.
+- **Result**: **H0 at 638 games, -7.1 Elo ±17.6.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Was H0 (-3.6 Elo) with v4, now more negative with v5. C=1.30 is a hard floor.
+
+### V5: LMR Quiet C=1.35 (REJECTED)
+- **Change**: Loosen quiet LMR from C=1.30 to C=1.35.
+- **Result**: **H0 at 356 games, -16.6 Elo ±23.3.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Both C=1.25 and C=1.35 lose Elo — C=1.30 is precisely optimal. LMR is fully bracketed.
+
+### V5: ProbCut Margin beta+150 (REJECTED)
+- **Change**: Tighten ProbCut margin from `beta + 170` to `beta + 150`.
+- **Result**: **H0 at 508 games, -10.3 Elo ±19.6.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Was H0 (-15.1 Elo) with v4, still negative with v5. beta+170 confirmed optimal across eval changes.
+
+### V5: Razoring 350+d*80 (REJECTED)
+- **Change**: Tighten razoring margin from `400 + depth*100` to `350 + depth*80`.
+- **Result**: **H0 at 549 games, -9.5 Elo ±19.4.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Current razoring margins well-calibrated. Tighter margins over-prune at depth 2.
+
+### V5: RFP Margins 90/60 (REJECTED)
+- **Change**: Tighten RFP margins from `depth*100`/`depth*70` to `depth*90`/`depth*60`.
+- **Result**: **H0 at 896 games, -3.5 Elo ±14.9.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 16f4f02 with v5 sb120 net
+- **Notes**: Current RFP margins (100/70) already optimal for v5. Combined with depth gate test, RFP is fully tuned.
