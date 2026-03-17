@@ -56,6 +56,7 @@ type NNUEAccumulatorV5 struct {
 	White    [NNUEv5HiddenSize]int16
 	Black    [NNUEv5HiddenSize]int16
 	Computed bool
+	Dirty    DirtyPiece // lazy materialization: pending update from MakeMove
 }
 
 // NNUEAccumulatorStackV5 provides push/pop for MakeMove/UnmakeMove.
@@ -80,23 +81,23 @@ func (s *NNUEAccumulatorStackV5) Current() *NNUEAccumulatorV5 {
 	return &s.stack[s.top]
 }
 
-// Push advances the stack for MakeMove (no copy — needs recompute).
+// Push advances the stack for MakeMove. Dirty.Type is set by the caller.
+// No accumulator copy — MaterializeV5 copies from parent on demand.
 func (s *NNUEAccumulatorStackV5) Push() {
 	s.top++
 	if s.top >= len(s.stack) {
 		s.stack = append(s.stack, NNUEAccumulatorV5{})
 	}
 	s.stack[s.top].Computed = false
+	s.stack[s.top].Dirty.Type = 0 // default: full recompute
 }
 
-// PushCopy advances the stack and copies the current accumulator for incremental update.
-func (s *NNUEAccumulatorStackV5) PushCopy() {
-	prev := s.stack[s.top]
-	s.top++
-	if s.top >= len(s.stack) {
-		s.stack = append(s.stack, NNUEAccumulatorV5{})
+// Parent returns the parent accumulator (one level up in the stack).
+func (s *NNUEAccumulatorStackV5) Parent() *NNUEAccumulatorV5 {
+	if s.top <= 0 {
+		return nil
 	}
-	s.stack[s.top] = prev // copy White, Black, Computed
+	return &s.stack[s.top-1]
 }
 
 // Pop restores the stack for UnmakeMove.
@@ -333,11 +334,9 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 func (b *Board) NNUEEvaluateRelativeV5() int {
 	acc := b.NNUEAccV5.Current()
 
-	// Recompute if needed
+	// Lazy materialization: copy from parent + apply delta, or full recompute
 	if !acc.Computed {
-		b.NNUENetV5.RecomputeAccumulator(b, acc, White)
-		b.NNUENetV5.RecomputeAccumulator(b, acc, Black)
-		acc.Computed = true
+		b.NNUEAccV5.MaterializeV5(b.NNUENetV5, b)
 	}
 
 	// Count pieces for output bucket selection
@@ -370,4 +369,62 @@ func DetectNNUEVersion(path string) (uint32, error) {
 		return 0, fmt.Errorf("reading version: %w", err)
 	}
 	return version, nil
+}
+
+// MaterializeV5 applies the pending lazy update for the current accumulator.
+// Copies from the parent accumulator and applies the dirty piece delta.
+// Falls back to full recompute if: dirty type is 0 (king bucket change),
+// at root (no parent), or parent is not yet materialized.
+func (s *NNUEAccumulatorStackV5) MaterializeV5(net *NNUENetV5, b *Board) {
+	acc := &s.stack[s.top]
+	d := &acc.Dirty
+
+	// Full recompute needed?
+	if d.Type == 0 || s.top == 0 || !s.stack[s.top-1].Computed {
+		net.RecomputeAccumulator(b, acc, White)
+		net.RecomputeAccumulator(b, acc, Black)
+		acc.Computed = true
+		return
+	}
+
+	// Copy parent's accumulator values
+	parent := &s.stack[s.top-1]
+	acc.White = parent.White
+	acc.Black = parent.Black
+
+	// Apply incremental delta
+	wKingSq := b.Pieces[WhiteKing].LSB()
+	bKingSq := b.Pieces[BlackKing].LSB()
+
+	switch d.Type {
+	case 1, 6: // quiet move or king move same bucket
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
+	case 2: // capture
+		net.RemoveFeature(acc, d.CapPiece, d.CapSq, wKingSq, bKingSq)
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
+	case 3: // en passant
+		net.RemoveFeature(acc, d.CapPiece, d.CapSq, wKingSq, bKingSq)
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
+	case 4: // promotion
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
+	case 5: // capture-promotion
+		net.RemoveFeature(acc, d.CapPiece, d.To, wKingSq, bKingSq)
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
+	case 7: // castling same bucket
+		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
+		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
+		rookPiece := Piece(WhiteRook)
+		if d.Piece == BlackKing {
+			rookPiece = BlackRook
+		}
+		net.RemoveFeature(acc, rookPiece, d.RookFrom, wKingSq, bKingSq)
+		net.AddFeature(acc, rookPiece, d.RookTo, wKingSq, bKingSq)
+	}
+
+	acc.Computed = true
 }
