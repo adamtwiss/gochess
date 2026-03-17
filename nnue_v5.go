@@ -56,7 +56,6 @@ type NNUEAccumulatorV5 struct {
 	White    [NNUEv5HiddenSize]int16
 	Black    [NNUEv5HiddenSize]int16
 	Computed bool
-	Dirty    DirtyPiece // pending update (lazy materialization, same as v4)
 }
 
 // NNUEAccumulatorStackV5 provides push/pop for MakeMove/UnmakeMove.
@@ -81,14 +80,13 @@ func (s *NNUEAccumulatorStackV5) Current() *NNUEAccumulatorV5 {
 	return &s.stack[s.top]
 }
 
-// Push advances the stack for MakeMove (no copy — needs full recompute).
+// Push advances the stack for MakeMove (no copy — needs recompute).
 func (s *NNUEAccumulatorStackV5) Push() {
 	s.top++
 	if s.top >= len(s.stack) {
 		s.stack = append(s.stack, NNUEAccumulatorV5{})
 	}
 	s.stack[s.top].Computed = false
-	s.stack[s.top].Dirty.Type = 0 // ensure full recompute, not stale dirty piece
 }
 
 // PushCopy advances the stack and copies the current accumulator for incremental update.
@@ -337,7 +335,9 @@ func (b *Board) NNUEEvaluateRelativeV5() int {
 
 	// Recompute if needed
 	if !acc.Computed {
-		b.NNUENetV5.MaterializeV5(b, acc)
+		b.NNUENetV5.RecomputeAccumulator(b, acc, White)
+		b.NNUENetV5.RecomputeAccumulator(b, acc, Black)
+		acc.Computed = true
 	}
 
 	// Count pieces for output bucket selection
@@ -370,58 +370,4 @@ func DetectNNUEVersion(path string) (uint32, error) {
 		return 0, fmt.Errorf("reading version: %w", err)
 	}
 	return version, nil
-}
-
-// MaterializeV5 applies the pending dirty piece update to the v5 accumulator.
-// If Dirty.Type == 0, does a full recompute (king bucket changed).
-// Otherwise applies the incremental add/remove from the parent accumulator.
-func (net *NNUENetV5) MaterializeV5(b *Board, acc *NNUEAccumulatorV5) {
-	d := &acc.Dirty
-
-	if d.Type == 0 {
-		// Full recompute (king bucket changed or initial position)
-		net.RecomputeAccumulator(b, acc, White)
-		net.RecomputeAccumulator(b, acc, Black)
-		acc.Computed = true
-		return
-	}
-
-	// King squares (current position, after move)
-	wKingSq := b.Pieces[WhiteKing].LSB()
-	bKingSq := b.Pieces[BlackKing].LSB()
-
-	switch d.Type {
-	case 1: // quiet move: SubAdd
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 2: // capture: SubSubAdd
-		net.RemoveFeature(acc, d.CapPiece, d.CapSq, wKingSq, bKingSq)
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 3: // en passant: SubSubAdd
-		net.RemoveFeature(acc, d.CapPiece, d.CapSq, wKingSq, bKingSq)
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 4: // promotion: Sub pawn, Add promoted
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
-	case 5: // capture-promotion: Sub captured, Sub pawn, Add promoted
-		net.RemoveFeature(acc, d.CapPiece, d.To, wKingSq, bKingSq)
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
-	case 6: // king move same bucket: SubAdd
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 7: // castling same bucket: king SubAdd + rook SubAdd
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-		rookPiece := WhiteRook
-		if d.Piece == BlackKing {
-			rookPiece = BlackRook
-		}
-		net.RemoveFeature(acc, rookPiece, d.RookFrom, wKingSq, bKingSq)
-		net.AddFeature(acc, rookPiece, d.RookTo, wKingSq, bKingSq)
-	}
-
-	acc.Computed = true
 }
