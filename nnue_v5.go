@@ -49,6 +49,9 @@ type NNUENetV5 struct {
 	// concat_hidden = STM accumulator (1024) + NTM accumulator (1024)
 	OutputWeights [NNUEOutputBuckets][NNUEv5HiddenSize * 2]int16
 	OutputBias    [NNUEOutputBuckets]int32
+
+	// Activation: false = CReLU (clamp to [0,QA]), true = SCReLU (clamp then square)
+	UseSCReLU bool
 }
 
 // NNUEAccumulatorV5 holds per-position accumulator state for v5 nets.
@@ -206,36 +209,49 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 		ntmAcc = &acc.White
 	}
 
-	// Compute output: dot product of CReLU(accumulators) with output weights + bias
+	// Compute output: dot product of activation(accumulators) with output weights + bias
+	// CReLU: clamp(x, 0, QA) * weight
+	// SCReLU: clamp(x, 0, QA)² / QA * weight (squaring improves gradient flow)
 	var output int32
-	if nnueUseSIMD {
-		// SIMD: clamped dot product for each perspective
+	if net.UseSCReLU {
 		output = net.OutputBias[bucket]
-		output += nnueV5CReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
-		output += nnueV5CReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+		if nnueUseSIMD {
+			output += nnueV5SCReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
+			output += nnueV5SCReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+		} else {
+			for i := 0; i < NNUEv5HiddenSize; i++ {
+				v := int32(stmAcc[i])
+				if v < 0 { v = 0 }
+				if v > nnueV5ClipMax { v = nnueV5ClipMax }
+				v = v * v / nnueV5InputScale // SCReLU: x²/QA
+				output += v * int32(net.OutputWeights[bucket][i])
+			}
+			for i := 0; i < NNUEv5HiddenSize; i++ {
+				v := int32(ntmAcc[i])
+				if v < 0 { v = 0 }
+				if v > nnueV5ClipMax { v = nnueV5ClipMax }
+				v = v * v / nnueV5InputScale
+				output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
+			}
+		}
 	} else {
 		output = net.OutputBias[bucket]
-		// STM perspective (first half of output weights)
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			v := int32(stmAcc[i])
-			if v < nnueV5ClipMin {
-				v = nnueV5ClipMin
+		if nnueUseSIMD {
+			output += nnueV5CReLUDot1024(&stmAcc[0], &net.OutputWeights[bucket][0])
+			output += nnueV5CReLUDot1024(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize])
+		} else {
+			for i := 0; i < NNUEv5HiddenSize; i++ {
+				v := int32(stmAcc[i])
+				if v < nnueV5ClipMin { v = nnueV5ClipMin }
+				if v > nnueV5ClipMax { v = nnueV5ClipMax }
+				output += v * int32(net.OutputWeights[bucket][i])
 			}
-			if v > nnueV5ClipMax {
-				v = nnueV5ClipMax
+			for i := 0; i < NNUEv5HiddenSize; i++ {
+				v := int32(ntmAcc[i])
+				if v < nnueV5ClipMin { v = nnueV5ClipMin }
+				if v > nnueV5ClipMax { v = nnueV5ClipMax }
+				output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 			}
-			output += v * int32(net.OutputWeights[bucket][i])
-		}
-		// NTM perspective (second half of output weights)
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			v := int32(ntmAcc[i])
-			if v < nnueV5ClipMin {
-				v = nnueV5ClipMin
-			}
-			if v > nnueV5ClipMax {
-				v = nnueV5ClipMax
-			}
-			output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
 		}
 	}
 
@@ -273,8 +289,19 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 	if err := binary.Write(w, binary.LittleEndian, nnueMagic); err != nil {
 		return fmt.Errorf("writing magic: %w", err)
 	}
-	if err := binary.Write(w, binary.LittleEndian, nnueVersionV5); err != nil {
+	version := nnueVersionV5 // v5 for CReLU
+	if net.UseSCReLU {
+		version = uint32(6) // v6 for SCReLU
+	}
+	if err := binary.Write(w, binary.LittleEndian, version); err != nil {
 		return fmt.Errorf("writing version: %w", err)
+	}
+	if version == 6 {
+		// v6: flags byte (future-proof for more flags)
+		var flags uint8 = 1 // bit 0 = SCReLU
+		if err := binary.Write(w, binary.LittleEndian, flags); err != nil {
+			return fmt.Errorf("writing flags: %w", err)
+		}
 	}
 	if err := binary.Write(w, binary.LittleEndian, &net.InputWeights); err != nil {
 		return fmt.Errorf("writing input weights: %w", err)
@@ -309,11 +336,25 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 	if err := binary.Read(f, binary.LittleEndian, &version); err != nil {
 		return nil, fmt.Errorf("reading version: %w", err)
 	}
-	if version != uint32(5) {
-		return nil, fmt.Errorf("expected v5, got v%d", version)
+	if version == 5 {
+		// v5: CReLU, no flags byte (backward compatible)
+		net := &NNUENetV5{}
+		return readNNUEV5Body(f, net)
+	} else if version == 6 {
+		// v6: has flags byte (SCReLU support)
+		net := &NNUENetV5{}
+		var flags uint8
+		if err := binary.Read(f, binary.LittleEndian, &flags); err != nil {
+			return nil, fmt.Errorf("reading flags: %w", err)
+		}
+		net.UseSCReLU = flags&1 != 0
+		return readNNUEV5Body(f, net)
+	} else {
+		return nil, fmt.Errorf("expected v5 or v6, got v%d", version)
 	}
+}
 
-	net := &NNUENetV5{}
+func readNNUEV5Body(f io.Reader, net *NNUENetV5) (*NNUENetV5, error) {
 	if err := binary.Read(f, binary.LittleEndian, &net.InputWeights); err != nil {
 		return nil, fmt.Errorf("reading input weights: %w", err)
 	}

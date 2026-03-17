@@ -875,7 +875,7 @@ func runCheckNet(args []string) {
 	var netV4 *chess.NNUENet
 	var netV5 *chess.NNUENetV5
 
-	if version == 5 {
+	if version == 5 || version == 6 {
 		netV5, err = chess.LoadNNUEV5(netPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading v5 net: %v\n", err)
@@ -1148,6 +1148,7 @@ func runConvertBullet(args []string) {
 	input := fs.String("input", "", "Bullet quantised.bin file (required)")
 	output := fs.String("output", "net.nnue", "output .nnue file")
 	v5 := fs.Bool("v5", false, "convert as v5 (shallow wide 1024) instead of v4 (deep 256)")
+	screlu := fs.Bool("screlu", false, "mark net as SCReLU activation (v5 only)")
 	fs.Parse(args)
 
 	if *input == "" {
@@ -1163,7 +1164,7 @@ func runConvertBullet(args []string) {
 	}
 
 	if *v5 {
-		convertBulletV5(data, *output)
+		convertBulletV5(data, *output, *screlu)
 		return
 	}
 
@@ -1270,7 +1271,7 @@ func runConvertBullet(args []string) {
 	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
 }
 
-func convertBulletV5(data []byte, outputPath string) {
+func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 	const (
 		inputSize  = 12288
 		hiddenSize = 1024
@@ -1292,6 +1293,7 @@ func convertBulletV5(data []byte, outputPath string) {
 	}
 
 	net := &chess.NNUENetV5{}
+	net.UseSCReLU = useSCReLU
 	offset := 0
 
 	// l0w: [inputSize][hiddenSize] i16 (already transposed by Bullet)

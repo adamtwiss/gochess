@@ -88,3 +88,6 @@ func nnueDotReLU32(input *int32, weights *int16) int32
 // TODO: implement NEON version
 //go:noescape
 func nnueV5CReLUDot1024(acc *int16, weights *int16) int32
+
+//go:noescape
+func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32

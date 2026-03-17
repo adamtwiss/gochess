@@ -559,7 +559,7 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 			fmt.Fprintf(os.Stderr, "ERROR: failed to load NNUE from %s: %v\n", value, verr)
 			os.Exit(1)
 		}
-		if version == 5 {
+		if version == 5 || version == 6 {
 			netV5, err := LoadNNUEV5(value)
 			if err != nil {
 				e.send("info string ERROR: failed to load NNUE v5 from %s: %v", value, err)

@@ -20,3 +20,4 @@ func nnueAccCopySubSubAdd256(dst *int16, src *int16, oldW *int16, newW *int16, c
 func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *int32) { panic("SIMD not available") }
 func nnueV5CReLUDot1024(acc *int16, weights *int16) int32 { panic("SIMD not available") }
 func nnueDotReLU32(input *int32, weights *int16) int32 { panic("SIMD not available") }
+func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32 { panic("SIMD not available") }

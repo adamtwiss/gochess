@@ -694,3 +694,44 @@ v5dot_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
+// Computes: sum = sum_i( (clamp(acc[i], 0, 255)^2 >> 8) * weights[i] ) for i=0..1023
+// SCReLU: clamp then square, divide by ~255 (using >>8 as approximation).
+// 1024 elements / 16 per YMM = 64 iterations.
+// ============================================================================
+TEXT ·nnueV5SCReLUDot1024(SB), NOSPLIT, $0-24
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+	VPXOR Y5, Y5, Y5                    // Y5 = accumulator (int32 sum)
+	MOVQ $64, CX                        // 64 iterations
+
+v5screlu_loop:
+	VMOVDQU (AX), Y2                    // load 16 acc values (int16)
+	VPMAXSW Y0, Y2, Y2                  // max(0, x)
+	VPMINSW Y1, Y2, Y2                  // min(255, x) = clamped
+	VPMULLW Y2, Y2, Y3                  // Y3 = clamped * clamped (low 16 bits, unsigned ok since 0-255)
+	VPSRLW $8, Y3, Y3                   // Y3 = squared >> 8 (approx /255)
+	VMOVDQU (BX), Y4                    // load 16 weights
+	VPMADDWD Y3, Y4, Y4                 // multiply pairs, accumulate to 8 int32
+	VPADDD Y4, Y5, Y5                   // add to running sum
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ v5screlu_loop
+
+	// Horizontal sum of Y5 (8 x int32 -> 1 int32)
+	VEXTRACTI128 $1, Y5, X6
+	VPADDD X6, X5, X5
+	VPSHUFD $0x4E, X5, X6
+	VPADDD X6, X5, X5
+	VPSHUFD $0x01, X5, X6
+	VPADDD X6, X5, X5
+	VMOVD X5, AX
+	MOVL AX, ret+16(FP)
+
+	VZEROUPPER
+	RET
