@@ -20,7 +20,9 @@ import (
 
 const (
 	// V5 network dimensions
-	NNUEv5HiddenSize = 1536 // per perspective (wider than v4's 256)
+	NNUEv5HiddenSize    = 1536 // per perspective (pre-pairwise)
+	NNUEv5PairwiseSize  = NNUEv5HiddenSize / 2 // 768 per perspective after pairwise
+	NNUEv5OutputSize    = NNUEv5PairwiseSize * 2 // 1536 concatenated (after pairwise)
 
 	// V5 quantization scale factors
 	nnueV5InputScale  = 255 // CReLU clips to [0, 255] — Bullet standard for CReLU/SCReLU
@@ -45,9 +47,9 @@ type NNUENetV5 struct {
 	InputWeights [NNUEInputSize][NNUEv5HiddenSize]int16
 	InputBiases  [NNUEv5HiddenSize]int16
 
-	// Output layer: [bucket][concat_hidden] — 8 × 2048
-	// concat_hidden = STM accumulator (1024) + NTM accumulator (1024)
-	OutputWeights [NNUEOutputBuckets][NNUEv5HiddenSize * 2]int16
+	// Output layer: [bucket][concat_pairwise] — 8 × 1536
+	// concat_pairwise = STM pairwise (768) + NTM pairwise (768)
+	OutputWeights [NNUEOutputBuckets][NNUEv5OutputSize]int16
 	OutputBias    [NNUEOutputBuckets]int32
 
 	// Activation: false = CReLU (clamp to [0,QA]), true = SCReLU (clamp then square)
@@ -206,52 +208,44 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 		ntmAcc = &acc.White
 	}
 
-	// Compute output: dot product of activation(accumulators) with output weights + bias
-	// CReLU: clamp(x, 0, QA) * weight — dot product at scale QA*QB
-	// SCReLU: clamp(x, 0, QA)² * weight, then /QA — matches Bullet's reference.
-	//   Squaring produces values at scale QA², so the dot is at QA²*QB.
-	//   A single /QA after the full sum reduces to QA*QB (same as CReLU).
-	//   This preserves precision vs dividing per-neuron (Bullet simple.rs pattern).
-	//   Requires int64 since max sum = 2048 * 255² * 127 ≈ 16.9B > int32 max.
-	// Forward pass: CReLU or SCReLU activation + dot product with output weights.
-	// Uses scalar path for width-independence. SIMD only for 1024-wide (via nnueV5CReLUDot1024).
+	// Forward pass with pairwise multiplication:
+	// 1. CReLU: clamp accumulator to [0, QA=255]
+	// 2. Pairwise mul: out[i] = crelu[2*i] * crelu[2*i+1] → halves width
+	//    Result at scale QA² = 65025, divide by QA to get [0, QA]
+	// 3. Dot product with output weights [8][NNUEv5OutputSize]
+	// 4. Scale by eval_scale / bias_scale
+
+	// Apply CReLU + pairwise to both perspectives
+	var stmPairwise, ntmPairwise [NNUEv5PairwiseSize]int32
+	for i := 0; i < NNUEv5PairwiseSize; i++ {
+		a := int32(stmAcc[2*i])
+		b := int32(stmAcc[2*i+1])
+		if a < 0 { a = 0 }
+		if a > nnueV5ClipMax { a = nnueV5ClipMax }
+		if b < 0 { b = 0 }
+		if b > nnueV5ClipMax { b = nnueV5ClipMax }
+		stmPairwise[i] = (a * b) / nnueV5InputScale // [0, QA]
+	}
+	for i := 0; i < NNUEv5PairwiseSize; i++ {
+		a := int32(ntmAcc[2*i])
+		b := int32(ntmAcc[2*i+1])
+		if a < 0 { a = 0 }
+		if a > nnueV5ClipMax { a = nnueV5ClipMax }
+		if b < 0 { b = 0 }
+		if b > nnueV5ClipMax { b = nnueV5ClipMax }
+		ntmPairwise[i] = (a * b) / nnueV5InputScale // [0, QA]
+	}
+
+	// Dot product of pairwise output with output weights
 	var output int32
-	if net.UseSCReLU {
-		// SCReLU: accumulate x² * weight in int64, single /QA at end (Bullet pattern)
-		var sum int64
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			v := int32(stmAcc[i])
-			if v < 0 { v = 0 }
-			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			sum += int64(v*v) * int64(net.OutputWeights[bucket][i])
-		}
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			v := int32(ntmAcc[i])
-			if v < 0 { v = 0 }
-			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			sum += int64(v*v) * int64(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
-		}
-		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
-	} else if nnueUseSIMD {
-		// SIMD CReLU dot product — works for any width that's a multiple of 16
-		output = net.OutputBias[bucket]
-		output += nnueV5CReLUDotN(&stmAcc[0], &net.OutputWeights[bucket][0], NNUEv5HiddenSize)
-		output += nnueV5CReLUDotN(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize], NNUEv5HiddenSize)
-	} else {
-		// Scalar CReLU for non-SIMD platforms
-		output = net.OutputBias[bucket]
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			v := int32(stmAcc[i])
-			if v < 0 { v = 0 }
-			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			output += v * int32(net.OutputWeights[bucket][i])
-		}
-		for i := 0; i < NNUEv5HiddenSize; i++ {
-			v := int32(ntmAcc[i])
-			if v < 0 { v = 0 }
-			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
-		}
+	output = net.OutputBias[bucket]
+	// STM perspective (first half of output weights)
+	for i := 0; i < NNUEv5PairwiseSize; i++ {
+		output += stmPairwise[i] * int32(net.OutputWeights[bucket][i])
+	}
+	// NTM perspective (second half of output weights)
+	for i := 0; i < NNUEv5PairwiseSize; i++ {
+		output += ntmPairwise[i] * int32(net.OutputWeights[bucket][NNUEv5PairwiseSize+i])
 	}
 
 	// Scale: divide by QA*QB to get the raw network output, then multiply by eval_scale

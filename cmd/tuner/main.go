@@ -1283,8 +1283,9 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 	// l0b: [hiddenSize] i16
 	// l1w: [2*hiddenSize][buckets] i16 (transposed by Bullet SavedFormat)
 	// l1b: [buckets] i32
+	outputSize := chess.NNUEv5OutputSize // post-pairwise concat size
 	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b
-		2*hiddenSize*buckets*2 + buckets*4 // l1w + l1b
+		outputSize*buckets*2 + buckets*4 // l1w + l1b
 
 	fmt.Printf("Input file: %d bytes, expected: %d bytes\n", len(data), expectedSize)
 	if len(data) < expectedSize {
@@ -1310,19 +1311,12 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 		offset += 2
 	}
 
-	// l1w: [2*hiddenSize][buckets] i16 (already transposed by Bullet)
-	// Our format: OutputWeights[bucket][2*hiddenSize] — need to transpose
-	var l1wRaw [2 * hiddenSize][buckets]int16
-	for i := 0; i < 2*hiddenSize; i++ {
+	// l1w: [outputSize][buckets] i16 (column-major from Bullet)
+	// Our format: OutputWeights[bucket][outputSize] — transpose
+	for i := 0; i < outputSize; i++ {
 		for b := 0; b < buckets; b++ {
-			l1wRaw[i][b] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			net.OutputWeights[b][i] = int16(binary.LittleEndian.Uint16(data[offset:]))
 			offset += 2
-		}
-	}
-	// Transpose: [concat_input][bucket] -> [bucket][concat_input]
-	for b := 0; b < buckets; b++ {
-		for i := 0; i < 2*hiddenSize; i++ {
-			net.OutputWeights[b][i] = l1wRaw[i][b]
 		}
 	}
 
