@@ -98,7 +98,7 @@ fn main() {
         batch_queue_size: 64,
     };
 
-    let dataloader = SfBinpackLoader::new(dataset_path, 256, 4, |entry| {
+    let dataloader = SfBinpackLoader::new(dataset_path, 256, 16, |entry| {
         entry.score.unsigned_abs() < 10000
     });
 
