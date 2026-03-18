@@ -20,7 +20,9 @@ import (
 
 const (
 	// V5 network dimensions
-	NNUEv5HiddenSize = 1024 // per perspective (wider than v4's 256)
+	NNUEv5HiddenSize   = 1024                    // per perspective (wider than v4's 256)
+	NNUEv5PairwiseSize = NNUEv5HiddenSize / 2    // per perspective after pairwise multiplication
+	NNUEv5OutputSize   = NNUEv5PairwiseSize * 2  // concatenated after pairwise (both perspectives)
 
 	// V5 quantization scale factors
 	nnueV5InputScale  = 255 // CReLU clips to [0, 255] — Bullet standard for CReLU/SCReLU
@@ -52,6 +54,11 @@ type NNUENetV5 struct {
 
 	// Activation: false = CReLU (clamp to [0,QA]), true = SCReLU (clamp then square)
 	UseSCReLU bool
+
+	// Pairwise: consecutive accumulator pairs are multiplied before output layer.
+	// Halves the effective width: HiddenSize → HiddenSize/2 per perspective.
+	// Output layer is [bucket][HiddenSize] instead of [bucket][HiddenSize*2].
+	UsePairwise bool
 }
 
 // NNUEAccumulatorV5 holds per-position accumulator state for v5 nets.
@@ -216,8 +223,36 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	// Forward pass: CReLU or SCReLU activation + dot product with output weights.
 	// Uses scalar path for width-independence. SIMD only for 1024-wide (via nnueV5CReLUDot1024).
 	var output int32
-	if net.UseSCReLU {
-		// SCReLU: accumulate x² * weight in int64, single /QA at end (Bullet pattern)
+	if net.UsePairwise {
+		// Pairwise: CReLU → multiply consecutive pairs → halves width → dot product
+		// out[i] = clamp(acc[2i]) * clamp(acc[2i+1]) / QA → [0, QA]
+		// Dot product at scale QA * QB (same as plain CReLU)
+		output = net.OutputBias[bucket]
+		for i := 0; i < NNUEv5PairwiseSize; i++ {
+			a := int32(stmAcc[2*i])
+			b := int32(stmAcc[2*i+1])
+			if a < 0 { a = 0 }
+			if a > nnueV5ClipMax { a = nnueV5ClipMax }
+			if b < 0 { b = 0 }
+			if b > nnueV5ClipMax { b = nnueV5ClipMax }
+			output += int32((a * b) / nnueV5InputScale) * int32(net.OutputWeights[bucket][i])
+		}
+		for i := 0; i < NNUEv5PairwiseSize; i++ {
+			a := int32(ntmAcc[2*i])
+			b := int32(ntmAcc[2*i+1])
+			if a < 0 { a = 0 }
+			if a > nnueV5ClipMax { a = nnueV5ClipMax }
+			if b < 0 { b = 0 }
+			if b > nnueV5ClipMax { b = nnueV5ClipMax }
+			output += int32((a * b) / nnueV5InputScale) * int32(net.OutputWeights[bucket][NNUEv5PairwiseSize+i])
+		}
+	} else if net.UseSCReLU && nnueUseSIMD {
+		// SCReLU SIMD: exact x²*w accumulated in int64, single /QA at end
+		sum := nnueV5SCReLUDotN(&stmAcc[0], &net.OutputWeights[bucket][0], NNUEv5HiddenSize)
+		sum += nnueV5SCReLUDotN(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize], NNUEv5HiddenSize)
+		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
+	} else if net.UseSCReLU {
+		// SCReLU scalar: accumulate x² * weight in int64, single /QA at end (Bullet pattern)
 		var sum int64
 		for i := 0; i < NNUEv5HiddenSize; i++ {
 			v := int32(stmAcc[i])
@@ -288,16 +323,22 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 	if err := binary.Write(w, binary.LittleEndian, nnueMagic); err != nil {
 		return fmt.Errorf("writing magic: %w", err)
 	}
-	version := nnueVersionV5 // v5 for CReLU
-	if net.UseSCReLU {
-		version = uint32(6) // v6 for SCReLU
+	version := nnueVersionV5 // v5 for plain CReLU
+	if net.UseSCReLU || net.UsePairwise {
+		version = uint32(6) // v6 has flags byte
 	}
 	if err := binary.Write(w, binary.LittleEndian, version); err != nil {
 		return fmt.Errorf("writing version: %w", err)
 	}
 	if version == 6 {
-		// v6: flags byte (future-proof for more flags)
-		var flags uint8 = 1 // bit 0 = SCReLU
+		// v6: flags byte — bit 0 = SCReLU, bit 1 = pairwise
+		var flags uint8
+		if net.UseSCReLU {
+			flags |= 1
+		}
+		if net.UsePairwise {
+			flags |= 2
+		}
 		if err := binary.Write(w, binary.LittleEndian, flags); err != nil {
 			return fmt.Errorf("writing flags: %w", err)
 		}
@@ -340,13 +381,14 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 		net := &NNUENetV5{}
 		return readNNUEV5Body(f, net)
 	} else if version == 6 {
-		// v6: has flags byte (SCReLU support)
+		// v6: has flags byte — bit 0 = SCReLU, bit 1 = pairwise
 		net := &NNUENetV5{}
 		var flags uint8
 		if err := binary.Read(f, binary.LittleEndian, &flags); err != nil {
 			return nil, fmt.Errorf("reading flags: %w", err)
 		}
 		net.UseSCReLU = flags&1 != 0
+		net.UsePairwise = flags&2 != 0
 		return readNNUEV5Body(f, net)
 	} else {
 		return nil, fmt.Errorf("expected v5 or v6, got v%d", version)

@@ -1147,8 +1147,9 @@ func runConvertBullet(args []string) {
 	fs := flag.NewFlagSet("convert-bullet", flag.ExitOnError)
 	input := fs.String("input", "", "Bullet quantised.bin file (required)")
 	output := fs.String("output", "net.nnue", "output .nnue file")
-	v5 := fs.Bool("v5", false, "convert as v5 (shallow wide 1024) instead of v4 (deep 256)")
+	v5 := fs.Bool("v5", false, "convert as v5 (shallow wide) instead of v4 (deep 256)")
 	screlu := fs.Bool("screlu", false, "mark net as SCReLU activation (v5 only)")
+	pairwise := fs.Bool("pairwise", false, "mark net as pairwise multiplication (v5 only)")
 	fs.Parse(args)
 
 	if *input == "" {
@@ -1164,7 +1165,7 @@ func runConvertBullet(args []string) {
 	}
 
 	if *v5 {
-		convertBulletV5(data, *output, *screlu)
+		convertBulletV5(data, *output, *screlu, *pairwise)
 		return
 	}
 
@@ -1271,20 +1272,28 @@ func runConvertBullet(args []string) {
 	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
 }
 
-func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
+func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise bool) {
 	const (
 		inputSize  = 12288
-		hiddenSize = 1024
+		hiddenSize = chess.NNUEv5HiddenSize
 		buckets    = 8
 	)
 
-	// V5 layout from Bullet (with .transpose()):
-	// l0w: [inputSize][hiddenSize] i16 (transposed by Bullet SavedFormat)
+	// Output layer width depends on pairwise:
+	// Plain: 2*hiddenSize (both perspectives concatenated)
+	// Pairwise: hiddenSize (pairwise halves each perspective, then concat)
+	outputWidth := 2 * hiddenSize
+	if usePairwise {
+		outputWidth = hiddenSize
+	}
+
+	// V5 layout from Bullet:
+	// l0w: [inputSize][hiddenSize] i16
 	// l0b: [hiddenSize] i16
-	// l1w: [2*hiddenSize][buckets] i16 (transposed by Bullet SavedFormat)
+	// l1w: [outputWidth][buckets] i16
 	// l1b: [buckets] i32
 	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b
-		2*hiddenSize*buckets*2 + buckets*4 // l1w + l1b
+		outputWidth*buckets*2 + buckets*4 // l1w + l1b
 
 	fmt.Printf("Input file: %d bytes, expected: %d bytes\n", len(data), expectedSize)
 	if len(data) < expectedSize {
@@ -1294,9 +1303,10 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 
 	net := &chess.NNUENetV5{}
 	net.UseSCReLU = useSCReLU
+	net.UsePairwise = usePairwise
 	offset := 0
 
-	// l0w: [inputSize][hiddenSize] i16 (already transposed by Bullet)
+	// l0w: [inputSize][hiddenSize] i16
 	for i := 0; i < inputSize; i++ {
 		for j := 0; j < hiddenSize; j++ {
 			net.InputWeights[i][j] = int16(binary.LittleEndian.Uint16(data[offset:]))
@@ -1310,10 +1320,10 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 		offset += 2
 	}
 
-	// l1w: [2*hiddenSize][buckets] i16 (already transposed by Bullet)
-	// Our format: OutputWeights[bucket][2*hiddenSize] — need to transpose
-	var l1wRaw [2 * hiddenSize][buckets]int16
-	for i := 0; i < 2*hiddenSize; i++ {
+	// l1w: [outputWidth][buckets] i16
+	// Our format: OutputWeights[bucket][outputWidth] — need to transpose
+	l1wRaw := make([][8]int16, outputWidth)
+	for i := 0; i < outputWidth; i++ {
 		for b := 0; b < buckets; b++ {
 			l1wRaw[i][b] = int16(binary.LittleEndian.Uint16(data[offset:]))
 			offset += 2
@@ -1321,7 +1331,7 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool) {
 	}
 	// Transpose: [concat_input][bucket] -> [bucket][concat_input]
 	for b := 0; b < buckets; b++ {
-		for i := 0; i < 2*hiddenSize; i++ {
+		for i := 0; i < outputWidth; i++ {
 			net.OutputWeights[b][i] = l1wRaw[i][b]
 		}
 	}
