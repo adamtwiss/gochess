@@ -1004,6 +1004,20 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					if ttMove != NoMove {
 						info.pvTable[ply][0] = ttMove
 						info.pvLen[ply] = 1
+
+						// History bonus for TT cutoff: reinforce move ordering
+						bonus := historyBonus(depth)
+						ttPiece := b.Squares[ttMove.From()]
+						isTTCap := b.Squares[ttMove.To()] != Empty || ttMove.Flags() == FlagEnPassant
+						if !isTTCap && ttPiece != Empty {
+							info.updateHistory(ttMove.From(), ttMove.To(), bonus)
+						} else if isTTCap && ttPiece != Empty {
+							cpt := capturedType(b.Squares[ttMove.To()])
+							if ttMove.Flags() == FlagEnPassant {
+								cpt = 1
+							}
+							info.updateCaptHistory(ttPiece, ttMove.To(), cpt, bonus)
+						}
 					} else {
 						info.pvLen[ply] = 0
 					}

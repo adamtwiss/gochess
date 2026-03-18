@@ -1747,3 +1747,21 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 896 games, -3.5 Elo ±14.9.** SPRT bounds: elo0=-5, elo1=15.
 - **Baseline**: 16f4f02 with v5 sb120 net
 - **Notes**: Current RFP margins (100/70) already optimal for v5. Combined with depth gate test, RFP is fully tuned.
+
+### V5: Continuation Correction History 50/50 (REJECTED)
+- **Change**: Add ContCorrHistory[13][64] table indexed by previous move's piece+to. Blend 50% pawn + 50% continuation correction.
+- **Result**: **H0 at 645 games, -7.0 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: v5 sb120 net on main
+- **Notes**: SF-proven feature (PR #5617). Too much weight on continuation correction dilutes the proven pawn correction.
+
+### V5: Continuation Correction History 25% (REJECTED)
+- **Change**: Same table but lighter blend: full pawn correction + 25% continuation correction.
+- **Result**: **H0 at 938 games, -2.2 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: v5 sb120 net on main
+- **Notes**: Lighter weight improved from -7 to -2.2 but still flat. Continuation correction doesn't add useful signal beyond pawn correction for our engine. The high draw ratio (63.3%) suggests over-correction.
+
+### V5: TT Cutoff History Bonus (MERGED)
+- **Change**: Give history bonus to TT move when TT probe causes a beta cutoff. Quiet moves get main history bonus, captures get capture history bonus.
+- **Result**: **H1 at 810 games, +14.6 Elo ±15.5, LOS 96.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: v5 sb120 net on main
+- **Notes**: Was -3.1 with v4 (H0 at 1025 games). V5's stronger eval makes TT cutoff moves more reliable — reinforcing them in history improves move ordering. First move ordering win with v5.
