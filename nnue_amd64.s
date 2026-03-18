@@ -775,3 +775,75 @@ v5dotn_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
+// Exact SCReLU dot product for any width (multiple of 16).
+// Computes: sum = sum_i( clamp(acc[i], 0, 255)^2 * weights[i] ) for i=0..count-1
+// Returns int64 (caller divides by QA=255).
+// Uses int32 for x² and x²*w, then widens to int64 for accumulation to avoid overflow.
+// ============================================================================
+TEXT ·nnueV5SCReLUDotN(SB), NOSPLIT, $0-32
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $4, CX                         // count / 16 = iterations
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+	VPXOR Y8, Y8, Y8                    // int64 accumulator 0
+	VPXOR Y9, Y9, Y9                    // int64 accumulator 1
+	VPXOR Y10, Y10, Y10                 // int64 accumulator 2
+	VPXOR Y11, Y11, Y11                 // int64 accumulator 3
+
+v5screlu_n_loop:
+	// Load 16 int16 acc values and clamp to [0, 255]
+	VMOVDQU (AX), Y2
+	VPMAXSW Y0, Y2, Y2                  // max(0, x)
+	VPMINSW Y1, Y2, Y2                  // min(255, x)
+	// Load 16 int16 weights
+	VMOVDQU (BX), Y3
+
+	// --- Low 8 elements ---
+	VPMOVSXWD X2, Y4                    // x[0..7] -> int32
+	VPMOVSXWD X3, Y5                    // w[0..7] -> int32
+	VPMULLD Y4, Y4, Y6                  // x^2 [0..7] (int32)
+	VPMULLD Y5, Y6, Y6                  // x^2 * w [0..7] (int32)
+	// Widen to int64 and accumulate
+	VPMOVSXDQ X6, Y7                    // low 4 -> int64
+	VPADDQ Y7, Y8, Y8
+	VEXTRACTI128 $1, Y6, X7
+	VPMOVSXDQ X7, Y7                    // high 4 -> int64
+	VPADDQ Y7, Y9, Y9
+
+	// --- High 8 elements ---
+	VEXTRACTI128 $1, Y2, X4
+	VPMOVSXWD X4, Y4                    // x[8..15] -> int32
+	VEXTRACTI128 $1, Y3, X5
+	VPMOVSXWD X5, Y5                    // w[8..15] -> int32
+	VPMULLD Y4, Y4, Y6                  // x^2 [8..15]
+	VPMULLD Y5, Y6, Y6                  // x^2 * w [8..15]
+	// Widen to int64 and accumulate
+	VPMOVSXDQ X6, Y7                    // low 4 -> int64
+	VPADDQ Y7, Y10, Y10
+	VEXTRACTI128 $1, Y6, X7
+	VPMOVSXDQ X7, Y7                    // high 4 -> int64
+	VPADDQ Y7, Y11, Y11
+
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ v5screlu_n_loop
+
+	// Horizontal sum: Y8+Y9+Y10+Y11 -> single int64
+	VPADDQ Y9, Y8, Y8
+	VPADDQ Y11, Y10, Y10
+	VPADDQ Y10, Y8, Y8                  // 4 x int64
+	VEXTRACTI128 $1, Y8, X9
+	VPADDQ X9, X8, X8                   // 2 x int64
+	VPSHUFD $0x4E, X8, X9               // swap 64-bit halves
+	VPADDQ X9, X8, X8                   // 1 x int64
+	VMOVQ X8, AX
+	MOVQ AX, ret+24(FP)
+
+	VZEROUPPER
+	RET

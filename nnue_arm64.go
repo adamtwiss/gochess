@@ -94,3 +94,6 @@ func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
 
 //go:noescape
 func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
+
+//go:noescape
+func nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64

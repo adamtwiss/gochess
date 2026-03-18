@@ -835,3 +835,11 @@ TEXT ·nnueV5CReLUDotN(SB), NOSPLIT, $0-28
 	MOVW $0, R0
 	MOVW R0, ret+24(FP)
 	RET
+
+// ============================================================================
+// nnueV5SCReLUDotN stub — TODO: NEON implementation
+// ============================================================================
+TEXT ·nnueV5SCReLUDotN(SB), NOSPLIT, $0-32
+	MOVD $0, R0
+	MOVD R0, ret+24(FP)
+	RET

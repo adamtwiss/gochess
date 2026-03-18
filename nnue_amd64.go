@@ -104,3 +104,10 @@ func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
 //
 //go:noescape
 func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
+
+// nnueV5SCReLUDotN computes exact SCReLU dot product for any width (multiple of 16).
+//   sum = sum_i( clamp(acc[i], 0, 255)^2 * weights[i] ) for i=0..count-1
+// Returns int64 (caller divides by QA=255).
+//
+//go:noescape
+func nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
