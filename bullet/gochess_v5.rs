@@ -95,7 +95,7 @@ fn main() {
         threads: 4,
         test_set: None,
         output_directory: "checkpoints",
-        batch_queue_size: 64,
+        batch_queue_size: 512,
     };
 
     let dataloader = SfBinpackLoader::new(dataset_path, 256, 16, |entry| {
