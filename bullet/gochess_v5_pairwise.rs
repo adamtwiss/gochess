@@ -50,7 +50,7 @@ fn main() {
     let superbatches = 200;
     let initial_lr = 0.001;
     let final_lr = 0.0001;
-    let wdl_proportion = 0.0;
+    let wdl_proportion = 0.5;  // 50% game result, 50% score — must match baseline
     let save_rate = 20;
 
     let mut trainer = ValueTrainerBuilder::default()
