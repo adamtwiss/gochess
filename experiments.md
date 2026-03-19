@@ -1765,3 +1765,285 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H1 at 810 games, +14.6 Elo ±15.5, LOS 96.7%.** SPRT bounds: elo0=-5, elo1=15.
 - **Baseline**: v5 sb120 net on main
 - **Notes**: Was -3.1 with v4 (H0 at 1025 games). V5's stronger eval makes TT cutoff moves more reliable — reinforcing them in history improves move ordering. First move ordering win with v5.
+
+### V5: TT Cutoff Quiet Penalties (REJECTED)
+- **Change**: On TT cutoff with quiet move, penalise killers and counter-move in history.
+- **Result**: **H0 at 457 games, ~-12 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: The bonus alone (+14.6) is the right signal. Adding penalties for alternatives hurts — we don't know which moves would have been tried, so the penalties are imprecise.
+
+### V5: TT Cutoff Counter-Move Update (REJECTED)
+- **Change**: Update counter-move table when TT causes a cutoff with a quiet move.
+- **Result**: **H0 at 291 games, ~-19 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: Counter-move table updates from TT cutoffs are noisy — the TT move may not be the best response to the previous move specifically.
+
+### V5: ContHist Ply-4 Quarter Weight (REJECTED)
+- **Change**: Add 4-ply continuation history lookback at quarter weight in history pruning and LMR.
+- **Result**: **H0 at 1765 games, ~+1 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: Was +12.8 at 773 games (85% toward H1) then regressed to flat. Classic early noise. Was -12.4 with v4.
+
+### V5: ContHist Ply-4 Half Weight (REJECTED)
+- **Change**: Same as above but at half weight instead of quarter.
+- **Result**: **H0 at 628 games, ~-7 Elo.** SPRT bounds: elo0=-5, elo1=15.
+
+### V5: TT Cutoff ContHist Bonus (REJECTED)
+- **Change**: Update continuation history when TT causes a cutoff.
+- **Result**: **H0 at 782 games, ~-4 Elo.** SPRT bounds: elo0=-5, elo1=15.
+
+### V5: NMP Verification Depth 10 (REJECTED)
+- **Change**: Lower NMP verification depth from 12 to 10.
+- **Result**: **H0 at 647 games, ~-6 Elo.** SPRT bounds: elo0=-5, elo1=15.
+
+### V5: Aspiration Delta 12 (REJECTED)
+- **Change**: Tighter aspiration window from delta=15 to delta=12.
+- **Result**: **H0 at 459 games, ~-10 Elo.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: Delta=15 remains optimal even with v5's more stable eval.
+
+### V5: History Pruning Depth 4 (KILLED — flat)
+- **Change**: Extend history-based pruning from `depth <= 3` to `depth <= 4`.
+- **Result**: Killed at 1007 games, +1.0 Elo, 56% LOS, LLR -1.7 (trending H0). SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: History pruning depth 3 is already well-calibrated. Extending to depth 4 gains nothing.
+
+### V5: SEE Capture Pruning Depth 7 (REJECTED)
+- **Change**: Extend SEE capture pruning from `depth <= 6` to `depth <= 7` (margin -depth*100).
+- **Result**: **H0 at 201 games, -29.5 Elo.** Decisive rejection.
+- **Notes**: At depth 7, the -700 SEE threshold prunes too many captures that are tactically important. SEE capture pruning at depth <= 6 is well-calibrated.
+
+### V5: 1536 SCReLU vs 1024 CReLU (REJECTED)
+- **Change**: 1536-wide SCReLU net (multi-file 200SB, exact SIMD inference) vs 1024 CReLU baseline (120SB).
+- **Result**: **H0 at 159 games, -61.8 Elo.** Decisive rejection.
+- **Notes**: Despite lower training loss (0.00870 vs 0.00882), sharper piece values, and 212K NPS (only ~15% slower than CReLU), the 1536 SCReLU net was catastrophically weaker in play. Early signal (+35 at 48 games) was pure noise. The 39.6% draw ratio (vs typical 64%) suggests the net produces unbalanced evals that lead to decisive games — likely overconfident or poorly calibrated for the search.
+
+### V5: 1536 CReLU Multi-file vs 1024 CReLU (LIKELY REJECT)
+- **Change**: 1536-wide CReLU net (multi-file 200SB) vs 1024 CReLU baseline (120SB).
+- **Result**: -18.5 Elo at 336 games, LLR -2.42 (82% toward H0). Still running but almost certain to reject.
+- **Notes**: Consistent with earlier 1536 single-file result (-23 Elo). More data and longer training didn't help the 1536 architecture. The 1024 net is simply better calibrated for our search at current data scales.
+
+### V5: 1536 CReLU Multi-file vs 1024 CReLU (REJECTED)
+- **Change**: 1536-wide CReLU net (multi-file 200SB) vs 1024 CReLU baseline (120SB).
+- **Result**: **H0 at 469 games, -14.8 Elo.**
+- **Notes**: Third 1536 rejection: single-file -23, multi-file CReLU -15, multi-file SCReLU -62. More data and longer training didn't help. 1536 width is not viable with our search — the NPS penalty (~200K vs ~790K at 1024) outweighs any eval quality gain. Low draw ratio (48%) persists across all 1536 tests, suggesting the wider net produces less stable evals.
+
+### V5: Cap LMR Continuous History (REJECTED)
+- **Change**: Replace discrete capture history LMR thresholds (±2000 → ±1 reduction) with continuous `reduction -= captHistVal / 5000`.
+- **Result**: **H0 at 1119 games, -1.6 Elo.** Early mirage of +9.6 at 818 games collapsed.
+- **Notes**: The discrete thresholds at ±2000 are well-calibrated. Continuous adjustment over-smooths — bad captures that deserve more reduction get too little, good captures that deserve less get too much. The hard cutoffs act as effective noise filters.
+
+### V5: History-Based LMP (REJECTED)
+- **Change**: Adjust LMP limit by move's history score: <-3000 tightens by 1/3, >3000 loosens by 1/3.
+- **Result**: **H0 at 681 games, -5.6 Elo.**
+- **Notes**: LMP already uses move count as a proxy for move quality (moves are ordered by history). Adding explicit history adjustment is redundant — the move ordering already ensures low-history moves appear late and get pruned by the existing count-based limit.
+
+### V5: Failing-Aware NMP (REJECTED)
+- **Change**: Skip NMP at depths 3-6 when position is failing (eval deteriorating significantly).
+- **Result**: **H0 at 428 games, -13.0 Elo.**
+- **Notes**: NMP is valuable even in failing positions. The null-move hypothesis tests absolute eval vs beta, not the trend. Restricting NMP at shallow depths removes critical pruning exactly where it saves the most work. Consistent with v4 result: "NMP at depth 3-7 is well-calibrated."
+
+### V5: LMP 4+d² (RETEST CANDIDATE — small positive)
+- **Change**: LMP formula from `3 + depth*depth` to `4 + depth*depth` (one extra move allowed before pruning).
+- **Result**: **H0 at 2453 games, +2.3 Elo (wide bounds elo0=-5/elo1=15).** Consistently showed +3-5 Elo / 75-85% LOS throughout but never enough LLR to pass wide bounds.
+- **Notes**: Likely a genuine ~3-4 Elo gain. Retest with tight bounds (elo0=0, elo1=8, 5000+ games) when distributed testing is available. Do not re-reject — the wide SPRT was the wrong tool for this effect size.
+
+### V5: Capture LMR C=1.40 (REJECTED)
+- **Change**: Reduce capture LMR table constant from 1.80 to 1.40 (less reduction on captures).
+- **Result**: **H0 at 948 games, -2.6 Elo.**
+- **Notes**: Less reduction means searching captures more deeply, costing NPS without improving accuracy. The current capture LMR constant (1.80) is well-calibrated — captures already get less reduction than quiets (C=1.50), so further reduction is wasteful.
+
+### V5: SEE Quiet Threshold -25d² (LIKELY REJECT)
+- **Change**: Tighter SEE quiet threshold from -20d² to -25d².
+- **Result**: -1.2 Elo at 597 games, LLR -1.38. Still running but flat.
+- **Notes**: Tightening the threshold prunes more aggressively. Early crash to -31 at 118 games recovered to ~0, suggesting the change is roughly neutral but not beneficial. Current -20d² is well-calibrated.
+
+### V5: SEE Quiet Threshold -25d² (REJECTED)
+- **Change**: Tighter SEE quiet threshold from -20d² to -25d².
+- **Result**: **H0 at 841 games, -4.5 Elo.**
+- **Notes**: Tighter threshold prunes more quiet moves, but the extra pruning removes moves that were worth searching. Current -20d² is well-calibrated. Tested in both directions now: -25d² loses, depth 9 extension is flat — the SEE quiet parameters are at their optimum.
+
+### V5: Unstable LMR -2 (REJECTED)
+- **Change**: Double the LMR reduction bonus for unstable positions (reduction -= 2 instead of -= 1).
+- **Result**: **H0 at 152 games, -39.0 Elo.** Decisive.
+- **Notes**: Reducing by 2 in volatile positions searches too many extra nodes. The current -1 adjustment is well-calibrated — it gives enough caution without burning NPS on every unstable node. This is consistent with the pattern: guard adjustments work best as single-ply nudges, not aggressive changes.
+
+### V5: SEE Quiet Depth 9 (RETEST CANDIDATE — small positive)
+- **Change**: Extend SEE quiet pruning from `depth <= 8` to `depth <= 9`.
+- **Result**: Killed at 1290 games, +2.5 Elo, 66% LOS, LLR -1.32. Consistent +2-7 Elo throughout but fading.
+- **Notes**: Another small positive that can't clear wide SPRT bounds. Retest with tight bounds (elo0=0, elo1=8) when distributed testing available.
+
+### V5: 1024 Multi-file sb120 vs Baseline (REJECTED — WDL confound!)
+- **Change**: 1024 CReLU trained on 3 files (multi-file) for 120SB with wdl=0.0, vs baseline trained single-file 120SB with wdl=0.5.
+- **Result**: **H0 at 84 games, -93.2 Elo.** Catastrophic.
+- **Notes**: **CRITICAL FINDING**: The wdl=0.0 vs wdl=0.5 training difference is the dominant factor, NOT data diversity or architecture. All multi-file configs (1536 CReLU, 1536 SCReLU, 1024 multi) used wdl=0.0 while the baseline used wdl=0.5. This means the 1536 rejection results (-15, -62 Elo) are CONFOUNDED — they may be mostly wdl penalty, not architecture penalty. All multi-file nets must be retrained with wdl=0.5 for valid comparison.
+
+### V5: Threat-Aware SEE Quiet (RETEST CANDIDATE — small positive)
+- **Change**: Loosen SEE quiet threshold by -100 when threatSq >= 0 (opponent has detected threats).
+- **Result**: **H0 at 1675 games, +0.8 Elo (wide bounds elo0=-5/elo1=15).** Showed +5-12 Elo for first 1000 games, then regressed.
+- **Notes**: Early signal was strong (+12.6 at 730 games, 94% LOS) but didn't hold. The idea is sound — be more cautious pruning when opponent has threats — but the effect may be ~3-4 Elo. Retest with tight bounds.
+
+### V5: QS Delta 200 (REJECTED)
+- **Change**: Tighten QS delta pruning margin from 240 to 200.
+- **Result**: **H0 at 331 games, -16.8 Elo.**
+- **Notes**: QS delta 240 was already tuned (merged as +31.2 Elo from the original 0→240 change). Tightening further prunes too many captures in QS that were tactically relevant. 240 is the optimal margin.
+
+### V5: Countermove LMR Bonus (REJECTED)
+- **Change**: Reduce LMR by 1 for countermove hits (similar to killer exemption).
+- **Result**: **H0 at 555 games, -6.9 Elo.**
+- **Notes**: Unlike killers (which are position-specific refutations), countermoves are a weaker signal — they refuted the opponent's move in a *different* position. The existing move ordering already places countermoves after killers, and LMR's continuous history adjustment already gives well-ordered moves less reduction. Adding a discrete bonus on top is redundant and slightly harmful.
+
+### V5: QS SEE < -50 (REJECTED)
+- **Change**: Allow slightly losing captures (SEE > -50 instead of > 0) in quiescence search.
+- **Result**: **H0 at 795 games, -3.9 Elo.**
+- **Notes**: Searching SEE-negative captures in QS adds NPS cost without improving tactical accuracy. The SEE > 0 filter is well-calibrated — captures that lose material are rarely worth exploring in QS.
+
+### V5: LMR Quiet C=1.20 (REJECTED)
+- **Change**: More aggressive quiet LMR reduction (divisor from 1.30 to 1.20).
+- **Result**: **H0 at 322 games, -17.3 Elo.**
+- **Notes**: C=1.30 was already tuned down from 1.50 for v5. Going further to 1.20 is too aggressive — the extra reduction misses tactical quiet moves. C=1.30 is the optimum for v5's eval.
+
+### V5: QS Stand-Pat Blend (REJECTED)
+- **Change**: Blend QS stand-pat beta cutoff: return `(bestScore + beta) / 2` instead of `bestScore`.
+- **Result**: **H0 at 472 games, -11.0 Elo.**
+- **Notes**: Unlike TT-dampen and FH-blend (which work at search boundaries where scores are noisy), the QS stand-pat score is a direct static eval — already well-calibrated. Dampening it toward beta loses information. The low draw ratio (58% vs typical 64%) suggests it destabilizes the search by returning inaccurate QS scores.
+
+### V5: RFP Margins 90/55 (REJECTED)
+- **Change**: RFP margins from 100/70 to 90/55 (looser non-improving, tighter improving).
+- **Result**: **H0 at 183 games, -34.3 Elo.** Decisive.
+- **Notes**: Current RFP margins (100/70) are well-calibrated for v5. The 55 improving margin prunes too aggressively in improving positions.
+
+### V5: Singular Extensions v2 — SF-like params (IN PROGRESS — still negative)
+- **Change**: Re-enabled singular extensions with fixed wiring AND Stockfish-like parameters: depth>=8, margin 3*depth/2, verification (depth-1)/2.
+- **Status**: -45.4 Elo at 103 games. Still running but likely to H0.
+- **Notes**: Even with correct implementation and conservative parameters, singular extensions hurt. Low draw ratio (53%) suggests search instability. May interact badly with our other extensions/reductions (alpha-reduce, failing heuristic, FH-blend). Needs deeper investigation — possibly the verification search interferes with our correction history or TT-dampen patterns.
+
+### V5: Singular Extensions v2 — SF-like params (REJECTED — needs investigation)
+- **Change**: Singular extensions with fixed wiring + SF-like params: depth>=8, margin 3*depth/2, verification (depth-1)/2.
+- **Result**: **H0 at 127 games, -58.0 Elo.** Catastrophic even with correct implementation.
+- **Notes**: Three attempts all failed badly: (1) original broken code (discarded extension), (2) fixed wiring + original params depth>=10/margin=depth*3, (3) fixed wiring + SF params depth>=8/margin=3*depth/2. The low draw ratio (53%) suggests search destabilization. Singular extensions are a proven +20-30 Elo technique in other engines. Our implementation is fundamentally incompatible with something in our search — possibly alpha-reduce, failing heuristic, or FH-blend interacting with the verification search. **TODO**: Investigate by disabling alpha-reduce/failing/FH-blend one at a time with singular enabled to isolate the conflict.
+
+### V5: ProbCut Depth 4 (RETEST CANDIDATE — small positive)
+- **Change**: Enable ProbCut at depth >= 4 (was depth >= 5).
+- **Result**: **H0 at 1255 games, -0.3 Elo.** Showed +4-8 Elo for most of its run before collapsing.
+- **Notes**: Another consistent small positive that couldn't clear wide bounds. Retest with tight bounds.
+
+### V5: RFP Depth 9 (LIKELY REJECT)
+- **Change**: Extend RFP from depth <= 7 to depth <= 8.
+- **Status**: -0.7 Elo at 984 games, LLR -2.44. Dead flat, nearly H0.
+
+### V5: RFP Depth 9 (REJECTED)
+- **Change**: Extend RFP from depth <= 7 to depth <= 8.
+- **Result**: **H0 at 1091 games, -1.6 Elo.** Dead flat.
+- **Notes**: RFP depth 7 is well-calibrated. At depth 8, the margin (100*8=800cp non-improving) is already very wide, and positions that far ahead don't need the pruning savings.
+
+### V5: ContHist Aging 12288 (REJECTED)
+- **Change**: Faster gravity decay on continuation history table (divisor 16384 → 12288).
+- **Result**: **H0 at 212 games, -26.3 Elo.** Decisive.
+- **Notes**: Continuation history captures positional patterns across move pairs — these are stable properties that don't change game-to-game. Faster decay loses this information. Main history (from/to) may benefit from faster decay (hist-age still running) because it tracks move-specific tactical patterns that are more volatile. Different history tables need different decay rates.
+
+### V5: CapHist Aging 12288 (REJECTED)
+- **Change**: Faster gravity decay on capture history table (divisor 16384 → 12288).
+- **Result**: **H0 at 215 games, -29.2 Elo.**
+- **Notes**: Capture history patterns (which piece captures which type on which square) are stable across positions. Faster decay loses this information. Confirms: only main history (from/to) might benefit from faster decay — contHist and capHist need 16384 stickiness.
+
+### V5: History Aging 12288 (RETEST CANDIDATE — small positive)
+- **Change**: Faster gravity decay on main history table (divisor 16384 → 12288).
+- **Status**: +1.8 Elo at 980 games, fading from peak of +27 at 149 games. Likely H0.
+- **Notes**: Strong early signal that didn't hold. The main history table may benefit from slightly faster decay but the effect is too small for wide SPRT bounds. Retest with tight bounds, or try intermediate values (14336).
+
+### V5: NMP Deep Reduction d>=14 (RETEST CANDIDATE — small positive)
+- **Change**: Extra +1 NMP reduction when depth >= 14.
+- **Result**: **H0 at 1657 games, +0.6 Elo.** Showed +4-9 Elo for first 1000 games.
+- **Notes**: Consistent small positive (~2-4 Elo) that faded. Retest with tight bounds.
+
+### V5: History Aging 12288 (REJECTED)
+- **Change**: Faster gravity decay on main history table (divisor 16384 → 12288).
+- **Result**: **H0 at 1635 games, +0.4 Elo.** Early peak of +27 at 149 games was pure noise.
+- **Notes**: Main history gravity at 16384 is well-calibrated. Tested all three history tables (main, conthist, caphist) — all rejected. The gravity divisor is not a productive tuning dimension.
+
+### V5: NMP Divisor 150 (REJECTED)
+- **Change**: More aggressive NMP eval-based reduction (divisor 200 → 150).
+- **Result**: **H0 at 1418 games, 0.0 Elo.** Perfectly flat.
+- **Notes**: NMP divisor 200 confirmed well-calibrated for v5. Tested both directions now: 150 (flat) and noted in earlier experiments that the divisor is not a productive dimension.
+
+### V5: Passed Pawn LMR (LIKELY REJECT)
+- **Change**: Reduce LMR by 1 for pawn moves to 6th/7th rank.
+- **Status**: -2.3 Elo at 479 games, flat/negative.
+- **Notes**: Advanced pawn moves are already handled well by the history table — good pawn pushes get high history scores and receive less reduction through the continuous history adjustment. An explicit pawn rank check is redundant.
+
+### V5: Passed Pawn LMR (REJECTED)
+- **Change**: Reduce LMR by 1 for pawn moves to 6th/7th rank.
+- **Result**: **H0 at 831 games, -3.3 Elo.**
+- **Notes**: History-based continuous LMR adjustment already handles good pawn pushes — they get high history scores and less reduction organically. Explicit piece-type checks are redundant.
+
+### V5: QS Evasion LMP (RETEST CANDIDATE — small positive)
+- **Change**: Prune late quiet evasion moves (moveCount > 4) in quiescence when in check.
+- **Status**: +2.9 Elo at 1474 games, fading. Showed +6-8 Elo for first 1000 games.
+- **Notes**: Another small positive. Retest with tight bounds.
+
+### V5: QS Evasion LMP (REJECTED)
+- **Change**: Prune late quiet evasion moves (moveCount > 4) in quiescence when in check.
+- **Result**: **H0 at 1690 games, +0.6 Elo.** Showed +6-8 Elo for first 1000 games before collapsing.
+- **Notes**: Another strong early signal that didn't hold. QS evasion handling is already efficient.
+
+### V5: Persist ContHist /2 (REJECTED)
+- **Change**: Halve continuation history between searches instead of clearing.
+- **Result**: **H0 at 201 games, -29.5 Elo.**
+- **Notes**: ContHist captures move-pair patterns that are position-specific. Persisting them between games (different positions) pollutes the table with irrelevant patterns. Unlike main history which is more generic (from/to squares), contHist is too contextual to persist.
+
+### V5: Aspiration Widen 2x (RETEST CANDIDATE — small positive)
+- **Change**: Aspiration window widening from 1.5x to 2x on fail-high/fail-low.
+- **Status**: +0.4 Elo at 976 games, fading. Peaked at +13.9 at 605 games.
+- **Notes**: Showed consistent early signal before collapsing. Retest with tight bounds.
+
+### V5: Persist History /2 (LIKELY REJECT)
+- **Change**: Halve main history between searches instead of clearing.
+- **Status**: -3.5 Elo at 617 games, heading H0.
+- **Notes**: Was a merged win on v4 but doesn't help on v5. The v5 NNUE eval may produce different move ordering patterns that don't transfer well between games, or the TT (which persists across games) already provides sufficient inter-game knowledge.
+
+### V5: Persist History /2 (REJECTED)
+- **Change**: Halve main history between searches instead of clearing to zero.
+- **Result**: **H0 at 691 games, -5.5 Elo.**
+- **Notes**: Was a merged win on v4 but harmful on v5. The v5 NNUE eval produces different move ordering dynamics. Clearing history gives the search a fresh start each game, which is better with v5's stronger eval guiding move ordering from scratch.
+
+### V5: Aspiration Widen 2x (REJECTED)
+- **Change**: Aspiration window widening from 1.5x to 2x on fail-high/fail-low.
+- **Result**: **H0 at 1270 games, -0.5 Elo.** Peaked at +13.9/94% LOS at 605 games before collapsing.
+- **Notes**: The 1.5x widening is well-calibrated. 2x widens too fast, reaching full window sooner and losing the aspiration window benefit. Another dramatic early signal that was pure noise.
+
+### V5: Non-Linear Output Buckets (REJECTED — incompatible)
+- **Change**: Alexandria's output bucket formula `(63-pc)(32-pc)/225` replacing our linear `(pc-2)/4`.
+- **Result**: 0 wins, 37 losses in 37 games. Catastrophic.
+- **Notes**: The net was TRAINED with linear bucket mapping. Changing the bucket selection at inference without retraining maps positions to wrong output weight sets. This is a training-time change, not an inference-time change. Would need to retrain the net with the new formula to test properly.
+
+### V5: Singular Extensions — Alexandria Params (REJECTED)
+- **Change**: Alexandria-style singular: depth>=6, margin 5*depth/8, fail-high cutoff returning beta.
+- **Result**: **H0 at 96 games, -84.9 Elo.** Even worse than SF-like params (-58 Elo).
+- **Notes**: Diagnostic tests (200 games each, singular + one feature disabled):
+  - SE + no alpha-reduce: -51 Elo (slightly less bad)
+  - SE + no failing: -72 Elo
+  - SE + no FH-blend: -98 Elo (worse — FH-blend was helping)
+  - SE + no TT-dampen: -100 Elo (worse — TT-dampen was helping)
+  None of our unique features conflict with singular. The issue is structural — possibly our TT replacement policy, move ordering, or search tree shape is fundamentally incompatible. Needs deeper investigation (trace singular verification search decisions, compare with a known-working engine).
+
+### V5: Hindsight Reduction (REJECTED)
+- **Change**: Reduce depth by 1 when eval hasn't changed much over 2 plies (diff < 155cp).
+- **Result**: **H0 at 91 games, -81.6 Elo.** Catastrophic.
+- **Notes**: The threshold 155cp may be too loose for our eval scale, or the eval comparison across 2 plies isn't meaningful with our NNUE eval. Alexandria may use this with a differently scaled eval.
+
+### V5: RFP Score Blending (REJECTED)
+- **Change**: RFP returns `(eval-margin + beta) / 2` instead of `eval - margin`.
+- **Result**: **H0 at 355 games, -16.7 Elo.**
+- **Notes**: Unlike TT-dampen and FH-blend (which work at noisy boundaries), RFP pruning is a clean cutoff — the eval IS far above beta. Blending the return toward beta loses accurate information. Dampening doesn't work at every boundary.
+
+### LMR Quiet C=1.30 (MERGED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.30 (more aggressive reduction).
+- **Result**: **H1 at 1016 games, +13.3 Elo ±14.7, LOS 96.3%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: aee6f1d (TT near-miss 80 merged)
+- **Notes**: Perfectly bracketed: 1.25 (H0, -3.6), **1.30 (H1, +13.3)**, 1.35 (H0, +1.2), 1.40 (H0, -2.9), 1.50 (previous), 1.60 (H0, -29.1). The LMR progression continues: C=2.0→1.75(+16.2)→1.50(+44.4)→1.30(+13.3). More aggressive quiet LMR works because NNUE eval is accurate enough to trust shallower searches for non-critical moves.
+
+### LMR Quiet C=1.35 (REJECTED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.35.
+- **Result**: **H0 at 2063 games, +1.2 Elo ±9.9, LOS 59.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: Dead flat. The optimum is sharply at 1.30, not a gradual slope.
+
+### LMR Quiet C=1.25 (REJECTED)
+- **Change**: Tighten quiet LMR constant from 1.50 to 1.25.
+- **Result**: **H0 at 959 games, -3.6 Elo ±14.8, LOS 31.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: Too aggressive. Confirms 1.30 as the sharp optimum.
