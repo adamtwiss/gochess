@@ -1304,18 +1304,7 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise
 	net := &chess.NNUENetV5{}
 	net.UseSCReLU = useSCReLU
 	net.UsePairwise = usePairwise
-
-	// Bullet quantised.bin may have a header before the raw weight data.
-	// Detect by checking if file is larger than expected and skip the header.
-	headerSize := len(data) - expectedSize
-	if headerSize < 0 {
-		fmt.Fprintf(os.Stderr, "Error: file too small (got %d, need %d)\n", len(data), expectedSize)
-		os.Exit(1)
-	}
-	if headerSize > 0 {
-		fmt.Printf("Skipping %d-byte header in quantised.bin\n", headerSize)
-	}
-	offset := headerSize
+	offset := 0
 
 	// l0w: [inputSize][hiddenSize] i16
 	for i := 0; i < inputSize; i++ {
