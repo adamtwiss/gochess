@@ -57,9 +57,9 @@ fn main() {
         .output_buckets(MaterialCount::<NUM_OUTPUT_BUCKETS>)
         // Quantization matching GoChess v5 inference
         .save_format(&[
-            SavedFormat::id("l0w").transpose().round().quantise::<i16>(QA),
+            SavedFormat::id("l0w").round().quantise::<i16>(QA),
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("l1w").transpose().round().quantise::<i16>(QB),
+            SavedFormat::id("l1w").round().quantise::<i16>(QB),
             SavedFormat::id("l1b").round().quantise::<i32>(QA as i32 * QB as i32),
         ])
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
