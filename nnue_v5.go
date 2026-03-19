@@ -224,13 +224,14 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	// Uses scalar path for width-independence. SIMD only for 1024-wide (via nnueV5CReLUDot1024).
 	var output int32
 	if net.UsePairwise {
-		// Pairwise: CReLU → multiply consecutive pairs → halves width → dot product
-		// out[i] = clamp(acc[2i]) * clamp(acc[2i+1]) / QA → [0, QA]
+		// Pairwise: CReLU → multiply first half × second half → halves width → dot product
+		// Bullet's pairwise: out[i] = input[i] * input[i + halfSize]
+		// out[i] = clamp(acc[i]) * clamp(acc[i + PairwiseSize]) / QA → [0, QA]
 		// Dot product at scale QA * QB (same as plain CReLU)
 		output = net.OutputBias[bucket]
 		for i := 0; i < NNUEv5PairwiseSize; i++ {
-			a := int32(stmAcc[2*i])
-			b := int32(stmAcc[2*i+1])
+			a := int32(stmAcc[i])
+			b := int32(stmAcc[i+NNUEv5PairwiseSize])
 			if a < 0 { a = 0 }
 			if a > nnueV5ClipMax { a = nnueV5ClipMax }
 			if b < 0 { b = 0 }
@@ -238,8 +239,8 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 			output += int32((a * b) / nnueV5InputScale) * int32(net.OutputWeights[bucket][i])
 		}
 		for i := 0; i < NNUEv5PairwiseSize; i++ {
-			a := int32(ntmAcc[2*i])
-			b := int32(ntmAcc[2*i+1])
+			a := int32(ntmAcc[i])
+			b := int32(ntmAcc[i+NNUEv5PairwiseSize])
 			if a < 0 { a = 0 }
 			if a > nnueV5ClipMax { a = nnueV5ClipMax }
 			if b < 0 { b = 0 }
