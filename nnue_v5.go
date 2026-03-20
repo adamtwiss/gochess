@@ -84,11 +84,22 @@ type NNUEAccumulatorV5 struct {
 	Dirty    DirtyPiece // lazy materialization: pending update from MakeMove
 }
 
+// FinnyEntryV5 caches an accumulator and the board state that produced it.
+// Used to avoid full recomputes on king bucket changes.
+type FinnyEntryV5 struct {
+	Acc     []int16      // cached accumulator values (len = hiddenSize)
+	Pieces  [13]Bitboard // piece occupancy when this entry was last written
+	Valid   bool         // whether this entry has been populated
+}
+
 // NNUEAccumulatorStackV5 provides push/pop for MakeMove/UnmakeMove.
 type NNUEAccumulatorStackV5 struct {
 	stack      []NNUEAccumulatorV5
 	top        int
 	hiddenSize int
+	// Finny table: [perspective][kingBucket][mirror] accumulator cache
+	// mirror=0 for king on files a-d, mirror=1 for king on files e-h
+	finny [2][NNUEKingBuckets][2]FinnyEntryV5
 }
 
 // NewNNUEAccumulatorStackV5 creates a new v5 accumulator stack.
@@ -110,6 +121,14 @@ func NewNNUEAccumulatorStackV5WithSize(capacity, hiddenSize int) *NNUEAccumulato
 		s.stack[i].White = make([]int16, hiddenSize)
 		s.stack[i].Black = make([]int16, hiddenSize)
 	}
+	// Allocate finny table entries
+	for p := 0; p < 2; p++ {
+		for bk := 0; bk < NNUEKingBuckets; bk++ {
+			for m := 0; m < 2; m++ {
+				s.finny[p][bk][m].Acc = make([]int16, hiddenSize)
+			}
+		}
+	}
 	return s
 }
 
@@ -127,6 +146,17 @@ func (s *NNUEAccumulatorStackV5) DeepCopy() *NNUEAccumulatorStackV5 {
 		copy(newStack.stack[i].Black, s.stack[i].Black)
 		newStack.stack[i].Computed = s.stack[i].Computed
 		newStack.stack[i].Dirty = s.stack[i].Dirty
+	}
+	// Deep copy finny table
+	for p := 0; p < 2; p++ {
+		for bk := 0; bk < NNUEKingBuckets; bk++ {
+			for m := 0; m < 2; m++ {
+				newStack.finny[p][bk][m].Acc = make([]int16, s.hiddenSize)
+				copy(newStack.finny[p][bk][m].Acc, s.finny[p][bk][m].Acc)
+				newStack.finny[p][bk][m].Pieces = s.finny[p][bk][m].Pieces
+				newStack.finny[p][bk][m].Valid = s.finny[p][bk][m].Valid
+			}
+		}
 	}
 	return newStack
 }
@@ -161,6 +191,85 @@ func (s *NNUEAccumulatorStackV5) Parent() *NNUEAccumulatorV5 {
 // Pop restores the stack for UnmakeMove.
 func (s *NNUEAccumulatorStackV5) Pop() {
 	s.top--
+}
+
+// InvalidateFinny clears all finny table entries (e.g. after SetFEN/Reset).
+func (s *NNUEAccumulatorStackV5) InvalidateFinny() {
+	for p := 0; p < 2; p++ {
+		for bk := 0; bk < NNUEKingBuckets; bk++ {
+			for m := 0; m < 2; m++ {
+				s.finny[p][bk][m].Valid = false
+			}
+		}
+	}
+}
+
+// RefreshAccumulator uses the finny table to avoid full recomputes.
+// Diffs cached piece bitboards against current board state and applies only
+// the changed features. Falls back to full recompute if no cache entry exists.
+func (s *NNUEAccumulatorStackV5) RefreshAccumulator(net *NNUENetV5, b *Board, acc *NNUEAccumulatorV5, perspective Color) {
+	kingSq := b.Pieces[pieceOf(WhiteKing, perspective)].LSB()
+	// Perspective-adjusted bucket: Black mirrors the king square vertically
+	ks := int(kingSq)
+	if perspective == Black {
+		ks ^= 56
+	}
+	bucket := kingBucketTable[ks]
+	mirrorIdx := 0
+	if kingBucketMirrorFile[ks] {
+		mirrorIdx = 1
+	}
+	entry := &s.finny[perspective][bucket][mirrorIdx]
+
+	var dst []int16
+	if perspective == White {
+		dst = acc.White
+	} else {
+		dst = acc.Black
+	}
+
+	if !entry.Valid {
+		// No cache — full recompute and populate
+		net.RecomputeAccumulator(b, acc, perspective)
+		copy(entry.Acc, dst)
+		entry.Pieces = b.Pieces
+		entry.Valid = true
+		return
+	}
+
+	// Start from cached accumulator
+	copy(dst, entry.Acc)
+
+	// Diff each piece type's bitboard: cached vs current
+	for pc := Piece(1); pc <= 12; pc++ {
+		prev := entry.Pieces[pc]
+		curr := b.Pieces[pc]
+		if prev == curr {
+			continue
+		}
+		// Removed squares: in prev but not in curr
+		removed := prev &^ curr
+		for removed != 0 {
+			sq := Square(removed.PopLSB())
+			idx := HalfKAIndex(perspective, kingSq, pc, sq)
+			if idx >= 0 {
+				subWeightsV5Slice(dst, net.inputWeightRow(idx))
+			}
+		}
+		// Added squares: in curr but not in prev
+		added := curr &^ prev
+		for added != 0 {
+			sq := Square(added.PopLSB())
+			idx := HalfKAIndex(perspective, kingSq, pc, sq)
+			if idx >= 0 {
+				addWeightsV5Slice(dst, net.inputWeightRow(idx))
+			}
+		}
+	}
+
+	// Update cache
+	copy(entry.Acc, dst)
+	entry.Pieces = b.Pieces
 }
 
 // RecomputeAccumulator rebuilds the accumulator from scratch for a given perspective.
@@ -581,8 +690,8 @@ func (s *NNUEAccumulatorStackV5) MaterializeV5(net *NNUENetV5, b *Board) {
 
 	// Full recompute needed?
 	if d.Type == 0 || s.top == 0 || !s.stack[s.top-1].Computed {
-		net.RecomputeAccumulator(b, acc, White)
-		net.RecomputeAccumulator(b, acc, Black)
+		s.RefreshAccumulator(net, b, acc, White)
+		s.RefreshAccumulator(net, b, acc, Black)
 		acc.Computed = true
 		return
 	}

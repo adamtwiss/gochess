@@ -182,23 +182,22 @@ func (b *Board) MakeMove(m Move) {
 	// The actual copy+update is deferred until Evaluate() needs the accumulator.
 	// King moves that changed bucket used PushEmpty/Push(type=0) → full recompute.
 	//
-	// Classify the dirty piece once, then apply to whichever accumulator(s) are active.
-	needDirty := false
-	if b.NNUEAcc != nil && !kingBucketChanged {
-		needDirty = true
-	}
-	if b.NNUEAccV5 != nil {
-		if isKingMove && (KingBucket(from) != KingBucket(to) ||
-			kingBucketMirrorFile[from] != kingBucketMirrorFile[to]) {
-			// v5 Push already set Type=0 → full recompute, nothing to do
-		} else {
-			needDirty = true
-		}
-	}
+	// Classify the dirty piece once, write directly to the primary accumulator,
+	// and copy to the secondary if both are active (in practice only one is).
+	v5BucketChanged := b.NNUEAccV5 != nil && isKingMove &&
+		(KingBucket(from) != KingBucket(to) || kingBucketMirrorFile[from] != kingBucketMirrorFile[to])
+	v4NeedsDirty := b.NNUEAcc != nil && !kingBucketChanged
+	v5NeedsDirty := b.NNUEAccV5 != nil && !v5BucketChanged
 
-	if needDirty {
-		// Classify the move into a DirtyPiece on the stack.
-		var d DirtyPiece
+	if v4NeedsDirty || v5NeedsDirty {
+		// Get a pointer to the dirty piece slot in whichever accumulator is primary
+		var d *DirtyPiece
+		if v4NeedsDirty {
+			d = &b.NNUEAcc.Current().Dirty
+		} else {
+			d = &b.NNUEAccV5.Current().Dirty
+		}
+
 		if isKingMove {
 			if flags == FlagCastle {
 				d.Type = 7 // castling same bucket
@@ -273,18 +272,9 @@ func (b *Board) MakeMove(m Move) {
 			d.To = to
 		}
 
-		// Apply to v4 accumulator
-		if b.NNUEAcc != nil && !kingBucketChanged {
-			b.NNUEAcc.Current().Dirty = d
-		}
-		// Apply to v5 accumulator (skip if king bucket changed — already type 0)
-		if b.NNUEAccV5 != nil {
-			acc := b.NNUEAccV5.Current()
-			if acc.Dirty.Type == 0 && isKingMove {
-				// King bucket changed — leave as type 0 (full recompute)
-			} else {
-				acc.Dirty = d
-			}
+		// If both accumulators need the dirty piece, copy from primary to secondary
+		if v4NeedsDirty && v5NeedsDirty {
+			b.NNUEAccV5.Current().Dirty = *d
 		}
 	}
 }

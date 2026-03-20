@@ -318,6 +318,7 @@ func (b *Board) Reset() {
 		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
 	}
 	if b.NNUENetV5 != nil && b.NNUEAccV5 != nil {
+		b.NNUEAccV5.InvalidateFinny()
 		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), White)
 		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), Black)
 		b.NNUEAccV5.Current().Computed = true
@@ -409,6 +410,7 @@ func (b *Board) SetFEN(fen string) error {
 		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
 	}
 	if b.NNUENetV5 != nil && b.NNUEAccV5 != nil {
+		b.NNUEAccV5.InvalidateFinny()
 		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), White)
 		b.NNUENetV5.RecomputeAccumulator(b, b.NNUEAccV5.Current(), Black)
 		b.NNUEAccV5.Current().Computed = true
