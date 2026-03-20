@@ -2197,3 +2197,26 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Faster aspiration delta growth: `delta += delta` (2.0x) instead of `delta += delta/2` (1.5x).
 - **Result**: **H0 at 164 games, -34.0 Elo.** Decisive.
 - **Notes**: Widening too fast reaches full window too quickly, losing the aspiration benefit. Bracket: 1.33x (testing), 1.5x (current), 2.0x (H0).
+
+## Singular Extensions Deep Dive (2026-03-20)
+
+### SE v6: NMP-guarded + full features (REJECTED)
+- **Change**: SE with NMP disabled inside verification, RFP/ProbCut active, multi-cut (singularBeta>=beta), negative ext (-1 when ttScore>=beta), margin=depth*1, depth>=8, ply limiter.
+- **Result**: **H0 at 211 games, -33.0 Elo ±31.3.**
+- **Baseline**: ec7dab6 with v5 sb120 net
+- **Notes**: The positive extension (+1 for singular moves) is actively harmful. Extensions make the TT move search deeper but don't improve play — likely because v5 NNUE already evaluates well at current depth.
+
+### SE v7: Multi-cut + negative ext only, NO positive extension (REJECTED)
+- **Change**: Same as v6 but positive extension disabled (singularExtension stays 0 when singular). Only multi-cut (return singularBeta when singularBeta >= beta) and negative ext (-1 when ttScore >= beta but not singular).
+- **Result**: **H0 at 1148 games, -1.5 Elo ±12.9.** Dead flat.
+- **Baseline**: ec7dab6 with v5 sb120 net
+- **Notes**: Multi-cut + negative ext perfectly offset the verification search cost, confirming they work correctly. The positive extension is the problem — v6 (-33 Elo) minus v7 (-1.5 Elo) implies the extension alone costs ~30 Elo.
+
+### SE Root Cause Analysis
+**Finding**: SE's positive extension hurts our engine (~-30 Elo) despite being +20-30 in reference engines. The verification search infrastructure (multi-cut, negative ext) works correctly and breaks even. Key hypotheses for why extensions hurt:
+1. **v5 NNUE eval accuracy**: Strong positional eval may already capture what extensions aim to find
+2. **Extension interactions**: Alpha-reduce, fail-high blending, or other features may conflict with SE extensions
+3. **Node budget**: Extensions at depth >= 8 create large subtrees that reduce remaining budget for other critical moves
+4. **Extension quality**: Our SE extends at depth >= 8 only, which may target the wrong nodes (too deep, less tactical)
+
+**Next steps**: Test fractional extensions (+0.5 ply), restrict extensions to quiet TT moves only, or try at depth >= 6 with very tight margin.
