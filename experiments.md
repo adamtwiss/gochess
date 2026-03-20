@@ -2220,3 +2220,21 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 4. **Extension quality**: Our SE extends at depth >= 8 only, which may target the wrong nodes (too deep, less tactical)
 
 **Next steps**: Test fractional extensions (+0.5 ply), restrict extensions to quiet TT moves only, or try at depth >= 6 with very tight margin.
+
+### Model: SB200 vs SB120 wdl=0.0 6-file (NEUTRAL)
+- **Change**: 200 superbatches vs 120, same wdl=0.0, same 6 T80 files, same architecture.
+- **Result**: +1.0 Elo at 376 games, dead flat. Killed — heading H0.
+- **Notes**: Validation loss showed sb200 slightly overfitting, confirmed in play. 120 SBs is optimal for wdl=0.0 1024 CReLU. The wdl=0.5 sb200 gains (+98 to +243 internal) were an artifact of undertrained wdl=0.5 nets needing more epochs.
+
+### Model: 1024 wdl=0.0 6-file sb120 vs Production (NEUTRAL)
+- **Change**: Same architecture, wdl=0.0, but 6 T80 files instead of 1.
+- **Result**: -3.1 Elo at 798 games, heading H0. Pipeline reproduction confirmed.
+- **Notes**: Extra data diversity doesn't help at 1024-wide with 120 SBs. But critically: the new Bullet version produces equivalent-strength nets. Training pipeline is proven reproducible.
+
+### V5: ASP Delta Growth 1.33x (REJECTED)
+- **Change**: Slower aspiration delta growth: `delta += delta/3` (1.33x) instead of 1.5x.
+- **Result**: **H0 at 391 games, -9.8 Elo.** Bracket: 1.33x (H0), 1.5x (current), 2.0x (H0). Growth rate 1.5x confirmed optimal.
+
+### V5: Bugfix Impact (NEUTRAL)
+- **Change**: Atlas code review fixes: v5 SMP DeepCopy, int64 overflow, ARM stubs, etc.
+- **Result**: +4.3 Elo at 550 games, flat. No regression confirmed. The int32 overflow fix only affects scalar path (SIMD still int32).
