@@ -2082,3 +2082,34 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Lower correction history depth gate from >=3 to >=2.
 - **Result**: **H0 at 277 games, -23.9 Elo ±27.0, LOS 4.2%.**
 - **Notes**: Depth-2 scores are too shallow/noisy for correction history updates. Depth>=3 is well-calibrated.
+
+### V5: Score-Drop Time Extension (MERGED)
+- **Change**: More aggressive time scaling on score drops: 2.0x at >50cp (was 1.4x), 1.5x at >25cp (was 1.2x), new 1.2x tier at >10cp.
+- **Result**: **H1 at 793 games, +13.6 Elo ±14.8, LOS 96.3%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: c6447e8 (dynamic NNUE width)
+- **Notes**: Gives the engine more time to recover in volatile positions where the score drops between iterations. Source: Tucano-style aggressive scaling.
+
+### V5: SE Fixed — Pruning Guards (REJECTED)
+- **Change**: Gate NMP, RFP, razoring, ProbCut on `!excludedMove` during SE verification search. Diagnosis found NMP was short-circuiting the verification.
+- **Result**: **H0 at 71 games, -105.9 Elo.** Still catastrophic despite fixing the identified bug.
+- **Notes**: The pruning guards helped (was -140, now -106) but SE is still fundamentally broken. There are likely additional interactions with TT dampening, FH-blend, alpha-reduce, or NMP dampening that corrupt the verification search.
+
+### V5: NMP Base R=4 (REJECTED)
+- **Change**: Increase NMP base reduction from R=3 to R=4 (Alexandria/Berserk/Obsidian use R=4).
+- **Result**: **H0 at 307 games, -17.0 Elo.** Decisive.
+- **Notes**: Our R=3 is well-calibrated. Other engines have different search frameworks (singular extensions, cutNode tracking) that interact with NMP differently.
+
+### V5: IIR Extra on PV (REJECTED)
+- **Change**: Double IIR reduction on PV nodes without TT move (`depth -= 1 + pvNode`).
+- **Result**: **H0 at 237 games, -26.4 Elo.**
+- **Notes**: PV nodes without TT moves are important — reducing them too much loses accuracy. Source: Altair.
+
+### V5: Cutnode LMR +2 (REJECTED)
+- **Change**: Increase cut-node quiet LMR reduction from +1 to +2.
+- **Result**: **H0 at 881 games, -3.2 Elo.** Dead flat.
+- **Notes**: Our +1 cut-node reduction is well-calibrated. +2 is too aggressive — it misses tactical quiet moves at cut nodes.
+
+### V5: SE Alexandria (REJECTED — 5th attempt)
+- **Change**: Full Alexandria-style SE: depth>=6, margin d*5/8, ply limiter, multi-cut, double/triple ext, negative ext -2.
+- **Result**: **H0 at 55 games, -139.7 Elo.** Catastrophic (5th consecutive SE failure).
+- **Notes**: Root cause identified: NMP fires inside verification search (see se-diagnosis.md). Fixed in SE-Fixed variant but still -106 Elo. Additional interactions remain.
