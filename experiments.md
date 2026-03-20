@@ -2151,3 +2151,13 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Less aggressive history-based LMR adjustment (divisor 5000→6000).
 - **Result**: **H0 at 241 games, -23.1 Elo.**
 - **Notes**: Our divisor 5000 is well-calibrated. Less aggressive history response means good moves get less reduction relief, losing tactical accuracy. Alexandria uses 8300 but with a very different search framework.
+
+### V5: Aspiration Fail-Low Beta Contraction (MERGED)
+- **Change**: More aggressive beta contraction on aspiration fail-low: `(3*alpha + 5*beta) / 8` instead of `(alpha + beta) / 2`.
+- **Result**: **H1 at 1193 games, +10.5 Elo ±11.9, LOS 95.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: cff9599 (score-drop TM merged)
+- **Notes**: Tighter beta contraction helps converge faster on the true score when failing low. Source: Altair uses `(3*alpha + 5*beta) / 8`, Midnight contracts on fail-low similarly.
+
+### V5: RFP Improving Margin 60 (LIKELY REJECT)
+- **Status**: Collapsed from +13.9 at 317 games to +0.5 at 658 games. Classic early noise.
+- **Notes**: RFP improving margin 70 is well-calibrated for v5.
