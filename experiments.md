@@ -2175,3 +2175,20 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 
 ### V5: RFP Improving Margin 80 (IN PROGRESS)
 - **Status**: -1.3 Elo at 546 games, heading H0. Brackets: 60 (H0), 70 (current), 80 (flat). Margin 70 confirmed optimal.
+
+### V5: StatBonus on Strong Fail-High (REJECTED)
+- **Change**: Use `historyBonus(depth+1)` when score > beta+95 at beta cutoff.
+- **Result**: Collapsed from +27.4 at 158 games to -3.3 at 428 games. Heading H0.
+- **Notes**: Early noise. The bonus at depth+1 is too small a change to measure.
+
+### V5: ASP Fail-High (3a+5b)/8 (REJECTED)
+- **Change**: Less aggressive fail-high alpha contraction: (3a+5b)/8 instead of (5a+3b)/8.
+- **Result**: -11.6 Elo at 429 games, heading H0. Confirms (5a+3b)/8 is optimal.
+
+### V5: NMP PostCap R-2 (REJECTED)
+- **Change**: R-2 NMP reduction after captures (bracket of R-1).
+- **Result**: **H0 at 201 games, -27.7 Elo.** R-2 is too cautious after captures. R-1 confirmed optimal.
+
+### V5: RFP Improving Margin 80 (REJECTED)
+- **Change**: Looser RFP improving margin from depth*70 to depth*80.
+- **Result**: **H0 at 1194 games, -0.6 Elo.** Dead flat. Bracket complete: 60 (H0), 70 (current), 80 (H0). Margin 70 confirmed optimal.
