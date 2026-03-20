@@ -2047,3 +2047,38 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Tighten quiet LMR constant from 1.50 to 1.25.
 - **Result**: **H0 at 959 games, -3.6 Elo ±14.8, LOS 31.6%.** SPRT bounds: elo0=-5, elo1=15.
 - **Notes**: Too aggressive. Confirms 1.30 as the sharp optimum.
+
+### V5: NMP R-1 After Captures (MERGED)
+- **Change**: Reduce NMP R by 1 when the previous move was a capture (position is more forcing).
+- **Result**: **H1 at 704 games, +14.8 Elo ±15.8, LOS 96.7%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 8d92fc4 (LMR quiet C=1.30 merged)
+- **Notes**: Captures make positions more forcing — null move assumption is riskier when opponent just captured. Source: Tucano. 3 lines of code.
+
+### V5: Futility History Gate (REJECTED)
+- **Change**: Don't futility-prune moves with combined history > 12000.
+- **Result**: **H0 at 771 games, -5.0 Elo ±15.8, LOS 26.9%.**
+- **Notes**: Showed +15 Elo at 400 games (90% LOS) then collapsed. Classic early noise. The futility margin is well-calibrated — history-gating adds complexity without benefit. Source: Igel.
+
+### V5: Mate Distance Pruning (REJECTED)
+- **Change**: Tighten alpha/beta bounds when a shorter mate is already known (standard MDP).
+- **Result**: **H0 at 1559 games, +0.7 Elo ±10.4, LOS 55.0%.**
+- **Notes**: Dead flat. Universal technique but our search rarely encounters positions where MDP would trigger (deep mates found at the root that need pruning at leaf nodes). The overhead of the alpha/beta adjustment at every node isn't justified.
+
+### V5: Complexity-Adjusted LMR (REJECTED)
+- **Change**: Reduce LMR less when correction history magnitude is large (uncertain eval needs deeper search). `reduction -= complexity / 120`.
+- **Result**: **H0 at 1338 games, 0.0 Elo ±11.3, LOS 50.0%.**
+- **Notes**: Perfectly flat. The correction history magnitude doesn't correlate with positional complexity strongly enough to improve LMR. Source: Obsidian uses this but with different scaling.
+
+### Cap LMR C=1.90 (REJECTED)
+- **Change**: Less aggressive capture LMR (divisor from 1.80 to 1.90).
+- **Result**: **H0 at 749 games, -6.0 Elo ±16.7, LOS 24.0%.**
+- **Notes**: Capture LMR C=1.80 is well-calibrated. Less reduction (1.90) searches captures too deeply.
+
+### NMP Stronger (REJECTED)
+- **Change**: More aggressive NMP (details from experiment queue).
+- **Result**: **H0 at 208 games, -33.5 Elo ±31.4, LOS 1.9%.** Decisive.
+
+### Correction History Depth 2 (REJECTED)
+- **Change**: Lower correction history depth gate from >=3 to >=2.
+- **Result**: **H0 at 277 games, -23.9 Elo ±27.0, LOS 4.2%.**
+- **Notes**: Depth-2 scores are too shallow/noisy for correction history updates. Depth>=3 is well-calibrated.
