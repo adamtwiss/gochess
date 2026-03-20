@@ -2123,3 +2123,16 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Run QS before full ProbCut search; only do expensive search if QS confirms.
 - **Result**: Killed at 287 games, +3.5 Elo. Flat.
 - **Notes**: QS pre-filter adds overhead without improving ProbCut accuracy at our depths. 4 engines have this (Alexandria, Tucano, Berserk, Weiss) but it may only help with deeper searches.
+
+### V5: NMP Threat Guard (REJECTED)
+- **Change**: Disable NMP at depth<=7 when opponent pawns attack our non-pawn pieces.
+- **Result**: **H0 at 236 games, -23.6 Elo.**
+- **Notes**: Too conservative — NMP is still valuable even under minor pawn threats. The eval already accounts for threats. Source: Berserk/RubiChess/Koivisto pattern, but our engine handles it differently.
+
+### V5: NMP Threat Guard (REJECTED)
+- **Change**: Disable NMP at depth<=7 when opponent pawns attack our non-pawn pieces.
+- **Result**: **H0 at 236 games, -23.6 Elo.**
+- **Notes**: Too conservative — NMP is still valuable even under minor pawn threats. The eval already accounts for threats.
+
+### V5: Improving-Aware Capture LMR (IN PROGRESS)
+- **Status**: +4.2 Elo at 1005 games, 73.8% LOS. Flat, likely H0.
