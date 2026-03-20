@@ -14,7 +14,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Syzygy endgame tablebase support (3-4-5-6 piece, via bundled Fathom C library)
 - Polyglot opening book support (standard .bin format, compatible with any Polyglot book)
 - Full UCI protocol support for use with chess GUIs
-- EPD test suite runner (WAC, ECM)
+- EPD test suite runner (WAC, ECM, Arasan, Eigenmann, LCT, SBD, STS, and more)
 
 ## Building
 
@@ -47,10 +47,11 @@ The engine also enters UCI mode automatically when stdin is not a terminal (e.g.
 |--------|---------|-------------|
 | `Hash` | 64 | Transposition table size in MB |
 | `Threads` | 1 | Number of search threads (Lazy SMP) |
-| `Ponder` | false | Enable pondering |
+| `Ponder` | true | Enable pondering |
 | `UseNNUE` | true | Enable NNUE evaluation (auto-loads `net.nnue` from working directory) |
 | `NNUEFile` | | Path to NNUE network file (`.nnue`); overrides auto-detection |
-| `OwnBook` | false | Use the engine's opening book |
+| `MoveOverhead` | 50 | Move overhead in milliseconds (accounts for communication delay) |
+| `OwnBook` | true | Use the engine's opening book |
 | `BookFile` | | Path to opening book file |
 | `SyzygyPath` | | Path to Syzygy tablebase files |
 | `SyzygyProbeDepth` | 1 | Minimum depth for WDL probing during search |
@@ -123,6 +124,16 @@ Build a Polyglot `.bin` opening book from a PGN database of games:
 | `-booktop` | 8 | Maximum moves per position |
 
 You can also use any pre-built Polyglot `.bin` book downloaded from the internet.
+
+### Benchmark Mode
+
+Run the engine's multi-suite benchmark to measure search performance:
+
+```bash
+./chess -benchmark -t 200                    # Quick benchmark
+./chess -benchmark -t 200 -save base.json    # Save results to JSON
+./chess -benchmark -t 200 -compare base.json # Compare against saved baseline
+```
 
 ### Texel Tuner
 
@@ -209,6 +220,9 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 # Shuffle training data in-place (Fisher-Yates on 32-byte records)
 ./tuner shuffle -data training.bin
 
+# Convert Stockfish .binpack to internal .bin format
+./tuner convert-binpack -input data.binpack -output data.bin
+
 # NNUE network utilities
 ./tuner check-net -net net.nnue          # Health check (eval scale, dead neurons)
 ./tuner compare-nets -net1 a.nnue -net2 b.nnue  # Compare two networks
@@ -217,7 +231,12 @@ Compare pass rate and log-scores against the baseline to confirm the tuned value
 
 ### NNUE Evaluation
 
-The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. The network uses a HalfKA architecture: 12288 inputs (16 king buckets × 12 piece types × 64 squares), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→8 output (8 material-based output buckets). The hidden layer uses int8 quantized weights for doubled SIMD throughput. The forward pass is SIMD-accelerated with AVX2 on x86-64 and NEON on ARM64.
+The engine supports an optional NNUE (Efficiently Updatable Neural Network) evaluation that can replace the classical handcrafted eval. Two architectures are supported, selected automatically by network file version:
+
+- **v4 (HalfKA deep)**: 12288 inputs (16 king buckets × 12 piece types × 64 squares), two 256-neuron accumulators (one per perspective), concatenated into a 512→32→32→8 output (8 material-based output buckets). Hidden layer 1 uses int8 quantized weights for doubled SIMD throughput.
+- **v5 (Bullet shallow wide)**: Same 12288 inputs, but a single hidden layer with dynamic width (1024, 1536, or any size — auto-detected from file). Supports CReLU and SCReLU activations, and optional pairwise multiplication. Designed for training with the [Bullet](https://github.com/jw1912/bullet) GPU trainer.
+
+Both architectures use SIMD-accelerated forward passes (AVX2 on x86-64, NEON on ARM64) and lazy incremental accumulator updates.
 
 #### Training an NNUE network
 

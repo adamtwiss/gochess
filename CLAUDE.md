@@ -100,10 +100,12 @@ rescore.go           Rescore .bin training data with deeper search
 binpack.go           Fixed-size binary training data format (32 bytes/record, no header)
 tuner.go             Texel tuner: parameter catalog, traces, .tbin cache, Adam optimizer
 nnue.go              NNUE inference: HalfKA network, lazy accumulators, incremental updates
-nnue_amd64.go/s      AVX2 SIMD (runtime detected)
+nnue_v5.go           NNUE v5 inference: shallow wide net (Bullet GPU training), CReLU/SCReLU, pairwise
+nnue_amd64.go/s      AVX2 SIMD (runtime detected) — v4 and v5 kernels
 nnue_arm64.go/s      NEON SIMD
 nnue_nosimd.go       Fallback stubs
 nnue_train.go        NNUE training: backprop, Adam, quantization
+sfbinpack.go         Stockfish .binpack format reader (legacy PackedSfen chain + modern BINP chunk)
 tb.go                Syzygy tablebase integration (WDL/DTZ probing)
 syzygy/              Fathom C library (CGO wrapper)
 ```
@@ -138,7 +140,12 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features:
 All threads share only the TT (lockless via XOR-verified packed atomics). Board, SearchInfo, pawn table, and NNUE accumulator stack are per-thread.
 
 ### NNUE
-HalfKA (12288 -> 2x256 -> 32 -> 32 -> 8). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. 8 material-based output buckets. Lazy accumulator: MakeMove stores deltas, Materialize() applies on demand (saves ~17% NPS). King moves trigger full recompute. Hidden layer 1 (512→32) uses int8 quantized weights with VPMADDUBSW (AVX2) / SMULL+SADALP (NEON) for doubled throughput. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
+Two architectures supported, selected by network file version:
+
+- **v4 (HalfKA deep)**: 12288 → 2×256 → 32 → 32 → 8. Two hidden layers with int8 quantized layer 1 (VPMADDUBSW/SMULL+SADALP for doubled throughput). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. 8 material-based output buckets.
+- **v5 (Bullet shallow wide)**: (12288 → N)×2 → 1×8. Single hidden layer, dynamic width (1024/1536/any, auto-detected from file). Supports CReLU and SCReLU activations, optional pairwise multiplication (halves effective width). Quantization: QA=255, QB=64. Designed for Bullet GPU trainer.
+
+Both share: lazy accumulator (MakeMove stores deltas, Materialize() applies on demand), king moves trigger full recompute, incremental updates skip kings. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
 
 ### Training Data Formats
 - **Binpack** (`.bin`): Fixed-size 32-byte records, no file header. Stores packed board position (occupancy bitmap + piece nibbles), score (int16), result (uint8). Files can be concatenated with `cat`. Features extracted at training time. Block-shuffled reader (64KB = 2048 records/block) for efficient I/O.
@@ -165,6 +172,7 @@ Via bundled Fathom (CGO). Root: DTZ probe before search. Interior nodes: WDL pro
 - NNUE accumulator stack must stay in sync with undo stack (push on MakeMove, pop on UnmakeMove, null moves skip)
 - NNUE `putPiece`/`removePiece`/`movePiece` hooks read king bitboards — call when kings are on the board
 - NNUE incremental updates skip kings; king moves trigger `RecomputeAccumulator`. Castling moves king first, then rook
+- NNUE v5 hidden size is auto-detected from file — do not hardcode dimensions
 - Syzygy `tbchess.inc` is `#include`d by `tbprobe.c` — must NOT be compiled separately
 - Syzygy WDL probes require `HalfmoveClock == 0`; DTZ probes accept any value
 - **cutechess-cli**: Each flag and value must be separate `arg=` params (`arg=-nnue arg=/path/to/net.nnue`). `-uci` flag NOT needed (auto-detected). Use absolute paths
