@@ -4,6 +4,7 @@ package chess
 
 // NEON is always available on ARM64, no runtime detection needed.
 var nnueUseSIMD = true
+var nnueUseSIMDV5 = false // v5 dot-product kernels not yet implemented in NEON
 
 // nnueCReLU256 applies ClippedReLU (clamp to [0, 127]) to 256 int16 values.
 //

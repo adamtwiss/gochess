@@ -3,6 +3,7 @@
 package chess
 
 var nnueUseSIMD = false
+var nnueUseSIMDV5 = false
 
 // Stub functions — never called when nnueUseSIMD is false,
 // but needed for compilation on platforms without SIMD support.

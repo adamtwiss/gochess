@@ -113,6 +113,24 @@ func NewNNUEAccumulatorStackV5WithSize(capacity, hiddenSize int) *NNUEAccumulato
 	return s
 }
 
+// DeepCopy creates a deep copy of the v5 accumulator stack (for Lazy SMP thread copies).
+func (s *NNUEAccumulatorStackV5) DeepCopy() *NNUEAccumulatorStackV5 {
+	newStack := &NNUEAccumulatorStackV5{
+		stack:      make([]NNUEAccumulatorV5, len(s.stack)),
+		top:        s.top,
+		hiddenSize: s.hiddenSize,
+	}
+	for i := range s.stack {
+		newStack.stack[i].White = make([]int16, s.hiddenSize)
+		newStack.stack[i].Black = make([]int16, s.hiddenSize)
+		copy(newStack.stack[i].White, s.stack[i].White)
+		copy(newStack.stack[i].Black, s.stack[i].Black)
+		newStack.stack[i].Computed = s.stack[i].Computed
+		newStack.stack[i].Dirty = s.stack[i].Dirty
+	}
+	return newStack
+}
+
 // Current returns the current accumulator.
 func (s *NNUEAccumulatorStackV5) Current() *NNUEAccumulatorV5 {
 	return &s.stack[s.top]
@@ -249,9 +267,9 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 
 	outW := net.outputWeightRow(bucket)
 
-	var output int32
+	var output int64
 	if net.UsePairwise {
-		output = net.OutputBias[bucket]
+		output = int64(net.OutputBias[bucket])
 		for i := 0; i < PW; i++ {
 			a := int32(stmAcc[i])
 			b := int32(stmAcc[i+PW])
@@ -259,7 +277,7 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 			if a > nnueV5ClipMax { a = nnueV5ClipMax }
 			if b < 0 { b = 0 }
 			if b > nnueV5ClipMax { b = nnueV5ClipMax }
-			output += int32((a * b) / nnueV5InputScale) * int32(outW[i])
+			output += int64((a * b) / nnueV5InputScale) * int64(outW[i])
 		}
 		for i := 0; i < PW; i++ {
 			a := int32(ntmAcc[i])
@@ -268,12 +286,12 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 			if a > nnueV5ClipMax { a = nnueV5ClipMax }
 			if b < 0 { b = 0 }
 			if b > nnueV5ClipMax { b = nnueV5ClipMax }
-			output += int32((a * b) / nnueV5InputScale) * int32(outW[PW+i])
+			output += int64((a * b) / nnueV5InputScale) * int64(outW[PW+i])
 		}
-	} else if net.UseSCReLU && nnueUseSIMD {
+	} else if net.UseSCReLU && nnueUseSIMDV5 {
 		sum := nnueV5SCReLUDotN(&stmAcc[0], &outW[0], H)
 		sum += nnueV5SCReLUDotN(&ntmAcc[0], &outW[H], H)
-		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
+		output = sum/int64(nnueV5InputScale) + int64(net.OutputBias[bucket])
 	} else if net.UseSCReLU {
 		var sum int64
 		for i := 0; i < H; i++ {
@@ -288,32 +306,30 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
 			sum += int64(v*v) * int64(outW[H+i])
 		}
-		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
-	} else if nnueUseSIMD {
-		output = net.OutputBias[bucket]
-		output += nnueV5CReLUDotN(&stmAcc[0], &outW[0], H)
-		output += nnueV5CReLUDotN(&ntmAcc[0], &outW[H], H)
+		output = sum/int64(nnueV5InputScale) + int64(net.OutputBias[bucket])
+	} else if nnueUseSIMDV5 {
+		output = int64(net.OutputBias[bucket])
+		output += int64(nnueV5CReLUDotN(&stmAcc[0], &outW[0], H))
+		output += int64(nnueV5CReLUDotN(&ntmAcc[0], &outW[H], H))
 	} else {
-		output = net.OutputBias[bucket]
+		output = int64(net.OutputBias[bucket])
 		for i := 0; i < H; i++ {
 			v := int32(stmAcc[i])
 			if v < 0 { v = 0 }
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			output += v * int32(outW[i])
+			output += int64(v) * int64(outW[i])
 		}
 		for i := 0; i < H; i++ {
 			v := int32(ntmAcc[i])
 			if v < 0 { v = 0 }
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			output += v * int32(outW[H+i])
+			output += int64(v) * int64(outW[H+i])
 		}
 	}
 
 	// Scale: divide by QA*QB to get the raw network output, then multiply by eval_scale
 	// output is at scale QA * QB = 255 * 64 = 16320
 	// Final centipawns = output / 16320 * 400 = output * 400 / 16320
-	// Simplify: output * 25 / 1020 (close enough for integer arithmetic)
-	// Or more precisely: output / 16320 * 400
 	result := int(output) * nnueV5EvalScale / nnueV5BiasScale
 
 	return result
@@ -448,6 +464,9 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 	if err != nil {
 		return nil, fmt.Errorf("v%d: %w", version, err)
 	}
+	if nnueUseSIMD && H%256 != 0 {
+		return nil, fmt.Errorf("v%d: hidden size %d is not a multiple of 256 (required for SIMD accumulator ops)", version, H)
+	}
 	net.HiddenSize = H
 
 	return readNNUEV5Body(f, net)
@@ -496,12 +515,7 @@ func (b *Board) NNUEEvaluateRelativeV5() int {
 	}
 
 	// Count pieces for output bucket selection
-	pieceCount := 0
-	occ := b.AllPieces
-	for occ != 0 {
-		pieceCount++
-		occ &= occ - 1
-	}
+	pieceCount := b.AllPieces.Count()
 
 	return b.NNUENetV5.Forward(acc, b.SideToMove, pieceCount)
 }

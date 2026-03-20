@@ -5,6 +5,7 @@ package chess
 import "golang.org/x/sys/cpu"
 
 var nnueUseSIMD = cpu.X86.HasAVX2
+var nnueUseSIMDV5 = cpu.X86.HasAVX2 // v5 dot-product kernels also require AVX2
 
 // nnueCReLU256 applies ClippedReLU (clamp to [0, 127]) to 256 int16 values.
 //

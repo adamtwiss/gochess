@@ -109,6 +109,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error loading NNUE v5: %v\n", err)
 				os.Exit(1)
 			}
+			chess.GlobalNNUENetV5 = nnueNetV5
 			fmt.Fprintf(os.Stderr, "NNUE v5 loaded from %s (fingerprint %s)\n", *nnueFile, nnueNetV5.Fingerprint())
 		} else {
 			nnueNet, err = chess.LoadNNUEAnyVersion(*nnueFile)

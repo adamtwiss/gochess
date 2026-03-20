@@ -534,7 +534,9 @@ func (c *CLIEngine) cmdNNUE(args []string) {
 		}
 		loaded := "no"
 		if c.nnueNet != nil {
-			loaded = "yes"
+			loaded = "yes (v4)"
+		} else if c.board.NNUENetV5 != nil {
+			loaded = "yes (v5)"
 		}
 		fmt.Printf("NNUE: %s  network loaded: %s\n", status, loaded)
 		return
@@ -562,7 +564,7 @@ func (c *CLIEngine) cmdNNUE(args []string) {
 		fmt.Printf("NNUE loaded from %s (enabled)\n", path)
 
 	case "on":
-		if c.nnueNet == nil {
+		if c.nnueNet == nil && c.board.NNUENetV5 == nil {
 			fmt.Println("No NNUE network loaded. Use 'nnue load <file>' first.")
 			return
 		}
@@ -574,23 +576,26 @@ func (c *CLIEngine) cmdNNUE(args []string) {
 		fmt.Println("NNUE evaluation disabled (using classical eval).")
 
 	case "eval":
-		if c.nnueNet == nil || c.board.NNUEAcc == nil {
+		if c.board.NNUENetV5 != nil && c.board.NNUEAccV5 != nil {
+			score := c.board.NNUEEvaluateRelativeV5()
+			fmt.Printf("NNUE v5 (side to move): %d cp\n", score)
+		} else if c.nnueNet != nil && c.board.NNUEAcc != nil {
+			c.board.NNUEAcc.Materialize(c.board.NNUENet, &c.board)
+			acc := c.board.NNUEAcc.Current()
+			pieceCount := c.board.AllPieces.Count()
+			scoreW := c.nnueNet.Evaluate(acc, White, pieceCount)
+			scoreB := c.nnueNet.Evaluate(acc, Black, pieceCount)
+			stmStr := "White"
+			stmScore := scoreW
+			if c.board.SideToMove == Black {
+				stmStr = "Black"
+				stmScore = scoreB
+			}
+			fmt.Printf("NNUE raw: White-relative=%d, Black-relative=%d\n", scoreW, scoreB)
+			fmt.Printf("Side to move (%s): %d cp\n", stmStr, stmScore)
+		} else {
 			fmt.Println("No NNUE network loaded.")
-			return
 		}
-		c.board.NNUEAcc.Materialize(c.board.NNUENet, &c.board)
-		acc := c.board.NNUEAcc.Current()
-		pieceCount := c.board.AllPieces.Count()
-		scoreW := c.nnueNet.Evaluate(acc, White, pieceCount)
-		scoreB := c.nnueNet.Evaluate(acc, Black, pieceCount)
-		stmStr := "White"
-		stmScore := scoreW
-		if c.board.SideToMove == Black {
-			stmStr = "Black"
-			stmScore = scoreB
-		}
-		fmt.Printf("NNUE raw: White-relative=%d, Black-relative=%d\n", scoreW, scoreB)
-		fmt.Printf("Side to move (%s): %d cp\n", stmStr, stmScore)
 
 	default:
 		fmt.Println("Usage: nnue [load <file> | on | off | eval]")

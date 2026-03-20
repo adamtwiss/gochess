@@ -686,6 +686,9 @@ func (b *Board) SearchParallel(maxDepth int, info *SearchInfo, numThreads int) (
 		if b.NNUEAcc != nil {
 			helperBoards[i].NNUEAcc = b.NNUEAcc.DeepCopy()
 		}
+		if b.NNUEAccV5 != nil {
+			helperBoards[i].NNUEAccV5 = b.NNUEAccV5.DeepCopy()
+		}
 
 		helpers[i] = &SearchInfo{
 			StartTime:   info.StartTime,

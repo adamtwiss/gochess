@@ -200,6 +200,10 @@ var UseNNUE = true
 // get the NNUE net wired in via AttachNNUE.
 var GlobalNNUENet *NNUENet
 
+// GlobalNNUENetV5 is the shared v5 NNUE network pointer. When non-nil and
+// UseNNUE is true, boards get the v5 net via AttachNNUEV5.
+var GlobalNNUENetV5 *NNUENetV5
+
 // KingSafetyTable maps accumulated attack units to centipawn penalties.
 // Superlinear growth: near-zero for low indices, rapid growth from 15-50, capped at 999.
 var KingSafetyTable = [100]int{

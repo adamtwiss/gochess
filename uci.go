@@ -304,6 +304,9 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 	if e.board.NNUEAcc != nil {
 		searchBoard.NNUEAcc = e.board.NNUEAcc.DeepCopy()
 	}
+	if e.board.NNUEAccV5 != nil {
+		searchBoard.NNUEAccV5 = e.board.NNUEAccV5.DeepCopy()
+	}
 
 	e.searchMu.Lock()
 	now := time.Now()

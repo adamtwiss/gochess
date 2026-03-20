@@ -1286,7 +1286,7 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise
 	// where outW = 2*H (plain) or H (pairwise)
 	// Also subtract the "bulletbullet..." footer (32 bytes) if present
 	dataLen := len(data)
-	if dataLen >= 32 && string(data[dataLen-32:dataLen-16]) == "bulletbulletbulle" {
+	if dataLen >= 32 && string(data[dataLen-32:dataLen-16]) == "bulletbulletbull" {
 		dataLen -= 32 // strip footer
 	}
 

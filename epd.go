@@ -146,7 +146,9 @@ func RunEPDTestWithInfo(epd *EPDPosition, depth int, maxTime time.Duration, tt *
 	}
 
 	// Attach global NNUE network if available
-	if UseNNUE && GlobalNNUENet != nil {
+	if UseNNUE && GlobalNNUENetV5 != nil {
+		b.AttachNNUEV5(GlobalNNUENetV5)
+	} else if UseNNUE && GlobalNNUENet != nil {
 		b.AttachNNUE(GlobalNNUENet)
 	}
 
