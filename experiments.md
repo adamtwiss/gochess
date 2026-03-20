@@ -2192,3 +2192,8 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### V5: RFP Improving Margin 80 (REJECTED)
 - **Change**: Looser RFP improving margin from depth*70 to depth*80.
 - **Result**: **H0 at 1194 games, -0.6 Elo.** Dead flat. Bracket complete: 60 (H0), 70 (current), 80 (H0). Margin 70 confirmed optimal.
+
+### V5: ASP Delta Growth 2.0x (REJECTED)
+- **Change**: Faster aspiration delta growth: `delta += delta` (2.0x) instead of `delta += delta/2` (1.5x).
+- **Result**: **H0 at 164 games, -34.0 Elo.** Decisive.
+- **Notes**: Widening too fast reaches full window too quickly, losing the aspiration benefit. Bracket: 1.33x (testing), 1.5x (current), 2.0x (H0).
