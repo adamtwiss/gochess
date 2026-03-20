@@ -2146,3 +2146,8 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Reduce capture LMR by 1 when position is improving.
 - **Result**: **H0 at 1434 games, +0.2 Elo.** Dead flat.
 - **Notes**: Capture LMR already has history-based adjustment. Adding an improving flag is redundant — the capture history captures this information implicitly.
+
+### V5: LMR History Divisor 6000 (REJECTED)
+- **Change**: Less aggressive history-based LMR adjustment (divisor 5000→6000).
+- **Result**: **H0 at 241 games, -23.1 Elo.**
+- **Notes**: Our divisor 5000 is well-calibrated. Less aggressive history response means good moves get less reduction relief, losing tactical accuracy. Alexandria uses 8300 but with a very different search framework.
