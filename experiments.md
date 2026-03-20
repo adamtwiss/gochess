@@ -2136,3 +2136,13 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 
 ### V5: Improving-Aware Capture LMR (IN PROGRESS)
 - **Status**: +4.2 Elo at 1005 games, 73.8% LOS. Flat, likely H0.
+
+### V5: ProbCut Margin 150 (REJECTED)
+- **Change**: Tighter ProbCut margin from beta+170 to beta+150.
+- **Result**: **H0 at 1386 games, +0.3 Elo.** Dead flat.
+- **Notes**: ProbCut margin 170 is well-calibrated. 150 prunes too aggressively, removing positions worth searching.
+
+### V5: Improving-Aware Capture LMR (REJECTED)
+- **Change**: Reduce capture LMR by 1 when position is improving.
+- **Result**: **H0 at 1434 games, +0.2 Elo.** Dead flat.
+- **Notes**: Capture LMR already has history-based adjustment. Adding an improving flag is redundant — the capture history captures this information implicitly.
