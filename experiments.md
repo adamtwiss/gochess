@@ -2161,3 +2161,8 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### V5: RFP Improving Margin 60 (LIKELY REJECT)
 - **Status**: Collapsed from +13.9 at 317 games to +0.5 at 658 games. Classic early noise.
 - **Notes**: RFP improving margin 70 is well-calibrated for v5.
+
+### V5: RFP Improving Margin 60 (REJECTED)
+- **Change**: Tighter RFP improving margin from depth*70 to depth*60.
+- **Result**: **H0 at 853 games, -2.9 Elo.** Dead flat.
+- **Notes**: Improving margin 70 is well-calibrated. 60 prunes too aggressively in improving positions. Bracket: 60 (H0), 70 (current), 80 (testing).
