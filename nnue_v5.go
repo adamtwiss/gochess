@@ -541,6 +541,36 @@ func DetectNNUEVersion(path string) (uint32, error) {
 	return version, nil
 }
 
+// copySubAddV5Slice computes dst[i] = src[i] + newW[i] - oldW[i] for dynamic width.
+// Fused single-pass: avoids separate copy + sub + add.
+func copySubAddV5Slice(dst, src, oldW, newW []int16) {
+	n := len(dst)
+	if nnueUseSIMD {
+		for off := 0; off < n; off += 256 {
+			nnueAccCopySubAdd256(&dst[off], &src[off], &oldW[off], &newW[off])
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			dst[i] = src[i] + newW[i] - oldW[i]
+		}
+	}
+}
+
+// copySubSubAddV5Slice computes dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for dynamic width.
+// Fused single-pass for captures.
+func copySubSubAddV5Slice(dst, src, oldW, newW, capW []int16) {
+	n := len(dst)
+	if nnueUseSIMD {
+		for off := 0; off < n; off += 256 {
+			nnueAccCopySubSubAdd256(&dst[off], &src[off], &oldW[off], &newW[off], &capW[off])
+		}
+	} else {
+		for i := 0; i < n; i++ {
+			dst[i] = src[i] + newW[i] - oldW[i] - capW[i]
+		}
+	}
+}
+
 // MaterializeV5 applies the pending lazy update for the current accumulator.
 // Copies from the parent accumulator and applies the dirty piece delta.
 // Falls back to full recompute if: dirty type is 0 (king bucket change),
@@ -557,35 +587,63 @@ func (s *NNUEAccumulatorStackV5) MaterializeV5(net *NNUENetV5, b *Board) {
 		return
 	}
 
-	// Copy parent's accumulator values
 	parent := &s.stack[s.top-1]
-	copy(acc.White, parent.White)
-	copy(acc.Black, parent.Black)
-
-	// Apply incremental delta
 	wKingSq := b.Pieces[WhiteKing].LSB()
 	bKingSq := b.Pieces[BlackKing].LSB()
 
 	switch d.Type {
-	case 1, 6: // quiet move or king move same bucket
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 2: // capture
-		net.RemoveFeature(acc, d.CapPiece, d.CapSq, wKingSq, bKingSq)
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 3: // en passant
-		net.RemoveFeature(acc, d.CapPiece, d.CapSq, wKingSq, bKingSq)
-		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
-		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
-	case 4: // promotion
+	case 1, 6: // quiet move or king move same bucket — fused copy+SubAdd
+		wIdxOld := HalfKAIndex(White, wKingSq, d.Piece, d.From)
+		wIdxNew := HalfKAIndex(White, wKingSq, d.Piece, d.To)
+		if wIdxOld >= 0 && wIdxNew >= 0 {
+			copySubAddV5Slice(acc.White, parent.White,
+				net.inputWeightRow(wIdxOld), net.inputWeightRow(wIdxNew))
+		} else {
+			copy(acc.White, parent.White)
+		}
+		bIdxOld := HalfKAIndex(Black, bKingSq, d.Piece, d.From)
+		bIdxNew := HalfKAIndex(Black, bKingSq, d.Piece, d.To)
+		if bIdxOld >= 0 && bIdxNew >= 0 {
+			copySubAddV5Slice(acc.Black, parent.Black,
+				net.inputWeightRow(bIdxOld), net.inputWeightRow(bIdxNew))
+		} else {
+			copy(acc.Black, parent.Black)
+		}
+	case 2, 3: // capture or en passant — fused copy+SubSubAdd
+		wIdxMoveOld := HalfKAIndex(White, wKingSq, d.Piece, d.From)
+		wIdxMoveNew := HalfKAIndex(White, wKingSq, d.Piece, d.To)
+		wIdxCap := HalfKAIndex(White, wKingSq, d.CapPiece, d.CapSq)
+		if wIdxMoveOld >= 0 && wIdxMoveNew >= 0 && wIdxCap >= 0 {
+			copySubSubAddV5Slice(acc.White, parent.White,
+				net.inputWeightRow(wIdxMoveOld), net.inputWeightRow(wIdxMoveNew),
+				net.inputWeightRow(wIdxCap))
+		} else {
+			copy(acc.White, parent.White)
+		}
+		bIdxMoveOld := HalfKAIndex(Black, bKingSq, d.Piece, d.From)
+		bIdxMoveNew := HalfKAIndex(Black, bKingSq, d.Piece, d.To)
+		bIdxCap := HalfKAIndex(Black, bKingSq, d.CapPiece, d.CapSq)
+		if bIdxMoveOld >= 0 && bIdxMoveNew >= 0 && bIdxCap >= 0 {
+			copySubSubAddV5Slice(acc.Black, parent.Black,
+				net.inputWeightRow(bIdxMoveOld), net.inputWeightRow(bIdxMoveNew),
+				net.inputWeightRow(bIdxCap))
+		} else {
+			copy(acc.Black, parent.Black)
+		}
+	case 4: // promotion (rare) — copy + update
+		copy(acc.White, parent.White)
+		copy(acc.Black, parent.Black)
 		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
 		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
-	case 5: // capture-promotion
+	case 5: // capture-promotion (rare) — copy + update
+		copy(acc.White, parent.White)
+		copy(acc.Black, parent.Black)
 		net.RemoveFeature(acc, d.CapPiece, d.To, wKingSq, bKingSq)
 		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
 		net.AddFeature(acc, d.PromoPc, d.To, wKingSq, bKingSq)
-	case 7: // castling same bucket
+	case 7: // castling same bucket (rare) — copy + update
+		copy(acc.White, parent.White)
+		copy(acc.Black, parent.Black)
 		net.RemoveFeature(acc, d.Piece, d.From, wKingSq, bKingSq)
 		net.AddFeature(acc, d.Piece, d.To, wKingSq, bKingSq)
 		rookPiece := Piece(WhiteRook)
