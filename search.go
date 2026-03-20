@@ -1140,6 +1140,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 && beta-alpha == 1 {
 		// Adaptive reduction: scales with depth and eval margin above beta
 		R := 3 + depth/3
+		// Reduce less after captures: the position is more forcing
+		if len(b.UndoStack) > 0 && b.UndoStack[len(b.UndoStack)-1].Captured != Empty {
+			R--
+		}
 		if staticEval > beta {
 			evalR := int((staticEval - beta) / 200)
 			if evalR > 3 {
