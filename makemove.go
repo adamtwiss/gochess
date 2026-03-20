@@ -180,47 +180,53 @@ func (b *Board) MakeMove(m Move) {
 
 	// NNUE lazy accumulator — store the delta for deferred materialization.
 	// The actual copy+update is deferred until Evaluate() needs the accumulator.
-	// King moves that changed bucket used PushEmpty (type=0) → full recompute.
+	// King moves that changed bucket used PushEmpty/Push(type=0) → full recompute.
+	//
+	// Classify the dirty piece once, then apply to whichever accumulator(s) are active.
+	needDirty := false
 	if b.NNUEAcc != nil && !kingBucketChanged {
-		acc := b.NNUEAcc.Current()
-		d := &acc.Dirty
+		needDirty = true
+	}
+	if b.NNUEAccV5 != nil {
+		if isKingMove && (KingBucket(from) != KingBucket(to) ||
+			kingBucketMirrorFile[from] != kingBucketMirrorFile[to]) {
+			// v5 Push already set Type=0 → full recompute, nothing to do
+		} else {
+			needDirty = true
+		}
+	}
 
+	if needDirty {
+		// Classify the move into a DirtyPiece on the stack.
+		var d DirtyPiece
 		if isKingMove {
-			// King move within same bucket — treat as incremental update.
 			if flags == FlagCastle {
-				// Castling: king SubAdd + rook SubAdd
-				d.Type = 7
+				d.Type = 7 // castling same bucket
 				d.Piece = piece
 				d.From = from
 				d.To = to
 				if b.SideToMove == Black { // side already flipped; was White's move
 					if to == NewSquare(6, 0) {
-						d.RookFrom = NewSquare(7, 0)
-						d.RookTo = NewSquare(5, 0)
+						d.RookFrom, d.RookTo = NewSquare(7, 0), NewSquare(5, 0)
 					} else {
-						d.RookFrom = NewSquare(0, 0)
-						d.RookTo = NewSquare(3, 0)
+						d.RookFrom, d.RookTo = NewSquare(0, 0), NewSquare(3, 0)
 					}
-				} else { // was Black's move
+				} else {
 					if to == NewSquare(6, 7) {
-						d.RookFrom = NewSquare(7, 7)
-						d.RookTo = NewSquare(5, 7)
+						d.RookFrom, d.RookTo = NewSquare(7, 7), NewSquare(5, 7)
 					} else {
-						d.RookFrom = NewSquare(0, 7)
-						d.RookTo = NewSquare(3, 7)
+						d.RookFrom, d.RookTo = NewSquare(0, 7), NewSquare(3, 7)
 					}
 				}
 			} else if undo.Captured != Empty {
-				// King captures within same bucket (SubSubAdd: remove cap, move king)
-				d.Type = 2
+				d.Type = 2 // king capture same bucket
 				d.Piece = piece
 				d.From = from
 				d.To = to
 				d.CapPiece = undo.Captured
 				d.CapSq = to
 			} else {
-				// Quiet king move (same bucket, no castle, no capture)
-				d.Type = 6
+				d.Type = 6 // quiet king move same bucket
 				d.Piece = piece
 				d.From = from
 				d.To = to
@@ -228,7 +234,7 @@ func (b *Board) MakeMove(m Move) {
 		} else if flags == FlagEnPassant {
 			capSq := to - 8
 			capPiece := Piece(BlackPawn)
-			if b.SideToMove == White { // note: side already flipped
+			if b.SideToMove == White { // side already flipped
 				capSq = to + 8
 				capPiece = WhitePawn
 			}
@@ -266,91 +272,19 @@ func (b *Board) MakeMove(m Move) {
 			d.From = from
 			d.To = to
 		}
-	}
 
-	// V5 NNUE: store dirty piece for lazy materialization.
-	// Dirty.Type=0 (default from Push) means full recompute.
-	// Other types are applied incrementally by MaterializeV5.
-	if b.NNUEAccV5 != nil {
-		acc := b.NNUEAccV5.Current()
-		d := &acc.Dirty
-
-		// King bucket change already handled by Push (Dirty.Type=0 → recompute)
-		if isKingMove && (KingBucket(from) != KingBucket(to) ||
-			kingBucketMirrorFile[from] != kingBucketMirrorFile[to]) {
-			// d.Type already 0 from Push — nothing to do
-		} else if isKingMove {
-			if flags == FlagCastle {
-				d.Type = 7
-				d.Piece = piece
-				d.From = from
-				d.To = to
-				if b.SideToMove == Black { // side already flipped
-					if to == NewSquare(6, 0) {
-						d.RookFrom, d.RookTo = NewSquare(7, 0), NewSquare(5, 0)
-					} else {
-						d.RookFrom, d.RookTo = NewSquare(0, 0), NewSquare(3, 0)
-					}
-				} else {
-					if to == NewSquare(6, 7) {
-						d.RookFrom, d.RookTo = NewSquare(7, 7), NewSquare(5, 7)
-					} else {
-						d.RookFrom, d.RookTo = NewSquare(0, 7), NewSquare(3, 7)
-					}
-				}
-			} else if undo.Captured != Empty {
-				d.Type = 2
-				d.Piece = piece
-				d.From = from
-				d.To = to
-				d.CapPiece = undo.Captured
-				d.CapSq = to
+		// Apply to v4 accumulator
+		if b.NNUEAcc != nil && !kingBucketChanged {
+			b.NNUEAcc.Current().Dirty = d
+		}
+		// Apply to v5 accumulator (skip if king bucket changed — already type 0)
+		if b.NNUEAccV5 != nil {
+			acc := b.NNUEAccV5.Current()
+			if acc.Dirty.Type == 0 && isKingMove {
+				// King bucket changed — leave as type 0 (full recompute)
 			} else {
-				d.Type = 6
-				d.Piece = piece
-				d.From = from
-				d.To = to
+				acc.Dirty = d
 			}
-		} else if flags == FlagEnPassant {
-			capSq := to - 8
-			capPiece := Piece(BlackPawn)
-			if b.SideToMove == White {
-				capSq = to + 8
-				capPiece = WhitePawn
-			}
-			d.Type = 3
-			d.Piece = piece
-			d.From = from
-			d.To = to
-			d.CapPiece = capPiece
-			d.CapSq = capSq
-		} else if flags&FlagPromotion != 0 {
-			promoPiece := m.PromotionPiece()
-			if b.SideToMove == White {
-				promoPiece += 6
-			}
-			if undo.Captured != Empty {
-				d.Type = 5
-				d.CapPiece = undo.Captured
-			} else {
-				d.Type = 4
-			}
-			d.Piece = piece
-			d.From = from
-			d.To = to
-			d.PromoPc = promoPiece
-		} else if undo.Captured != Empty {
-			d.Type = 2
-			d.Piece = piece
-			d.From = from
-			d.To = to
-			d.CapPiece = undo.Captured
-			d.CapSq = to
-		} else {
-			d.Type = 1 // quiet move
-			d.Piece = piece
-			d.From = from
-			d.To = to
 		}
 	}
 }
