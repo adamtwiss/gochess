@@ -587,10 +587,12 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 				scale *= 0.8
 			}
 
-			// Unstable score → extend time
+			// Unstable score → extend time (Tucano-style aggressive scaling)
 			if scoreDelta > 50 {
-				scale *= 1.4
+				scale *= 2.0
 			} else if scoreDelta > 25 {
+				scale *= 1.5
+			} else if scoreDelta > 10 {
 				scale *= 1.2
 			}
 
