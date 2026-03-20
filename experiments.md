@@ -2113,3 +2113,13 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Full Alexandria-style SE: depth>=6, margin d*5/8, ply limiter, multi-cut, double/triple ext, negative ext -2.
 - **Result**: **H0 at 55 games, -139.7 Elo.** Catastrophic (5th consecutive SE failure).
 - **Notes**: Root cause identified: NMP fires inside verification search (see se-diagnosis.md). Fixed in SE-Fixed variant but still -106 Elo. Additional interactions remain.
+
+### V5: Quadratic 50-Move Scaling (REJECTED)
+- **Change**: Scale eval by `(200-hmc)²/40000` as halfmove clock advances.
+- **Result**: **H0 at 340 games, -13.3 Elo.** 
+- **Notes**: Quadratic scaling (Reckless/Minic) loses more Elo than our previous linear test (H0, -3.0). The 50-move rule rarely matters in self-play at 10+0.1s — games don't last that long. Any scaling just adds noise.
+
+### V5: ProbCut QS Pre-Filter (KILLED — flat)
+- **Change**: Run QS before full ProbCut search; only do expensive search if QS confirms.
+- **Result**: Killed at 287 games, +3.5 Elo. Flat.
+- **Notes**: QS pre-filter adds overhead without improving ProbCut accuracy at our depths. 4 engines have this (Alexandria, Tucano, Berserk, Weiss) but it may only help with deeper searches.
