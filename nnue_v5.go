@@ -19,10 +19,8 @@ import (
 )
 
 const (
-	// V5 network dimensions
-	NNUEv5HiddenSize   = 1024                    // per perspective (wider than v4's 256)
-	NNUEv5PairwiseSize = NNUEv5HiddenSize / 2    // per perspective after pairwise multiplication
-	NNUEv5OutputSize   = NNUEv5PairwiseSize * 2  // concatenated after pairwise (both perspectives)
+	// V5 default network dimensions (overridden by file contents at load time)
+	NNUEv5DefaultHidden = 1024 // default if not detected
 
 	// V5 quantization scale factors
 	nnueV5InputScale  = 255 // CReLU clips to [0, 255] — Bullet standard for CReLU/SCReLU
@@ -42,14 +40,16 @@ const (
 )
 
 // NNUENetV5 holds v5 network weights (shared read-only across threads).
+// Hidden size is dynamic — detected from the file at load time.
 type NNUENetV5 struct {
-	// Input layer: [feature_index][hidden_neuron] — 12288 × 1024
-	InputWeights [NNUEInputSize][NNUEv5HiddenSize]int16
-	InputBiases  [NNUEv5HiddenSize]int16
+	HiddenSize int // per perspective (e.g. 1024, 1536)
 
-	// Output layer: [bucket][concat_hidden] — 8 × 2048
-	// concat_hidden = STM accumulator (1024) + NTM accumulator (1024)
-	OutputWeights [NNUEOutputBuckets][NNUEv5HiddenSize * 2]int16
+	// Input layer: [feature_index * HiddenSize] — flattened 12288 × HiddenSize
+	InputWeights []int16
+	InputBiases  []int16
+
+	// Output layer: [bucket * HiddenSize*2] — flattened 8 × (2*HiddenSize)
+	OutputWeights []int16
 	OutputBias    [NNUEOutputBuckets]int32
 
 	// Activation: false = CReLU (clamp to [0,QA]), true = SCReLU (clamp then square)
@@ -57,33 +57,60 @@ type NNUENetV5 struct {
 
 	// Pairwise: consecutive accumulator pairs are multiplied before output layer.
 	// Halves the effective width: HiddenSize → HiddenSize/2 per perspective.
-	// Output layer is [bucket][HiddenSize] instead of [bucket][HiddenSize*2].
 	UsePairwise bool
+}
+
+// inputWeightRow returns the input weights for a given feature index.
+func (net *NNUENetV5) inputWeightRow(featureIdx int) []int16 {
+	off := featureIdx * net.HiddenSize
+	return net.InputWeights[off : off+net.HiddenSize]
+}
+
+// outputWeightRow returns the output weights for a given bucket.
+func (net *NNUENetV5) outputWeightRow(bucket int) []int16 {
+	outWidth := net.HiddenSize * 2
+	if net.UsePairwise {
+		outWidth = net.HiddenSize // pairwise halves it
+	}
+	off := bucket * outWidth
+	return net.OutputWeights[off : off+outWidth]
 }
 
 // NNUEAccumulatorV5 holds per-position accumulator state for v5 nets.
 type NNUEAccumulatorV5 struct {
-	White    [NNUEv5HiddenSize]int16
-	Black    [NNUEv5HiddenSize]int16
+	White    []int16
+	Black    []int16
 	Computed bool
 	Dirty    DirtyPiece // lazy materialization: pending update from MakeMove
 }
 
 // NNUEAccumulatorStackV5 provides push/pop for MakeMove/UnmakeMove.
 type NNUEAccumulatorStackV5 struct {
-	stack []NNUEAccumulatorV5
-	top   int
+	stack      []NNUEAccumulatorV5
+	top        int
+	hiddenSize int
 }
 
 // NewNNUEAccumulatorStackV5 creates a new v5 accumulator stack.
 func NewNNUEAccumulatorStackV5(capacity int) *NNUEAccumulatorStackV5 {
+	return NewNNUEAccumulatorStackV5WithSize(capacity, NNUEv5DefaultHidden)
+}
+
+// NewNNUEAccumulatorStackV5WithSize creates a stack with a specific hidden size.
+func NewNNUEAccumulatorStackV5WithSize(capacity, hiddenSize int) *NNUEAccumulatorStackV5 {
 	if capacity < 1 {
 		capacity = 256
 	}
-	return &NNUEAccumulatorStackV5{
-		stack: make([]NNUEAccumulatorV5, capacity),
-		top:   0,
+	s := &NNUEAccumulatorStackV5{
+		stack:      make([]NNUEAccumulatorV5, capacity),
+		top:        0,
+		hiddenSize: hiddenSize,
 	}
+	for i := range s.stack {
+		s.stack[i].White = make([]int16, hiddenSize)
+		s.stack[i].Black = make([]int16, hiddenSize)
+	}
+	return s
 }
 
 // Current returns the current accumulator.
@@ -96,7 +123,10 @@ func (s *NNUEAccumulatorStackV5) Current() *NNUEAccumulatorV5 {
 func (s *NNUEAccumulatorStackV5) Push() {
 	s.top++
 	if s.top >= len(s.stack) {
-		s.stack = append(s.stack, NNUEAccumulatorV5{})
+		s.stack = append(s.stack, NNUEAccumulatorV5{
+			White: make([]int16, s.hiddenSize),
+			Black: make([]int16, s.hiddenSize),
+		})
 	}
 	s.stack[s.top].Computed = false
 	s.stack[s.top].Dirty.Type = 0 // default: full recompute
@@ -117,15 +147,15 @@ func (s *NNUEAccumulatorStackV5) Pop() {
 
 // RecomputeAccumulator rebuilds the accumulator from scratch for a given perspective.
 func (net *NNUENetV5) RecomputeAccumulator(b *Board, acc *NNUEAccumulatorV5, perspective Color) {
-	var dst *[NNUEv5HiddenSize]int16
+	var dst []int16
 	if perspective == White {
-		dst = &acc.White
+		dst = acc.White
 	} else {
-		dst = &acc.Black
+		dst = acc.Black
 	}
 
 	// Start with biases
-	copy(dst[:], net.InputBiases[:])
+	copy(dst, net.InputBiases)
 
 	kingSq := b.Pieces[pieceOf(WhiteKing, perspective)].LSB()
 
@@ -143,32 +173,34 @@ func (net *NNUENetV5) RecomputeAccumulator(b *Board, acc *NNUEAccumulatorV5, per
 			continue
 		}
 
-		addWeightsV5(dst, &net.InputWeights[idx])
+		addWeightsV5Slice(dst, net.inputWeightRow(idx))
 	}
 }
 
-// addWeightsV5 adds NNUEv5HiddenSize int16 weights to an accumulator slice.
+// addWeightsV5Slice adds int16 weights to an accumulator slice (dynamic width).
 // Uses SIMD when available (N × 256-wide operations).
-func addWeightsV5(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
+func addWeightsV5Slice(acc []int16, weights []int16) {
+	n := len(acc)
 	if nnueUseSIMD {
-		for off := 0; off < NNUEv5HiddenSize; off += 256 {
+		for off := 0; off < n; off += 256 {
 			nnueAccAdd256(&acc[off], &weights[off])
 		}
 	} else {
-		for i := 0; i < NNUEv5HiddenSize; i++ {
+		for i := 0; i < n; i++ {
 			acc[i] += weights[i]
 		}
 	}
 }
 
-// subWeightsV5 subtracts NNUEv5HiddenSize int16 weights from an accumulator slice.
-func subWeightsV5(acc *[NNUEv5HiddenSize]int16, weights *[NNUEv5HiddenSize]int16) {
+// subWeightsV5Slice subtracts int16 weights from an accumulator slice (dynamic width).
+func subWeightsV5Slice(acc []int16, weights []int16) {
+	n := len(acc)
 	if nnueUseSIMD {
-		for off := 0; off < NNUEv5HiddenSize; off += 256 {
+		for off := 0; off < n; off += 256 {
 			nnueAccSub256(&acc[off], &weights[off])
 		}
 	} else {
-		for i := 0; i < NNUEv5HiddenSize; i++ {
+		for i := 0; i < n; i++ {
 			acc[i] -= weights[i]
 		}
 	}
@@ -180,10 +212,10 @@ func (net *NNUENetV5) AddFeature(acc *NNUEAccumulatorV5, piece Piece, sq Square,
 	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		addWeightsV5(&acc.White, &net.InputWeights[wIdx])
+		addWeightsV5Slice(acc.White, net.inputWeightRow(wIdx))
 	}
 	if bIdx >= 0 {
-		addWeightsV5(&acc.Black, &net.InputWeights[bIdx])
+		addWeightsV5Slice(acc.Black, net.inputWeightRow(bIdx))
 	}
 }
 
@@ -193,100 +225,87 @@ func (net *NNUENetV5) RemoveFeature(acc *NNUEAccumulatorV5, piece Piece, sq Squa
 	bIdx := HalfKAIndex(Black, bKingSq, piece, sq)
 
 	if wIdx >= 0 {
-		subWeightsV5(&acc.White, &net.InputWeights[wIdx])
+		subWeightsV5Slice(acc.White, net.inputWeightRow(wIdx))
 	}
 	if bIdx >= 0 {
-		subWeightsV5(&acc.Black, &net.InputWeights[bIdx])
+		subWeightsV5Slice(acc.Black, net.inputWeightRow(bIdx))
 	}
 }
 
 // ForwardV5 computes the v5 NNUE evaluation. Returns centipawns from side-to-move perspective.
 func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int) int {
 	bucket := OutputBucket(pieceCount)
+	H := net.HiddenSize
+	PW := H / 2 // pairwise size
 
-	var stmAcc, ntmAcc *[NNUEv5HiddenSize]int16
+	var stmAcc, ntmAcc []int16
 	if stm == White {
-		stmAcc = &acc.White
-		ntmAcc = &acc.Black
+		stmAcc = acc.White
+		ntmAcc = acc.Black
 	} else {
-		stmAcc = &acc.Black
-		ntmAcc = &acc.White
+		stmAcc = acc.Black
+		ntmAcc = acc.White
 	}
 
-	// Compute output: dot product of activation(accumulators) with output weights + bias
-	// CReLU: clamp(x, 0, QA) * weight — dot product at scale QA*QB
-	// SCReLU: clamp(x, 0, QA)² * weight, then /QA — matches Bullet's reference.
-	//   Squaring produces values at scale QA², so the dot is at QA²*QB.
-	//   A single /QA after the full sum reduces to QA*QB (same as CReLU).
-	//   This preserves precision vs dividing per-neuron (Bullet simple.rs pattern).
-	//   Requires int64 since max sum = 2048 * 255² * 127 ≈ 16.9B > int32 max.
-	// Forward pass: CReLU or SCReLU activation + dot product with output weights.
-	// Uses scalar path for width-independence. SIMD only for 1024-wide (via nnueV5CReLUDot1024).
+	outW := net.outputWeightRow(bucket)
+
 	var output int32
 	if net.UsePairwise {
-		// Pairwise: CReLU → multiply first half × second half → halves width → dot product
-		// Bullet's pairwise: out[i] = input[i] * input[i + halfSize]
-		// out[i] = clamp(acc[i]) * clamp(acc[i + PairwiseSize]) / QA → [0, QA]
-		// Dot product at scale QA * QB (same as plain CReLU)
 		output = net.OutputBias[bucket]
-		for i := 0; i < NNUEv5PairwiseSize; i++ {
+		for i := 0; i < PW; i++ {
 			a := int32(stmAcc[i])
-			b := int32(stmAcc[i+NNUEv5PairwiseSize])
+			b := int32(stmAcc[i+PW])
 			if a < 0 { a = 0 }
 			if a > nnueV5ClipMax { a = nnueV5ClipMax }
 			if b < 0 { b = 0 }
 			if b > nnueV5ClipMax { b = nnueV5ClipMax }
-			output += int32((a * b) / nnueV5InputScale) * int32(net.OutputWeights[bucket][i])
+			output += int32((a * b) / nnueV5InputScale) * int32(outW[i])
 		}
-		for i := 0; i < NNUEv5PairwiseSize; i++ {
+		for i := 0; i < PW; i++ {
 			a := int32(ntmAcc[i])
-			b := int32(ntmAcc[i+NNUEv5PairwiseSize])
+			b := int32(ntmAcc[i+PW])
 			if a < 0 { a = 0 }
 			if a > nnueV5ClipMax { a = nnueV5ClipMax }
 			if b < 0 { b = 0 }
 			if b > nnueV5ClipMax { b = nnueV5ClipMax }
-			output += int32((a * b) / nnueV5InputScale) * int32(net.OutputWeights[bucket][NNUEv5PairwiseSize+i])
+			output += int32((a * b) / nnueV5InputScale) * int32(outW[PW+i])
 		}
 	} else if net.UseSCReLU && nnueUseSIMD {
-		// SCReLU SIMD: exact x²*w accumulated in int64, single /QA at end
-		sum := nnueV5SCReLUDotN(&stmAcc[0], &net.OutputWeights[bucket][0], NNUEv5HiddenSize)
-		sum += nnueV5SCReLUDotN(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize], NNUEv5HiddenSize)
+		sum := nnueV5SCReLUDotN(&stmAcc[0], &outW[0], H)
+		sum += nnueV5SCReLUDotN(&ntmAcc[0], &outW[H], H)
 		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
 	} else if net.UseSCReLU {
-		// SCReLU scalar: accumulate x² * weight in int64, single /QA at end (Bullet pattern)
 		var sum int64
-		for i := 0; i < NNUEv5HiddenSize; i++ {
+		for i := 0; i < H; i++ {
 			v := int32(stmAcc[i])
 			if v < 0 { v = 0 }
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			sum += int64(v*v) * int64(net.OutputWeights[bucket][i])
+			sum += int64(v*v) * int64(outW[i])
 		}
-		for i := 0; i < NNUEv5HiddenSize; i++ {
+		for i := 0; i < H; i++ {
 			v := int32(ntmAcc[i])
 			if v < 0 { v = 0 }
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			sum += int64(v*v) * int64(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
+			sum += int64(v*v) * int64(outW[H+i])
 		}
 		output = int32(sum/int64(nnueV5InputScale)) + net.OutputBias[bucket]
 	} else if nnueUseSIMD {
-		// SIMD CReLU dot product — works for any width that's a multiple of 16
 		output = net.OutputBias[bucket]
-		output += nnueV5CReLUDotN(&stmAcc[0], &net.OutputWeights[bucket][0], NNUEv5HiddenSize)
-		output += nnueV5CReLUDotN(&ntmAcc[0], &net.OutputWeights[bucket][NNUEv5HiddenSize], NNUEv5HiddenSize)
+		output += nnueV5CReLUDotN(&stmAcc[0], &outW[0], H)
+		output += nnueV5CReLUDotN(&ntmAcc[0], &outW[H], H)
 	} else {
-		// Scalar CReLU for non-SIMD platforms
 		output = net.OutputBias[bucket]
-		for i := 0; i < NNUEv5HiddenSize; i++ {
+		for i := 0; i < H; i++ {
 			v := int32(stmAcc[i])
 			if v < 0 { v = 0 }
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			output += v * int32(net.OutputWeights[bucket][i])
+			output += v * int32(outW[i])
 		}
-		for i := 0; i < NNUEv5HiddenSize; i++ {
+		for i := 0; i < H; i++ {
 			v := int32(ntmAcc[i])
 			if v < 0 { v = 0 }
 			if v > nnueV5ClipMax { v = nnueV5ClipMax }
-			output += v * int32(net.OutputWeights[bucket][NNUEv5HiddenSize+i])
+			output += v * int32(outW[H+i])
 		}
 	}
 
@@ -303,8 +322,9 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 // Fingerprint returns a checksum string for the v5 network.
 func (net *NNUENetV5) Fingerprint() string {
 	var h uint64
-	for i := 0; i < NNUEv5HiddenSize && i < len(net.InputWeights[0]); i++ {
-		h = h*31 + uint64(uint16(net.InputWeights[0][i]))
+	row := net.inputWeightRow(0)
+	for i := 0; i < len(row); i++ {
+		h = h*31 + uint64(uint16(row[i]))
 	}
 	h = h*31 + uint64(uint32(net.OutputBias[0]))
 	return fmt.Sprintf("%016x", h)
@@ -332,7 +352,6 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 		return fmt.Errorf("writing version: %w", err)
 	}
 	if version == 6 {
-		// v6: flags byte — bit 0 = SCReLU, bit 1 = pairwise
 		var flags uint8
 		if net.UseSCReLU {
 			flags |= 1
@@ -344,13 +363,13 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 			return fmt.Errorf("writing flags: %w", err)
 		}
 	}
-	if err := binary.Write(w, binary.LittleEndian, &net.InputWeights); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, net.InputWeights); err != nil {
 		return fmt.Errorf("writing input weights: %w", err)
 	}
-	if err := binary.Write(w, binary.LittleEndian, &net.InputBiases); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, net.InputBiases); err != nil {
 		return fmt.Errorf("writing input biases: %w", err)
 	}
-	if err := binary.Write(w, binary.LittleEndian, &net.OutputWeights); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, net.OutputWeights); err != nil {
 		return fmt.Errorf("writing output weights: %w", err)
 	}
 	if err := binary.Write(w, binary.LittleEndian, &net.OutputBias); err != nil {
@@ -359,13 +378,43 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 	return nil
 }
 
-// LoadNNUEV5 reads a v5 network from a binary file.
+// inferV5HiddenSize computes the hidden size from file size and header offset.
+// Layout: InputWeights(NNUEInputSize*H*2) + InputBiases(H*2) + OutputWeights(8*outW*2) + OutputBias(8*4)
+// where outW = H*2 (plain) or H (pairwise).
+func inferV5HiddenSize(fileSize int64, headerSize int64, pairwise bool) (int, error) {
+	dataSize := fileSize - headerSize
+	biasBytes := int64(NNUEOutputBuckets * 4) // OutputBias: 8 * int32
+	dataSize -= biasBytes
+
+	// dataSize = H * (NNUEInputSize*2 + 2 + outMul*2)
+	// outMul = 8*2 (plain) or 8 (pairwise) — output weights per hidden neuron
+	var outMul int64
+	if pairwise {
+		outMul = int64(NNUEOutputBuckets) // 8 weights per neuron (pairwise halves)
+	} else {
+		outMul = int64(NNUEOutputBuckets) * 2 // 16 weights per neuron (both perspectives)
+	}
+	bytesPerNeuron := int64(NNUEInputSize)*2 + 2 + outMul*2
+	if dataSize <= 0 || dataSize%bytesPerNeuron != 0 {
+		return 0, fmt.Errorf("cannot infer hidden size: data=%d bytes, per_neuron=%d", dataSize, bytesPerNeuron)
+	}
+	return int(dataSize / bytesPerNeuron), nil
+}
+
+// LoadNNUEV5 reads a v5 network from a binary file. Hidden size is auto-detected.
 func LoadNNUEV5(path string) (*NNUENetV5, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+
+	// Get file size for hidden size inference
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat: %w", err)
+	}
+	fileSize := fi.Size()
 
 	var magic, version uint32
 	if err := binary.Read(f, binary.LittleEndian, &magic); err != nil {
@@ -377,35 +426,59 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 	if err := binary.Read(f, binary.LittleEndian, &version); err != nil {
 		return nil, fmt.Errorf("reading version: %w", err)
 	}
+
+	net := &NNUENetV5{}
+	var headerSize int64
+
 	if version == 5 {
-		// v5: CReLU, no flags byte (backward compatible)
-		net := &NNUENetV5{}
-		return readNNUEV5Body(f, net)
+		headerSize = 8 // magic + version
 	} else if version == 6 {
-		// v6: has flags byte — bit 0 = SCReLU, bit 1 = pairwise
-		net := &NNUENetV5{}
 		var flags uint8
 		if err := binary.Read(f, binary.LittleEndian, &flags); err != nil {
 			return nil, fmt.Errorf("reading flags: %w", err)
 		}
 		net.UseSCReLU = flags&1 != 0
 		net.UsePairwise = flags&2 != 0
-		return readNNUEV5Body(f, net)
+		headerSize = 9 // magic + version + flags
 	} else {
 		return nil, fmt.Errorf("expected v5 or v6, got v%d", version)
 	}
+
+	H, err := inferV5HiddenSize(fileSize, headerSize, net.UsePairwise)
+	if err != nil {
+		return nil, fmt.Errorf("v%d: %w", version, err)
+	}
+	net.HiddenSize = H
+
+	return readNNUEV5Body(f, net)
 }
 
 func readNNUEV5Body(f io.Reader, net *NNUENetV5) (*NNUENetV5, error) {
-	if err := binary.Read(f, binary.LittleEndian, &net.InputWeights); err != nil {
+	H := net.HiddenSize
+
+	// Allocate and read input weights: NNUEInputSize × H
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	if err := binary.Read(f, binary.LittleEndian, net.InputWeights); err != nil {
 		return nil, fmt.Errorf("reading input weights: %w", err)
 	}
-	if err := binary.Read(f, binary.LittleEndian, &net.InputBiases); err != nil {
+
+	// Input biases: H
+	net.InputBiases = make([]int16, H)
+	if err := binary.Read(f, binary.LittleEndian, net.InputBiases); err != nil {
 		return nil, fmt.Errorf("reading input biases: %w", err)
 	}
-	if err := binary.Read(f, binary.LittleEndian, &net.OutputWeights); err != nil {
+
+	// Output weights: 8 × outWidth
+	outWidth := H * 2
+	if net.UsePairwise {
+		outWidth = H
+	}
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*outWidth)
+	if err := binary.Read(f, binary.LittleEndian, net.OutputWeights); err != nil {
 		return nil, fmt.Errorf("reading output weights: %w", err)
 	}
+
+	// Output bias: 8 × int32
 	if err := binary.Read(f, binary.LittleEndian, &net.OutputBias); err != nil {
 		return nil, fmt.Errorf("reading output bias: %w", err)
 	}
@@ -472,8 +545,8 @@ func (s *NNUEAccumulatorStackV5) MaterializeV5(net *NNUENetV5, b *Board) {
 
 	// Copy parent's accumulator values
 	parent := &s.stack[s.top-1]
-	acc.White = parent.White
-	acc.Black = parent.Black
+	copy(acc.White, parent.White)
+	copy(acc.Black, parent.Black)
 
 	// Apply incremental delta
 	wKingSq := b.Pieces[WhiteKing].LSB()

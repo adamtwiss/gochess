@@ -914,7 +914,10 @@ func runCheckNet(args []string) {
 		b.SetFEN(fen)
 
 		if netV5 != nil {
-			acc := chess.NNUEAccumulatorV5{}
+			acc := chess.NNUEAccumulatorV5{
+				White: make([]int16, netV5.HiddenSize),
+				Black: make([]int16, netV5.HiddenSize),
+			}
 			netV5.RecomputeAccumulator(&b, &acc, chess.White)
 			netV5.RecomputeAccumulator(&b, &acc, chess.Black)
 			return netV5.Forward(&acc, b.SideToMove, b.AllPieces.Count())
@@ -1274,42 +1277,55 @@ func runConvertBullet(args []string) {
 
 func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise bool) {
 	const (
-		inputSize  = 12288
-		hiddenSize = chess.NNUEv5HiddenSize
-		buckets    = 8
+		inputSize = 12288
+		buckets   = 8
 	)
 
-	// Output layer width depends on pairwise:
-	// Plain: 2*hiddenSize (both perspectives concatenated)
-	// Pairwise: hiddenSize (pairwise halves each perspective, then concat)
+	// Infer hidden size from file size.
+	// Data layout: l0w(inputSize*H*2) + l0b(H*2) + l1w(outW*8*2) + l1b(8*4)
+	// where outW = 2*H (plain) or H (pairwise)
+	// Also subtract the "bulletbullet..." footer (32 bytes) if present
+	dataLen := len(data)
+	if dataLen >= 32 && string(data[dataLen-32:dataLen-16]) == "bulletbulletbulle" {
+		dataLen -= 32 // strip footer
+	}
+
+	// Solve for H: dataLen = H * (inputSize*2 + 2 + outMul*2) + 32
+	var outMul int
+	if usePairwise {
+		outMul = buckets
+	} else {
+		outMul = buckets * 2
+	}
+	bytesPerNeuron := inputSize*2 + 2 + outMul*2
+	biasBytes := buckets * 4
+	hiddenSize := (dataLen - biasBytes) / bytesPerNeuron
+
 	outputWidth := 2 * hiddenSize
 	if usePairwise {
 		outputWidth = hiddenSize
 	}
 
-	// V5 layout from Bullet:
-	// l0w: [inputSize][hiddenSize] i16
-	// l0b: [hiddenSize] i16
-	// l1w: [outputWidth][buckets] i16
-	// l1b: [buckets] i32
-	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b
-		outputWidth*buckets*2 + buckets*4 // l1w + l1b
-
-	fmt.Printf("Input file: %d bytes, expected: %d bytes\n", len(data), expectedSize)
-	if len(data) < expectedSize {
-		fmt.Fprintf(os.Stderr, "Error: file too small (got %d, need %d)\n", len(data), expectedSize)
+	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + outputWidth*buckets*2 + buckets*4
+	fmt.Printf("Input file: %d bytes, inferred hidden size: %d, expected: %d bytes\n", len(data), hiddenSize, expectedSize)
+	if dataLen < expectedSize {
+		fmt.Fprintf(os.Stderr, "Error: file too small (got %d, need %d)\n", dataLen, expectedSize)
 		os.Exit(1)
 	}
 
 	net := &chess.NNUENetV5{}
+	net.HiddenSize = hiddenSize
 	net.UseSCReLU = useSCReLU
 	net.UsePairwise = usePairwise
+	net.InputWeights = make([]int16, inputSize*hiddenSize)
+	net.InputBiases = make([]int16, hiddenSize)
+	net.OutputWeights = make([]int16, buckets*outputWidth)
 	offset := 0
 
 	// l0w: [inputSize][hiddenSize] i16
 	for i := 0; i < inputSize; i++ {
 		for j := 0; j < hiddenSize; j++ {
-			net.InputWeights[i][j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			net.InputWeights[i*hiddenSize+j] = int16(binary.LittleEndian.Uint16(data[offset:]))
 			offset += 2
 		}
 	}
@@ -1321,7 +1337,7 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise
 	}
 
 	// l1w: [outputWidth][buckets] i16
-	// Our format: OutputWeights[bucket][outputWidth] — need to transpose
+	// Our format: flattened [bucket*outputWidth + i] — need to transpose
 	l1wRaw := make([][8]int16, outputWidth)
 	for i := 0; i < outputWidth; i++ {
 		for b := 0; b < buckets; b++ {
@@ -1332,7 +1348,7 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise
 	// Transpose: [concat_input][bucket] -> [bucket][concat_input]
 	for b := 0; b < buckets; b++ {
 		for i := 0; i < outputWidth; i++ {
-			net.OutputWeights[b][i] = l1wRaw[i][b]
+			net.OutputWeights[b*outputWidth+i] = l1wRaw[i][b]
 		}
 	}
 

@@ -183,7 +183,7 @@ func (b *Board) AttachNNUEV5(net *NNUENetV5) {
 	b.NNUENet = nil // clear v4 if switching
 	b.NNUEAcc = nil
 	if net != nil {
-		b.NNUEAccV5 = NewNNUEAccumulatorStackV5(512)
+		b.NNUEAccV5 = NewNNUEAccumulatorStackV5WithSize(512, net.HiddenSize)
 		net.RecomputeAccumulator(b, b.NNUEAccV5.Current(), White)
 		net.RecomputeAccumulator(b, b.NNUEAccV5.Current(), Black)
 		b.NNUEAccV5.Current().Computed = true

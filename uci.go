@@ -131,7 +131,7 @@ func (e *UCIEngine) SetNNUEV5(net *NNUENetV5) {
 	e.board.NNUEAcc = nil
 	e.nnueNet = nil
 	if net != nil {
-		e.board.NNUEAccV5 = NewNNUEAccumulatorStackV5(512)
+		e.board.NNUEAccV5 = NewNNUEAccumulatorStackV5WithSize(512, net.HiddenSize)
 		net.RecomputeAccumulator(&e.board, e.board.NNUEAccV5.Current(), White)
 		net.RecomputeAccumulator(&e.board, e.board.NNUEAccV5.Current(), Black)
 		e.board.NNUEAccV5.Current().Computed = true
