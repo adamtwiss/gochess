@@ -2166,3 +2166,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Tighter RFP improving margin from depth*70 to depth*60.
 - **Result**: **H0 at 853 games, -2.9 Elo.** Dead flat.
 - **Notes**: Improving margin 70 is well-calibrated. 60 prunes too aggressively in improving positions. Bracket: 60 (H0), 70 (current), 80 (testing).
+
+### V5: Aspiration Fail-High Alpha Contraction (MERGED)
+- **Change**: Less aggressive alpha contraction on fail-high: `(5*alpha + 3*beta) / 8` instead of `alpha = beta`.
+- **Result**: **H1 at 200 games, +38.4 Elo ±29.2, LOS 99.5%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 4994e27 (asp fail-low contraction merged)
+- **Notes**: The old `alpha = beta` was too aggressive — it jumped alpha all the way to beta, then widened beta. The gentler contraction keeps some of the window below the fail-high score, reducing re-search overhead. Combined with the fail-low contraction, both sides of the aspiration window now use smooth contraction.
+
+### V5: RFP Improving Margin 80 (IN PROGRESS)
+- **Status**: -1.3 Elo at 546 games, heading H0. Brackets: 60 (H0), 70 (current), 80 (flat). Margin 70 confirmed optimal.

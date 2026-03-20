@@ -498,8 +498,8 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 				}
 				if score >= beta {
 					// Fail high: true score is above window.
-					// Narrow alpha up to old beta, widen beta based on score.
-					alpha = beta
+					// Contract alpha toward beta, widen beta based on score.
+					alpha = (5*alpha + 3*beta) / 8
 					beta = score + delta
 					if beta > Infinity {
 						beta = Infinity
