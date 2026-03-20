@@ -469,3 +469,114 @@ The consistent -60 to -140 Elo across all parameter sets is the signature of a s
 bug rather than a tuning issue. The SE code spends nodes on verification searches that are
 immediately short-circuited by NMP/RFP, providing no useful information while consuming
 time and potentially corrupting the search tree via spurious extensions.
+
+---
+
+## Experimental Results (2026-03-20)
+
+All bugs from the analysis above were fixed and tested systematically. The results
+overturned the original hypothesis: the bugs were real, but fixing them did NOT make SE
+positive. The problem is deeper than implementation bugs.
+
+### Configurations Tested
+
+| Variant | Pruning in SE | Extension | Multi-cut | Neg ext | Margin | Depth | Games | Elo |
+|---------|--------------|-----------|-----------|---------|--------|-------|-------|-----|
+| v2 (full fix) | All gated | +1/+2 | Yes (buggy) | -2 | d*2 | >=6 | 63 | -76 |
+| minimal | All gated | +1 | No | No | d*2 | >=6 | 25 | -164 |
+| v5 | None gated | +1 | Yes | -1 | d*1 | >=8 | 77 | -97 |
+| **v6** | NMP-only gated | **+1** | Yes | -1 | d*1 | >=8 | 211 | **-33** |
+| **v7** | NMP-only gated | **None** | Yes | -1 | d*1 | >=8 | 1148 | **-1.5** |
+
+### Key Findings
+
+**1. The SE infrastructure works correctly.**
+Multi-cut (return singularBeta when singularBeta >= beta) and negative extensions
+(-1 when ttScore >= beta but not singular) are correctly implemented and break even
+with the verification search cost (v7: -1.5 Elo in 1148 games).
+
+**2. The positive extension (+1 for singular moves) is what hurts.**
+v6 (-33 Elo) vs v7 (-1.5 Elo) — the only difference is whether singular moves get
++1 extension. The extension alone costs ~30 Elo. This is the opposite of reference
+engines where the extension is the primary value of SE.
+
+**3. Gating NMP inside SE is necessary but not sufficient.**
+- All pruning gated (Alexandria pattern): -164 Elo (too expensive, no NPS budget)
+- NMP-only gated (Obsidian pattern): -33 Elo (viable cost)
+- No pruning gated: -97 Elo (NMP corrupts SE decisions)
+
+NMP must be disabled inside SE because NMP's null-move search at ply+1 has access to
+the excluded move (ExcludedMove is ply-indexed), defeating the verification. But RFP
+and ProbCut are safe to keep because: RFP uses static eval (independent of excluded
+move) and the margins make it extremely unlikely to fire at singularDepth (2-3).
+
+**4. Disabling all pruning in SE is catastrophically expensive.**
+The verification search without NMP/RFP/ProbCut explores far more nodes. At depth 8,
+singularDepth = 3. Without NMP, every alternative move gets a depth-2 search. With
+~30 legal moves minus the TT move, that's 29 depth-2 searches per SE test. With
+~40-50% of tests resulting in extensions (full tree exploration, no early cutoff),
+the overhead is massive — the engine loses 2-4 plies of depth in the same time.
+
+**5. WAC depth comparison confirmed the overhead.**
+On WAC.003 (5s): Base reached depth 23, SE with all pruning gated reached depth 18
+(-5 plies). SE with NMP-only gated reached depth 23 (tied). The NMP-only approach
+keeps the verification search cheap enough that multi-cut and negative extensions
+can offset the cost.
+
+### Why the Positive Extension Hurts
+
+The extension is the core value proposition of SE in every reference engine (+20-30 Elo).
+In our engine it costs ~30 Elo. Hypotheses:
+
+1. **v5 NNUE eval accuracy**: Our v5 net (1024-wide, trained on LC0 data) may already
+   provide accurate enough positional evaluation that the extra ply from extensions
+   doesn't discover new tactical information. Reference engines with weaker eval gain
+   more from deeper search on critical moves.
+
+2. **Search feature interactions**: Our engine has several non-standard features that
+   may interact badly with extensions:
+   - **Alpha-reduce**: After alpha is raised, subsequent moves are reduced by 1 ply.
+     An SE-extended move raises alpha more often (deeper search finds better scores),
+     causing over-reduction of later moves.
+   - **Fail-high score blending**: `(bestScore*depth + beta)/(depth+1)` dampens
+     fail-high scores. Extended moves have higher depth, so their dampening is
+     different, potentially distorting the search tree.
+   - **TT score dampening**: `(3*score + beta)/4` on TT lower-bound cutoffs. Applies
+     throughout the SE-extended subtree, compounding score distortion.
+
+3. **Node budget displacement**: Extensions at depth >= 8 create large subtrees that
+   consume the node budget. In a fixed-time search, every extra node spent on the
+   extended TT move is a node NOT spent on other critical moves elsewhere in the tree.
+   If the extension doesn't find new tactics (hypothesis 1), this is pure waste.
+
+4. **Extension rate too high**: With margin=depth (8cp at depth 8), about 40-50% of
+   tested TT moves are "singular." In reference engines, extension rates of 30-40%
+   are typical. Our high rate may be extending mediocre moves that happen to be slightly
+   better than alternatives.
+
+### Unexplored Directions
+
+- **Fractional extensions**: Accumulate +0.5 ply per singular detection, extend by +1
+  when accumulated credit >= 1.0. Halves the per-extension cost while keeping the
+  frequency. Several strong engines use this.
+- **Quiet-only extensions**: Only extend singular moves that are quiet (non-captures).
+  Captures already get recapture extensions; doubling up may over-extend tactical lines.
+- **Lower depth gate (>=6)**: More frequent but cheaper SE tests (singularDepth = 2).
+  The verification is essentially a static eval + 1-ply check of alternatives.
+- **Disable alpha-reduce for SE-extended moves**: If alpha-reduce is the interaction
+  causing harm, exempting SE-extended nodes may recover the extension value.
+- **Disable fail-high blending in SE subtrees**: Same idea — prevent score distortion
+  in the extended subtree.
+- **Wider margin with extension, tight margin for multi-cut**: Use two thresholds:
+  only extend when the move is overwhelmingly singular (margin=depth*4), but do
+  multi-cut/negext with a tight margin (margin=depth). This targets extensions at
+  truly exceptional moves while keeping the pruning benefits.
+
+### Conclusion
+
+SE's verification search, multi-cut, and negative extensions are correctly implemented
+and break even. The mystery is specifically why the +1 extension harms our engine when
+it helps every reference engine. The most likely cause is an interaction between
+extensions and our non-standard search features (alpha-reduce, score blending), combined
+with a strong NNUE eval that already captures what extensions aim to discover. Fractional
+extensions and interaction isolation are the most promising next steps.
