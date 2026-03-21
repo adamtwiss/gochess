@@ -237,8 +237,9 @@ func (s *NNUEAccumulatorStackV5) RefreshAccumulator(net *NNUENetV5, b *Board, ac
 		return
 	}
 
-	// Start from cached accumulator
-	copy(dst, entry.Acc)
+	// Apply deltas directly to the cached accumulator, then copy to dst.
+	// This avoids one full accumulator copy vs the old copy-modify-writeback pattern.
+	cachedAcc := entry.Acc
 
 	// Diff each piece type's bitboard: cached vs current
 	for pc := Piece(1); pc <= 12; pc++ {
@@ -253,7 +254,7 @@ func (s *NNUEAccumulatorStackV5) RefreshAccumulator(net *NNUENetV5, b *Board, ac
 			sq := Square(removed.PopLSB())
 			idx := HalfKAIndex(perspective, kingSq, pc, sq)
 			if idx >= 0 {
-				subWeightsV5Slice(dst, net.inputWeightRow(idx))
+				subWeightsV5Slice(cachedAcc, net.inputWeightRow(idx))
 			}
 		}
 		// Added squares: in curr but not in prev
@@ -262,13 +263,13 @@ func (s *NNUEAccumulatorStackV5) RefreshAccumulator(net *NNUENetV5, b *Board, ac
 			sq := Square(added.PopLSB())
 			idx := HalfKAIndex(perspective, kingSq, pc, sq)
 			if idx >= 0 {
-				addWeightsV5Slice(dst, net.inputWeightRow(idx))
+				addWeightsV5Slice(cachedAcc, net.inputWeightRow(idx))
 			}
 		}
 	}
 
-	// Update cache
-	copy(entry.Acc, dst)
+	// Copy updated cache to accumulator
+	copy(dst, cachedAcc)
 	entry.Pieces = b.Pieces
 }
 
@@ -305,13 +306,11 @@ func (net *NNUENetV5) RecomputeAccumulator(b *Board, acc *NNUEAccumulatorV5, per
 }
 
 // addWeightsV5Slice adds int16 weights to an accumulator slice (dynamic width).
-// Uses SIMD when available (N × 256-wide operations).
+// Uses a single SIMD call for the full width.
 func addWeightsV5Slice(acc []int16, weights []int16) {
 	n := len(acc)
 	if nnueUseSIMD {
-		for off := 0; off < n; off += 256 {
-			nnueAccAdd256(&acc[off], &weights[off])
-		}
+		nnueAccAddN(&acc[0], &weights[0], n)
 	} else {
 		for i := 0; i < n; i++ {
 			acc[i] += weights[i]
@@ -323,9 +322,7 @@ func addWeightsV5Slice(acc []int16, weights []int16) {
 func subWeightsV5Slice(acc []int16, weights []int16) {
 	n := len(acc)
 	if nnueUseSIMD {
-		for off := 0; off < n; off += 256 {
-			nnueAccSub256(&acc[off], &weights[off])
-		}
+		nnueAccSubN(&acc[0], &weights[0], n)
 	} else {
 		for i := 0; i < n; i++ {
 			acc[i] -= weights[i]

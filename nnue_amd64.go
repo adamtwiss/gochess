@@ -83,6 +83,24 @@ func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *i
 // nnueDotReLU32 computes: sum_k(ReLU(input[k]>>6) * int32(weights[k])) for k=0..31.
 // Used for the output layer (32→1).
 //
+// nnueAccAddN computes acc[i] += weights[i] for i=0..count-1.
+// count must be a multiple of 16. Width-generic for v5 dynamic hidden sizes.
+//
+//go:noescape
+func nnueAccAddN(acc *int16, weights *int16, count int)
+
+// nnueAccSubN computes acc[i] -= weights[i] for i=0..count-1.
+// count must be a multiple of 16. Width-generic for v5 dynamic hidden sizes.
+//
+//go:noescape
+func nnueAccSubN(acc *int16, weights *int16, count int)
+
+// nnueAccSubAddN computes acc[i] += newW[i] - oldW[i] for i=0..count-1.
+// Fused sub+add for moved pieces. count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int)
+
 //go:noescape
 func nnueDotReLU32(input *int32, weights *int16) int32
 

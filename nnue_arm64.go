@@ -2,6 +2,8 @@
 
 package chess
 
+import "unsafe"
+
 // NEON is always available on ARM64, no runtime detection needed.
 var nnueUseSIMD = true
 var nnueUseSIMDV5 = false // v5 dot-product kernels not yet implemented in NEON
@@ -84,6 +86,34 @@ func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *i
 //
 //go:noescape
 func nnueDotReLU32(input *int32, weights *int16) int32
+
+// Width-generic stubs — delegate to 256-wide NEON kernels
+func nnueAccAddN(acc *int16, weights *int16, count int) {
+	// Cast to slices for safe indexing
+	a := unsafe.Slice(acc, count)
+	w := unsafe.Slice(weights, count)
+	for off := 0; off < count; off += 256 {
+		nnueAccAdd256(&a[off], &w[off])
+	}
+}
+
+func nnueAccSubN(acc *int16, weights *int16, count int) {
+	a := unsafe.Slice(acc, count)
+	w := unsafe.Slice(weights, count)
+	for off := 0; off < count; off += 256 {
+		nnueAccSub256(&a[off], &w[off])
+	}
+}
+
+func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int) {
+	a := unsafe.Slice(acc, count)
+	o := unsafe.Slice(oldW, count)
+	n := unsafe.Slice(newW, count)
+	for off := 0; off < count; off += 256 {
+		nnueAccSub256(&a[off], &o[off])
+		nnueAccAdd256(&a[off], &n[off])
+	}
+}
 
 // nnueV5CReLUDot1024 computes clamped dot product for v5 output layer.
 // TODO: implement NEON version

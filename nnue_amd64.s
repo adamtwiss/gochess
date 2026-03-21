@@ -433,6 +433,78 @@ accsub_loop:
 	RET
 
 // ============================================================================
+// nnueAccAddN(acc *int16, weights *int16, count int)
+// Computes: acc[i] += weights[i] for i = 0..count-1
+// count must be a multiple of 16. Width-generic for v5 dynamic hidden sizes.
+// ============================================================================
+TEXT ·nnueAccAddN(SB), NOSPLIT, $0-24
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $4, CX                      // count / 16 = number of YMM iterations
+
+accaddn_loop:
+	VMOVDQU (AX), Y0
+	VPADDW (BX), Y0, Y0
+	VMOVDQU Y0, (AX)
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ accaddn_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueAccSubN(acc *int16, weights *int16, count int)
+// Computes: acc[i] -= weights[i] for i = 0..count-1
+// count must be a multiple of 16. Width-generic for v5 dynamic hidden sizes.
+// ============================================================================
+TEXT ·nnueAccSubN(SB), NOSPLIT, $0-24
+	MOVQ acc+0(FP), AX
+	MOVQ weights+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $4, CX
+
+accsubn_loop:
+	VMOVDQU (AX), Y0
+	VPSUBW (BX), Y0, Y0
+	VMOVDQU Y0, (AX)
+	ADDQ $32, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ accsubn_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int)
+// Computes: acc[i] += newW[i] - oldW[i] for i = 0..count-1
+// Fused sub+add for moved pieces. count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueAccSubAddN(SB), NOSPLIT, $0-32
+	MOVQ acc+0(FP), AX
+	MOVQ oldW+8(FP), BX
+	MOVQ newW+16(FP), CX
+	MOVQ count+24(FP), DX
+	SHRQ $4, DX
+
+accsubaddn_loop:
+	VMOVDQU (AX), Y0                 // load acc
+	VPSUBW (BX), Y0, Y0              // acc -= oldW
+	VPADDW (CX), Y0, Y0              // acc += newW
+	VMOVDQU Y0, (AX)                 // store
+	ADDQ $32, AX
+	ADDQ $32, BX
+	ADDQ $32, CX
+	DECQ DX
+	JNZ accsubaddn_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
 // nnueAccCopySubAdd256(dst *int16, src *int16, oldW *int16, newW *int16)
 // Computes: dst[i] = src[i] + newW[i] - oldW[i] for i = 0..255
 // Fused copy+update: reads from src (parent), writes to dst (child).
