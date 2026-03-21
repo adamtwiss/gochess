@@ -2238,3 +2238,21 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### V5: Bugfix Impact (NEUTRAL)
 - **Change**: Atlas code review fixes: v5 SMP DeepCopy, int64 overflow, ARM stubs, etc.
 - **Result**: +4.3 Elo at 550 games, flat. No regression confirmed. The int32 overflow fix only affects scalar path (SIMD still int32).
+
+### V5: ASP Starting Delta 18 (REJECTED)
+- **Change**: Wider aspiration starting delta from 15 to 18.
+- **Result**: Collapsed from +31 at 101 games to +3.3 at 755 games. Heading H0.
+- **Notes**: Delta 15 is optimal even with the new contraction parameters. Bracket: 12 (H0), 15 (current), 18 (H0).
+
+### V5: ASP Min Depth 5 (REJECTED)
+- **Change**: Only use aspiration windows at depth >= 5 (was >= 4).
+- **Result**: **H0 at 538 games, -7.8 Elo.**
+
+### V5: TM Aggressive Stability (REJECTED)
+- **Change**: Stronger early stop on stable best move: 0.25x at 8+ (was 0.35x), 0.4x at 5+ (was 0.5x).
+- **Result**: **H0 at 403 games, -14.7 Elo.**
+
+### V5: IIR Depth 7 (REJECTED)
+- **Change**: Raise IIR gate from depth >= 6 to depth >= 7.
+- **Result**: **H0 at 343 games, -15.2 Elo.**
+- **Notes**: Finny NPS boost doesn't change optimal IIR threshold.
