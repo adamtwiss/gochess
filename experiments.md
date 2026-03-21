@@ -2339,8 +2339,8 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 
 ### V5: Hindsight Reduction (IN PROGRESS)
 - **Change**: When `(ss-1)->staticEval + ss->staticEval > 150`, reduce depth by 1 before NMP/pruning. Both sides think position is quiet.
-- **Status**: 786 games, +6.2 Elo. Slightly positive, still running.
-- **Notes**: Alexandria uses this with threshold 155. 5 engines have variants.
+- **Status**: 1099 games, +6 Elo. Persistent positive signal. LLR slowly building.
+- **Notes**: Alexandria uses threshold 155. 5 engines have variants. Most consistent positive from this batch.
 
 ### V5: Eval-Based History Depth Bonus (REJECTED)
 - **Change**: When beta cutoff occurs and staticEval <= alphaOrig (surprising cutoff), use `historyBonus(depth+1)` instead of `historyBonus(depth)`. Alexandria pattern.
@@ -2353,3 +2353,19 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 173 games, -40.3 Elo.** Catastrophic.
 - **Baseline**: 836be58 with v5 sb120 net
 - **Notes**: Alpha-reduce on move 2 is actually valuable — the TT move already raised alpha, and searching move 2 at full depth wastes nodes on a likely inferior move. The alpha-reduce feature is correctly applied to ALL moves after alpha is raised.
+
+### V5: Draw Score Randomization (IN PROGRESS)
+- **Change**: Add ±2cp noise to repetition draw scores: `return -Contempt + int(2-(info.Nodes&3))`. Koivisto pattern to prevent repetition-seeking.
+- **Status**: 259 games, -7 Elo. Faded from early +39 to negative. Heading H0.
+
+### V5: Material Scaling of NNUE Output (REJECTED)
+- **Change**: Scale NNUE eval by `(700 + pieceCount*40) / 1024`. Dampens eval in low-material endgames. Alexandria pattern.
+- **Result**: **H0 at 211 games, -24.7 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Our v5 net likely handles endgame scaling internally through its 8 output buckets. External scaling conflicts with the net's learned behavior.
+
+### V5: TT Cutoff History Malus (REJECTED)
+- **Change**: On TT beta cutoff, penalize opponent's last quiet move with `-historyBonus(depth)`. Alexandria pattern.
+- **Result**: **H0 at 248 games, -25.3 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: TT cutoffs fire very frequently and cheaply — applying history malus at every one pollutes the history tables with noisy data. Our TT cutoff history BONUS works (+22 Elo merged) because bonuses reinforce good moves; malus on the opponent's move is the wrong signal.
