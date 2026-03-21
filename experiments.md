@@ -2266,3 +2266,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: More aggressive fail-low contraction: (a+7b)/8 instead of (3a+5b)/8.
 - **Result**: **H0 at 208 games, -26.8 Elo.**
 - **Notes**: Too aggressive — beta contracts too close to alpha, causing tight windows that fail repeatedly. (3a+5b)/8 confirmed optimal. Full bracket: (a+b)/2 (old, +10.5 Elo improvement), (3a+5b)/8 (current), (a+7b)/8 (H0).
+
+### V5: LMP Depth 9 (REJECTED)
+- **Change**: Extend LMP from depth<=8 to depth<=9.
+- **Result**: **H0 at 791 games, -4.8 Elo.**
+- **Notes**: Depth 8 is optimal. At depth 9, LMP prunes moves that were worth searching.
+
+### Model: GPU1 Reproduce vs Production (NEUTRAL)
+- **Change**: GPU1 reproduction of production model with new Bullet, same config.
+- **Result**: **H0 at 1470 games, -0.9 Elo.** Pipeline confirmed on GPU1.
