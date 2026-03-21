@@ -78,3 +78,26 @@ All nets trained with wdl=0.5 are ~300 Elo weaker than production. The WDL setti
 | New (Current) | feab644 | SavedFormat refactor (cb67efb), Kaiming init sqrt(2/n) (e1c9336), i32 quant fix (ae31a62), bullet_core overhaul (c5177bd) |
 
 The SavedFormat refactor doesn't change binary output (verified: byte-identical conversion from old checkpoint). The Kaiming init change may affect training dynamics — reproduction test pending from GPU1.
+
+## Active Training Pipeline (2026-03-21)
+
+| GPU | Architecture | WDL | SBs | Data | Status |
+|-----|-------------|-----|-----|------|--------|
+| GPU1 | 768 pairwise | 0.0 | 120 | 1-2 T80 files | Training |
+| GPU1 | 1024 reproduce | 0.0 | 120 | 1 T80 file | Complete — SPRT testing |
+| GPU2 | 1024 | 0.1 | 120 | 6 T80 files | Training |
+| GPU2 | 1536 | 0.0 | 300 | 6 T80 files | Training |
+| GPU2 | 1536 | 0.0 | 400 | 6 T80 files | Training |
+
+**Known variable**: GPU1 uses 1-2 T80 files, GPU2 uses 6. At 1024-wide this made no difference (neutral SPRT). May matter at larger architectures with more capacity. Note when comparing results across GPUs.
+
+## SPRT Results (2026-03-21)
+
+| Test | Result | Elo | Notes |
+|------|--------|-----|-------|
+| 1536 sb200 vs 1536 sb120 (wdl=0.0) | **H1** | +91.6 | Wider nets need more training |
+| 1536 sb120 vs 1024 production | **H0** | -164.9 | sb120 undertrained for 1536 |
+| 1536 sb200 vs 1024 production | Testing | -34.9 (30 games) | Key test — in progress |
+| 1024 wdl=0.0 6-file vs production | Neutral | -3.1 | Pipeline confirmed |
+| 1024 sb200 vs sb120 (wdl=0.0) | Neutral | +1.0 | More training doesn't help at 1024 |
+| GPU1 reproduce vs production | Testing | +11.6 (129 games) | GPU1 pipeline check |
