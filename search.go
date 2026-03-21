@@ -1060,7 +1060,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// This replaces separate InCheck() + PinnedPieces() calls.
 	pinned, checkers := b.PinnedAndCheckers(b.SideToMove)
 	inCheck := checkers != 0
-	checkSq, discoverers := b.CheckData(b.SideToMove)
 
 	// Compute static eval for pruning and LMR improving detection.
 	// Stored per-ply so we can compare to 2 plies ago.
@@ -1114,17 +1113,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		unstable = diff > 200
 	}
 
-	// Compute enemy pawn attacks for threat-aware LMR.
-	// Moving a piece away from a pawn-attacked square deserves less reduction.
-	var enemyPawnAttacks Bitboard
-	if !inCheck {
-		enemyPawns := b.Pieces[pieceOf(WhitePawn, b.SideToMove^1)]
-		if b.SideToMove == White {
-			enemyPawnAttacks = enemyPawns.SouthWest() | enemyPawns.SouthEast()
-		} else {
-			enemyPawnAttacks = enemyPawns.NorthWest() | enemyPawns.NorthEast()
-		}
-	}
+	// Enemy pawn attacks for threat-aware LMR (computed lazily below)
 
 	// Detect if TT move is a capture — if so, quiet moves deserve more reduction
 	ttMoveNoisy := ttMove != NoMove && (b.Squares[ttMove.To()] != Empty || ttMove.Flags() == FlagEnPassant)
@@ -1295,6 +1284,19 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 	picker := &info.pickers[ply]
 	picker.threatSq = threatSq
+
+	// Deferred computations: only needed if we reach the move loop
+	// (avoids wasting work on nodes that cut via TT, RFP, NMP, or ProbCut)
+	checkSq, discoverers := b.CheckData(b.SideToMove)
+	var enemyPawnAttacks Bitboard
+	if !inCheck {
+		enemyPawns := b.Pieces[pieceOf(WhitePawn, b.SideToMove^1)]
+		if b.SideToMove == White {
+			enemyPawnAttacks = enemyPawns.SouthWest() | enemyPawns.SouthEast()
+		} else {
+			enemyPawnAttacks = enemyPawns.NorthWest() | enemyPawns.NorthEast()
+		}
+	}
 
 	bestMove := NoMove
 	bestScore := -Infinity
