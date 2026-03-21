@@ -202,3 +202,32 @@ NPS impact: 1536 is 17% slower than 1024 (1471 vs 1773 kNPS on Intel with Finny 
 - Train sb600/sb800 when GPU available
 - Test 1536 with wdl=0.1 (if WDL bracket shows benefit)
 - Profile and optimize 1536 NPS (Atlas)
+
+## wdl=0.05 Beats All Other WDL Settings (2026-03-21)
+
+**1024 wdl=0.05 sb200 vs production (wdl=0.0 sb120): H1 at 222 games, +44.1 Elo ±31.9, LOS 99.6%.**
+
+The optimal WDL blend is very small — just 5% game result signal. The sweep:
+
+| WDL | Self-play vs production | Cross-engine (gauntlet/RR) |
+|-----|------------------------|---------------------------|
+| 0.0 | baseline | +22 gauntlet / -2 RR |
+| 0.05 | **+44.1 (H1)** | Testing next |
+| 0.1 | +17.3 (H1) | +13 gauntlet / +11 RR |
+| 0.2 | Training cancelled | — |
+| 0.5 | -300 | Catastrophic |
+
+**New recommendation**: Use wdl=0.05 with sb200+ for all future training. Train 1536 wdl=0.05 sb800 as priority.
+
+## 768pw Results — Architecture Not Viable (2026-03-21)
+
+| Test | Games | Elo | Status |
+|------|-------|-----|--------|
+| 768pw sb120 (scalar) | 76 | -119 | H0 |
+| 768pw sb200 (scalar) | 54 | -158 | H0 |
+| 768pw sb120 (SIMD) | 76 | -119 | H0 |
+| 768pw sb200 (SIMD) | 252 | -17 | H0 |
+| 768pw sb300 (SIMD) | 164 | -49 | H0 |
+| 768pw sb400 (SIMD) | 185 | -37 | Heading H0 |
+
+Despite lower validation loss and 7% NPS advantage, pairwise architecture produces compressed eval scale that hurts search pruning decisions. Not viable with current search framework.
