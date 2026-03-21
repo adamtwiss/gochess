@@ -877,22 +877,33 @@ TEXT ·nnueV5CReLUDotN(SB), NOSPLIT, $0-28
 	MOVQ acc+0(FP), AX
 	MOVQ weights+8(FP), BX
 	MOVQ count+16(FP), CX
-	SHRQ $4, CX                         // count / 16 = iterations
+	SHRQ $5, CX                         // count / 32 = iterations (2x unrolled)
 	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
 	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
-	VPXOR Y5, Y5, Y5                    // Y5 = accumulator (int32 sum)
+	VPXOR Y5, Y5, Y5                    // Y5 = accumulator 1
+	VPXOR Y7, Y7, Y7                    // Y7 = accumulator 2
 
 v5dotn_loop:
-	VMOVDQU (AX), Y2                    // load 16 acc values
-	VPMAXSW Y0, Y2, Y2                  // max(0, x)
-	VPMINSW Y1, Y2, Y2                  // min(255, x) = CReLU
-	VMOVDQU (BX), Y3                    // load 16 weights
-	VPMADDWD Y2, Y3, Y4                 // multiply pairs, accumulate to 8 int32
-	VPADDD Y4, Y5, Y5                   // add to running sum
-	ADDQ $32, AX
-	ADDQ $32, BX
+	// First 16 elements
+	VMOVDQU (AX), Y2
+	VPMAXSW Y0, Y2, Y2
+	VPMINSW Y1, Y2, Y2
+	VMOVDQU (BX), Y3
+	VPMADDWD Y2, Y3, Y4
+	VPADDD Y4, Y5, Y5
+	// Second 16 elements
+	VMOVDQU 32(AX), Y2
+	VPMAXSW Y0, Y2, Y2
+	VPMINSW Y1, Y2, Y2
+	VMOVDQU 32(BX), Y3
+	VPMADDWD Y2, Y3, Y4
+	VPADDD Y4, Y7, Y7
+	ADDQ $64, AX
+	ADDQ $64, BX
 	DECQ CX
 	JNZ v5dotn_loop
+
+	VPADDD Y7, Y5, Y5                   // merge accumulators
 
 	// Horizontal sum of Y5
 	VEXTRACTI128 $1, Y5, X6
