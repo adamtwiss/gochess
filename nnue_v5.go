@@ -656,9 +656,7 @@ func DetectNNUEVersion(path string) (uint32, error) {
 func copySubAddV5Slice(dst, src, oldW, newW []int16) {
 	n := len(dst)
 	if nnueUseSIMD {
-		for off := 0; off < n; off += 256 {
-			nnueAccCopySubAdd256(&dst[off], &src[off], &oldW[off], &newW[off])
-		}
+		nnueAccCopySubAddN(&dst[0], &src[0], &oldW[0], &newW[0], n)
 	} else {
 		for i := 0; i < n; i++ {
 			dst[i] = src[i] + newW[i] - oldW[i]
@@ -671,9 +669,7 @@ func copySubAddV5Slice(dst, src, oldW, newW []int16) {
 func copySubSubAddV5Slice(dst, src, oldW, newW, capW []int16) {
 	n := len(dst)
 	if nnueUseSIMD {
-		for off := 0; off < n; off += 256 {
-			nnueAccCopySubSubAdd256(&dst[off], &src[off], &oldW[off], &newW[off], &capW[off])
-		}
+		nnueAccCopySubSubAddN(&dst[0], &src[0], &oldW[0], &newW[0], &capW[0], n)
 	} else {
 		for i := 0; i < n; i++ {
 			dst[i] = src[i] + newW[i] - oldW[i] - capW[i]

@@ -115,6 +115,27 @@ func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int) {
 	}
 }
 
+func nnueAccCopySubAddN(dst *int16, src *int16, oldW *int16, newW *int16, count int) {
+	d := unsafe.Slice(dst, count)
+	s := unsafe.Slice(src, count)
+	o := unsafe.Slice(oldW, count)
+	n := unsafe.Slice(newW, count)
+	for off := 0; off < count; off += 256 {
+		nnueAccCopySubAdd256(&d[off], &s[off], &o[off], &n[off])
+	}
+}
+
+func nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16, count int) {
+	d := unsafe.Slice(dst, count)
+	s := unsafe.Slice(src, count)
+	o := unsafe.Slice(oldW, count)
+	n := unsafe.Slice(newW, count)
+	c := unsafe.Slice(capW, count)
+	for off := 0; off < count; off += 256 {
+		nnueAccCopySubSubAdd256(&d[off], &s[off], &o[off], &n[off], &c[off])
+	}
+}
+
 // nnueV5CReLUDot1024 computes clamped dot product for v5 output layer.
 // TODO: implement NEON version
 //go:noescape

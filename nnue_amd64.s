@@ -505,6 +505,65 @@ accsubaddn_loop:
 	RET
 
 // ============================================================================
+// nnueAccCopySubAddN(dst *int16, src *int16, oldW *int16, newW *int16, count int)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] for i = 0..count-1
+// count must be a multiple of 16. Width-generic.
+// ============================================================================
+TEXT ·nnueAccCopySubAddN(SB), NOSPLIT, $0-40
+	MOVQ dst+0(FP), AX
+	MOVQ src+8(FP), BX
+	MOVQ oldW+16(FP), CX
+	MOVQ newW+24(FP), DX
+	MOVQ count+32(FP), SI
+	SHRQ $4, SI
+
+copysubaddn_loop:
+	VMOVDQU (DX), Y0
+	VPSUBW (CX), Y0, Y0
+	VPADDW (BX), Y0, Y0
+	VMOVDQU Y0, (AX)
+	ADDQ $32, AX
+	ADDQ $32, BX
+	ADDQ $32, CX
+	ADDQ $32, DX
+	DECQ SI
+	JNZ copysubaddn_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16, count int)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i = 0..count-1
+// count must be a multiple of 16. Width-generic.
+// ============================================================================
+TEXT ·nnueAccCopySubSubAddN(SB), NOSPLIT, $0-48
+	MOVQ dst+0(FP), AX
+	MOVQ src+8(FP), BX
+	MOVQ oldW+16(FP), CX
+	MOVQ newW+24(FP), DX
+	MOVQ capW+32(FP), SI
+	MOVQ count+40(FP), DI
+	SHRQ $4, DI
+
+copysubsubaddn_loop:
+	VMOVDQU (DX), Y0
+	VPSUBW (CX), Y0, Y0
+	VPSUBW (SI), Y0, Y0
+	VPADDW (BX), Y0, Y0
+	VMOVDQU Y0, (AX)
+	ADDQ $32, AX
+	ADDQ $32, BX
+	ADDQ $32, CX
+	ADDQ $32, DX
+	ADDQ $32, SI
+	DECQ DI
+	JNZ copysubsubaddn_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
 // nnueAccCopySubAdd256(dst *int16, src *int16, oldW *int16, newW *int16)
 // Computes: dst[i] = src[i] + newW[i] - oldW[i] for i = 0..255
 // Fused copy+update: reads from src (parent), writes to dst (child).

@@ -101,6 +101,18 @@ func nnueAccSubN(acc *int16, weights *int16, count int)
 //go:noescape
 func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int)
 
+// nnueAccCopySubAddN computes dst[i] = src[i] + newW[i] - oldW[i] for i=0..count-1.
+// Width-generic fused copy+sub+add. count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccCopySubAddN(dst *int16, src *int16, oldW *int16, newW *int16, count int)
+
+// nnueAccCopySubSubAddN computes dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i=0..count-1.
+// Width-generic fused copy+sub+sub+add. count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16, count int)
+
 //go:noescape
 func nnueDotReLU32(input *int32, weights *int16) int32
 
