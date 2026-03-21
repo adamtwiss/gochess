@@ -2355,9 +2355,23 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 836be58 with v5 sb120 net
 - **Notes**: Alpha-reduce on move 2 is actually valuable — the TT move already raised alpha, and searching move 2 at full depth wastes nodes on a likely inferior move. The alpha-reduce feature is correctly applied to ALL moves after alpha is raised.
 
-### V5: Draw Score Randomization (IN PROGRESS)
+### V5: IIR Depth Gate 4 (REJECTED)
+- **Change**: Lower IIR gate from `depth >= 6` to `depth >= 4`. More positions get IIR when no TT move exists.
+- **Result**: **H0 at 769 games, -3.2 Elo.** Dead flat.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: IIR at depth 4-5 doesn't help because shallow searches find TT moves quickly anyway. Gate 6 is well-calibrated.
+
+### V5: Draw Score Randomization (REJECTED)
 - **Change**: Add ±2cp noise to repetition draw scores: `return -Contempt + int(2-(info.Nodes&3))`. Koivisto pattern to prevent repetition-seeking.
-- **Status**: 259 games, -7 Elo. Faded from early +39 to negative. Heading H0.
+- **Result**: **H0 at 830 games, -3.8 Elo.** Dead flat.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Our Contempt=10 already handles draw avoidance. Adding random noise doesn't improve play — the engine already prefers playing on.
+
+### V5: ASP Initial Delta 12 (REJECTED)
+- **Change**: Tighter initial aspiration window: delta 15 → 12.
+- **Result**: **H0 at 203 games, -34.3 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Delta 12 is too tight — causes more aspiration re-searches that waste time. Delta 15 is well-calibrated. Bracket: 12 (H0), 15 (current). Not testing higher since wider deltas lose aspiration benefit.
 
 ### V5: Material Scaling of NNUE Output (REJECTED)
 - **Change**: Scale NNUE eval by `(700 + pieceCount*40) / 1024`. Dampens eval in low-material endgames. Alexandria pattern.
