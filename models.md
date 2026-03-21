@@ -62,13 +62,45 @@ All nets trained with wdl=0.5 are ~300 Elo weaker than production. The WDL setti
 | net-v5-screlu-sb120.nnue | SCReLU, wdl=0.0, old pipeline |
 | net-v5-1536-sb120.nnue | 1536 wide, wdl=0.0, old pipeline |
 
+## Key Findings
+
+### Training Settings
+- **WDL must be 0.0** (pure score) — wdl=0.5 produces nets ~300 Elo weaker. Discovered 2026-03-20 after days of confusion.
+- **No .transpose()** in SavedFormat — correct for both old and new Bullet (verified byte-identical conversion).
+- **wdl=0.1** (light game-result blend) — untested, training on GPU2. Hypothesis: small blend might help without the 0.5 collapse.
+
+### Data Diversity
+- **1024-wide: 6 T80 files = 1 file** — no Elo difference (SPRT neutral at 798 games). The single-file dataset has enough diversity for 1024's capacity.
+- **1536-wide**: untested whether more data helps. Larger models may benefit from data diversity that smaller models can't exploit.
+
+### Training Length (Superbatches)
+- **1024-wide: sb120 = sb200** — no benefit from extra training (SPRT neutral at 376 games). The 1024 model is fully converged at 120 SBs.
+- **1536-wide: sb200 >> sb120** — +91.6 Elo (H1 at 97 games). Wider nets have more parameters and need significantly more training to converge. sb200 may still be undertrained for 1536.
+- **Validation loss can be misleading** — loss plateaus while playing strength continues to improve. The model is refining critical positions (game-deciding patterns) even when average prediction error stops falling.
+- **LR schedule must match training length** — cosine decay over 120 SBs means the last 80 SBs of a 200 SB run are at near-zero LR. For longer runs, extend the cosine schedule to match (e.g. cosine over 300 SBs for a 300 SB run).
+- **Optimal SBs likely scales with architecture size**: 1024→120, 1536→300+, larger→more.
+
+### Architecture Width
+- **1536 has lower validation loss than 1024** (0.008810 vs 0.009058 at sb200) — genuinely better eval quality from wider architecture.
+- **1536 NPS penalty is only 12% with Finny tables** — down from ~75% without Finny. Finny tables disproportionately help wider nets because king-bucket recomputes (the expensive part) are proportional to width.
+- **1536 sb120 is too weak** (-165 vs 1024 production) — the eval quality doesn't compensate for the NPS hit when undertrained. sb200 is much closer. sb300/sb400 may cross the threshold.
+- **NPS impact of width**: 1024 = 1781 kNPS, 1536 = 1568 kNPS (-12%). The Finny table cache hit rate matters more than raw accumulator width for practical NPS.
+
+### Inference Optimizations
+- **Finny tables**: +34% NPS, +165 Elo (self-play). Caches per-king-bucket accumulator state, turning full recomputes into delta updates. Impact scales with accumulator width — even more valuable at 1536+.
+- **Fused MaterializeV5**: +5-8% NPS, +32.6 Elo. Combines lazy accumulator copy + delta application.
+- **NPS gains transfer ~1:1 to cross-engine Elo** (same as eval improvements, unlike search gains which are ~2:1).
+
+### Random Seed Variation
+- Check-net values vary 10-20% between different random seeds with identical config. Playing strength likely varies 10-20 Elo between seeds. Consider training multiple seeds and picking the best, or ensemble distillation, for production models.
+
 ## Key Rules
 
 1. **WDL must be 0.0** (pure score) — wdl=0.5 produces nets ~300 Elo weaker
 2. **No .transpose()** in SavedFormat — correct for both old and new Bullet
 3. **Always test vs production** (`net-v5-120sb-sb120.nnue`) — never compare nets trained with different settings against each other
 4. **Log every model here** with exact Bullet version, data files, and WDL setting
-5. **Bullet version matters** — old (7f930b0) and new (feab644) have different Kaiming init (+41% larger initial weights) and bullet_core overhaul. Reproduction testing ongoing.
+5. **Bullet version matters** — old (7f930b0) and new (feab644) have different Kaiming init (+41% larger initial weights) and bullet_core overhaul. Reproduction confirmed equivalent strength.
 
 ## Bullet Version Notes
 
