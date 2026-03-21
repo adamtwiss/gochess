@@ -1134,7 +1134,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	if !inCheck && ply >= 1 && depth >= 3 &&
 		info.StaticEvals[ply-1] > -MateScore+100 && staticEval > -Infinity {
 		evalSum := info.StaticEvals[ply-1] + staticEval
-		if evalSum > 150 {
+		if evalSum > 200 {
 			depth--
 		}
 	}
