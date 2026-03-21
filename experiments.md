@@ -2275,3 +2275,16 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### Model: GPU1 Reproduce vs Production (NEUTRAL)
 - **Change**: GPU1 reproduction of production model with new Bullet, same config.
 - **Result**: **H0 at 1470 games, -0.9 Elo.** Pipeline confirmed on GPU1.
+
+### Model: 1536 sb200 vs 1024 Production (H1 — WINNER!)
+- **Change**: 1536-wide CReLU net (wdl=0.0, 6 T80 files, 200 SBs) vs 1024 production (120 SBs).
+- **Result**: **H1 at 1522 games, +11.0 Elo ±12.4, LOS 95.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Notes**: First time a wider architecture beats production. The 12% NPS penalty is overcome by better eval quality. The 1536 net has 2.7% lower validation loss. sb300/sb400 still training — may gain more. This opens the path to 1536 as production architecture.
+
+### V5: QS Delta 220 (REJECTED)
+- **Change**: Tighter QS delta from 240 to 220.
+- **Result**: **H0 at 1270 games, -0.5 Elo.** Dead flat. Bracket: 200 (H0), 220 (H0), 240 (current).
+
+### V5: Futility 50+d*50 (REJECTED)
+- **Change**: Tighter futility from 60+d*60 to 50+d*50.
+- **Result**: **H0 at 699 games, -5.5 Elo.** Bracket: 50+d*50 (H0), 60+d*60 (current), 100+d*100 (old).
