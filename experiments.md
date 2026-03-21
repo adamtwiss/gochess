@@ -2256,3 +2256,13 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Raise IIR gate from depth >= 6 to depth >= 7.
 - **Result**: **H0 at 343 games, -15.2 Elo.**
 - **Notes**: Finny NPS boost doesn't change optimal IIR threshold.
+
+### V5: NMP Verification Depth 10 (REJECTED)
+- **Change**: Lower NMP verification gate from depth >= 12 to depth >= 10.
+- **Result**: **H0 at 385 games, -15.4 Elo.**
+- **Notes**: More frequent verification wastes nodes. Depth 12 is optimal.
+
+### V5: ASP Fail-Low (a+7b)/8 (REJECTED)
+- **Change**: More aggressive fail-low contraction: (a+7b)/8 instead of (3a+5b)/8.
+- **Result**: **H0 at 208 games, -26.8 Elo.**
+- **Notes**: Too aggressive — beta contracts too close to alpha, causing tight windows that fail repeatedly. (3a+5b)/8 confirmed optimal. Full bracket: (a+b)/2 (old, +10.5 Elo improvement), (3a+5b)/8 (current), (a+7b)/8 (H0).
