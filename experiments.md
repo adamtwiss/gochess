@@ -2337,10 +2337,11 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 836be58 with v5 sb120 net
 - **Notes**: Second attempt at using eval complexity (first was LMR at -25). RFP margin widening is less harmful than LMR reduction, but still doesn't help. Conclusion: eval complexity from correction history is not a useful search signal in our engine — the correction already adjusts the eval directly.
 
-### V5: Hindsight Reduction (IN PROGRESS)
+### V5: Hindsight Reduction (MERGED)
 - **Change**: When `(ss-1)->staticEval + ss->staticEval > 150`, reduce depth by 1 before NMP/pruning. Both sides think position is quiet.
-- **Status**: 1099 games, +6 Elo. Persistent positive signal. LLR slowly building.
-- **Notes**: Alexandria uses threshold 155. 5 engines have variants. Most consistent positive from this batch.
+- **Result**: **H1 at 1549 games, +9.4 Elo ±10.7, LOS 95.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Alexandria uses threshold 155. 5 engines have variants. Persistent positive signal from 600 games onward — never dipped below +5 after recovery from early noise.
 
 ### V5: Eval-Based History Depth Bonus (REJECTED)
 - **Change**: When beta cutoff occurs and staticEval <= alphaOrig (surprising cutoff), use `historyBonus(depth+1)` instead of `historyBonus(depth)`. Alexandria pattern.

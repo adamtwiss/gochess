@@ -1128,6 +1128,17 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// extract the opponent's best reply from the TT. -1 = no threat detected.
 	threatSq := Square(-1)
 
+	// Hindsight reduction: when both sides think the position is quiet
+	// (parent's eval + current eval are both positive), reduce depth by 1.
+	// Source: Alexandria (reduction>=1 && (ss-1)->staticEval + ss->staticEval >= 155)
+	if !inCheck && ply >= 1 && depth >= 3 &&
+		info.StaticEvals[ply-1] > -MateScore+100 && staticEval > -Infinity {
+		evalSum := info.StaticEvals[ply-1] + staticEval
+		if evalSum > 150 {
+			depth--
+		}
+	}
+
 	// Null-move pruning
 	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
 	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
