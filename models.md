@@ -179,3 +179,26 @@ A light game-result blend (10%) with enough training (200 SBs) produces a strong
 ## Atlas Wide Kernels — Intel SPRT
 
 H1 at 1663 games, +9.2 Elo ±10.3, 95.9% LOS. Confirmed gain on Intel (smaller than AMD's +14.7 due to +5% vs +18% NPS difference).
+
+## 1536 sb400 Beats Production (2026-03-21)
+
+**1536 CReLU wdl=0.0 sb400 vs 1024 production: H1 at 630 games, +18.2 Elo ±18.2, LOS 97.5%.**
+
+First architecture change to definitively beat production. The progression:
+
+| 1536 Checkpoint | vs 1024 Production | Notes |
+|----------------|-------------------|-------|
+| sb120 | -165 | Massively undertrained |
+| sb200 | +11 (H1) | Just crossed positive |
+| sb300 | +1 (flat) | Inconsistent checkpoint |
+| sb400 | **+18.2 (H1)** | Clear winner, loss still dropping |
+
+The 1536 net's validation loss was still dropping at sb400 (0.008679). Training sb600/sb800 with cosine decay over the full length would likely find more Elo. Queued for when GPU capacity frees up.
+
+NPS impact: 1536 is 17% slower than 1024 (1471 vs 1773 kNPS on Intel with Finny tables). The +18 Elo eval quality gain more than compensates.
+
+**Next steps:** 
+- Gauntlet testing against rival engines (in progress)
+- Train sb600/sb800 when GPU available
+- Test 1536 with wdl=0.1 (if WDL bracket shows benefit)
+- Profile and optimize 1536 NPS (Atlas)
