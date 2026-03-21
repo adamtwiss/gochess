@@ -130,3 +130,11 @@ func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
 //
 //go:noescape
 func nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
+
+// nnueV5PairwiseDotN computes pairwise dot product for v5 768pw architecture.
+//   sum = sum_i( clamp(a[i],0,255) * clamp(b[i],0,255) * weights[i] ) for i=0..count-1
+// a = first half of accumulator, b = second half.
+// Returns int64 (caller divides by QA=255).
+//
+//go:noescape
+func nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count int) int64

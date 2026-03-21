@@ -919,3 +919,103 @@ v5screlu_n_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count int) int64
+//
+// Pairwise dot product for v5 768pw architecture.
+// Computes: sum = sum_i( clamp(a[i],0,255) * clamp(b[i],0,255) * weights[i] )
+// for i=0..count-1, where a=accFirst, b=accSecond (second half of accumulator).
+//
+// count must be a multiple of 16. Returns int64 (caller divides by QA=255).
+// Uses same int32→int64 widening pattern as nnueV5SCReLUDotN.
+//
+// Register allocation:
+//   AX  = accFirst pointer
+//   BX  = accSecond pointer
+//   DX  = weights pointer
+//   CX  = loop counter (count/16)
+//   Y0  = zero (floor)
+//   Y1  = 255 (ceiling)
+//   Y2  = clamped a[0..15]
+//   Y3  = clamped b[0..15]
+//   Y4,Y5 = widened a,b (int32)
+//   Y6  = product a*b (int32)
+//   Y7  = scratch for widening
+//   Y8-Y11 = int64 accumulators
+//   Y12 = widened weights (int32)
+//   Y13 = weights int16
+// ============================================================================
+TEXT ·nnueV5PairwiseDotN(SB), NOSPLIT, $0-40
+	MOVQ accFirst+0(FP), AX
+	MOVQ accSecond+8(FP), BX
+	MOVQ weights+16(FP), DX
+	MOVQ count+24(FP), CX
+	SHRQ $4, CX                         // count / 16 = iterations
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+	VPXOR Y8, Y8, Y8                    // int64 accumulator 0
+	VPXOR Y9, Y9, Y9                    // int64 accumulator 1
+	VPXOR Y10, Y10, Y10                 // int64 accumulator 2
+	VPXOR Y11, Y11, Y11                 // int64 accumulator 3
+
+v5pw_n_loop:
+	// Load and clamp 16 int16 from first half
+	VMOVDQU (AX), Y2
+	VPMAXSW Y0, Y2, Y2                  // max(0, a)
+	VPMINSW Y1, Y2, Y2                  // min(255, a)
+	// Load and clamp 16 int16 from second half
+	VMOVDQU (BX), Y3
+	VPMAXSW Y0, Y3, Y3                  // max(0, b)
+	VPMINSW Y1, Y3, Y3                  // min(255, b)
+	// Load 16 int16 weights
+	VMOVDQU (DX), Y13
+
+	// --- Low 8 elements ---
+	VPMOVSXWD X2, Y4                    // a[0..7] -> int32
+	VPMOVSXWD X3, Y5                    // b[0..7] -> int32
+	VPMOVSXWD X13, Y12                  // w[0..7] -> int32
+	VPMULLD Y4, Y5, Y6                  // a*b [0..7] (int32, max 65025)
+	VPMULLD Y12, Y6, Y6                 // a*b*w [0..7] (int32)
+	// Widen to int64 and accumulate
+	VPMOVSXDQ X6, Y7                    // low 4 -> int64
+	VPADDQ Y7, Y8, Y8
+	VEXTRACTI128 $1, Y6, X7
+	VPMOVSXDQ X7, Y7                    // high 4 -> int64
+	VPADDQ Y7, Y9, Y9
+
+	// --- High 8 elements ---
+	VEXTRACTI128 $1, Y2, X4
+	VPMOVSXWD X4, Y4                    // a[8..15] -> int32
+	VEXTRACTI128 $1, Y3, X5
+	VPMOVSXWD X5, Y5                    // b[8..15] -> int32
+	VEXTRACTI128 $1, Y13, X12
+	VPMOVSXWD X12, Y12                  // w[8..15] -> int32
+	VPMULLD Y4, Y5, Y6                  // a*b [8..15]
+	VPMULLD Y12, Y6, Y6                 // a*b*w [8..15]
+	// Widen to int64 and accumulate
+	VPMOVSXDQ X6, Y7                    // low 4 -> int64
+	VPADDQ Y7, Y10, Y10
+	VEXTRACTI128 $1, Y6, X7
+	VPMOVSXDQ X7, Y7                    // high 4 -> int64
+	VPADDQ Y7, Y11, Y11
+
+	ADDQ $32, AX
+	ADDQ $32, BX
+	ADDQ $32, DX
+	DECQ CX
+	JNZ v5pw_n_loop
+
+	// Horizontal sum: Y8+Y9+Y10+Y11 -> single int64
+	VPADDQ Y9, Y8, Y8
+	VPADDQ Y11, Y10, Y10
+	VPADDQ Y10, Y8, Y8                  // 4 x int64
+	VEXTRACTI128 $1, Y8, X9
+	VPADDQ X9, X8, X8                   // 2 x int64
+	VPSHUFD $0x4E, X8, X9               // swap 64-bit halves
+	VPADDQ X9, X8, X8                   // 1 x int64
+	VMOVQ X8, AX
+	MOVQ AX, ret+32(FP)
+
+	VZEROUPPER
+	RET

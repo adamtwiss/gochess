@@ -374,7 +374,11 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	outW := net.outputWeightRow(bucket)
 
 	var output int64
-	if net.UsePairwise {
+	if net.UsePairwise && nnueUseSIMDV5 {
+		sum := nnueV5PairwiseDotN(&stmAcc[0], &stmAcc[PW], &outW[0], PW)
+		sum += nnueV5PairwiseDotN(&ntmAcc[0], &ntmAcc[PW], &outW[PW], PW)
+		output = sum/int64(nnueV5InputScale) + int64(net.OutputBias[bucket])
+	} else if net.UsePairwise {
 		output = int64(net.OutputBias[bucket])
 		for i := 0; i < PW; i++ {
 			a := int32(stmAcc[i])

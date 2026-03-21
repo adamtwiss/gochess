@@ -843,3 +843,11 @@ TEXT ·nnueV5SCReLUDotN(SB), NOSPLIT, $0-32
 	MOVD $0, R0
 	MOVD R0, ret+24(FP)
 	RET
+
+// ============================================================================
+// nnueV5PairwiseDotN stub — TODO: NEON implementation
+// ============================================================================
+TEXT ·nnueV5PairwiseDotN(SB), NOSPLIT, $0-40
+	MOVD $0, R0
+	MOVD R0, ret+32(FP)
+	RET
