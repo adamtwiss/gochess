@@ -133,3 +133,34 @@ The SavedFormat refactor doesn't change binary output (verified: byte-identical 
 | 1024 wdl=0.0 6-file vs production | Neutral | -3.1 | Pipeline confirmed |
 | 1024 sb200 vs sb120 (wdl=0.0) | Neutral | +1.0 | More training doesn't help at 1024 |
 | GPU1 reproduce vs production | Testing | +11.6 (129 games) | GPU1 pipeline check |
+
+## SPRT Results (2026-03-21, continued)
+
+| Test | Result | Elo | Notes |
+|------|--------|-----|-------|
+| 1024 wdl=0.1 sb120 vs prod | **H0** | -175 | Light WDL blend catastrophic at sb120 |
+| 1024 wdl=0.1 sb200 vs prod | ~H0 | -5 (141 games) | Recovers but doesn't help |
+| 768pw sb120 vs prod (scalar) | **H0** | -346 | 53% NPS penalty from scalar code |
+| 768pw sb200 vs prod (scalar) | **H0** | -158 | Still penalized by scalar code |
+| 768pw sb120 vs prod (SIMD) | **H0** | -119 | Undertrained, NPS now only -7% |
+| 768pw sb200 vs prod (SIMD) | Testing | -31 (82 games) | Recovering, following 1536 pattern |
+
+## Key Finding: Training Length Scales With Model Complexity
+
+| Architecture | sb120 vs prod | sb200 vs prod | sb300/400 | Optimal SBs (est.) |
+|-------------|---------------|---------------|-----------|-------------------|
+| 1024 CReLU | baseline | +1 (no gain) | N/A | 120 |
+| 1536 CReLU | -165 | **+11** | Training... | 200-300 |
+| 768 pairwise | -119 | -31 (improving) | Training... | 300-400+ |
+
+The pattern is consistent: more complex architectures need proportionally more training.
+
+## NPS Benchmarks (Intel Xeon E-2288G, Hercules)
+
+Methodology: EPD runner, 30 WAC positions, 3s each, single-threaded, 3 runs averaged.
+
+| Architecture | NPS (kNPS) | vs 1024 | Notes |
+|-------------|-----------|---------|-------|
+| 1024 CReLU | 1,773 | baseline | With Atlas wide kernels |
+| 768 pairwise | 1,654 | -7% | With Titan pairwise SIMD |
+| 1536 CReLU | 1,471 | -17% | With Atlas wide kernels |
