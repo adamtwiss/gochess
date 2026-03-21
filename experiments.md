@@ -2394,13 +2394,18 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### V5: Hindsight Threshold 100 (IN PROGRESS)
 - **Change**: More aggressive hindsight reduction: threshold 150 → 100. Reduces in more positions.
 - **Status**: 386 games, -6 Elo. Flat/slightly negative.
-- **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching.
+- **Result**: **H0 at 492 games, -8.5 Elo.**
+- **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
 ### V5: Hindsight Threshold 200 (IN PROGRESS)
 - **Change**: Less aggressive hindsight reduction: threshold 150 → 200. Reduces only in very quiet positions.
-- **Status**: 396 games, +6 Elo. Slightly positive.
-- **Notes**: Bracket test. May indicate 150 was slightly too aggressive and 200 is closer to optimal.
+- **Status**: 559 games, +12 Elo. Persistent positive.
+- **Notes**: Bracket test. If this passes, the optimum may be at 200 or even higher.
 
 ### V5: QS Recapture-Only at Depth >= 5 (IN PROGRESS)
 - **Change**: After 5+ capture plies in quiescence, restrict to recaptures only. Minic pattern to prevent QS explosion.
-- **Status**: 237 games, -4 Elo. Flat.
+- **Status**: 408 games, -3 Elo. Flat.
+
+### V5: NMP Verification Depth 14 (IN PROGRESS)
+- **Change**: Raise NMP verification threshold from depth >= 12 to depth >= 14. Less verification = more NMP cutoffs accepted on trust.
+- **Status**: 141 games, +24.9 Elo. Very early but strong positive signal.
