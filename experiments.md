@@ -2298,3 +2298,58 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: Add pawn history as 4th signal in LMR continuous adjustment.
 - **Result**: **H0 at 674 games, -5.7 Elo.**
 - **Notes**: Pawn history is already in move ordering. Adding it to LMR dilutes the butterfly + contHist signals.
+
+## Atlas Batch 2 (2026-03-21)
+
+### V5: Mate Distance Pruning (REJECTED)
+- **Change**: Prune when current ply can't improve on known mate bound. `alpha = max(alpha, -MateScore+ply); beta = min(beta, MateScore-ply-1)`.
+- **Result**: **H0 at 1214 games, -0.9 Elo.** Dead flat.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Universal technique but rarely triggers at 10+0.1s TC. Games don't reach deep enough mate sequences for this to help. May help at longer TCs or in endgame positions.
+
+### V5: ASP Fail-High Depth Reduce (REJECTED)
+- **Change**: On aspiration fail-high, reduce inner search depth by 1 before re-widening. Alexandria-style inner-loop-only modification.
+- **Result**: **H0 at 26 games, -389 Elo.** Catastrophic.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Third attempt at this idea (previous was -353 Elo). Even the "correct" inner-loop implementation breaks the aspiration loop. The depth variable is shared between the aspiration loop iterations — reducing it mid-loop corrupts subsequent iterations. This idea fundamentally conflicts with our aspiration implementation.
+
+### V5: Complexity-Adjusted LMR (REJECTED)
+- **Change**: Reduce LMR by 1 when `abs(correctedEval - rawEval) > 80` (high correction = uncertain position = search deeper).
+- **Result**: **H0 at 209 games, -25.0 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Binary threshold too aggressive — reducing LMR for any "complex" position makes search too deep for marginal gains. The correction history already adjusts the eval value; using its magnitude to also adjust LMR double-counts the uncertainty signal.
+
+### V5: Node-Based Time Management (REJECTED)
+- **Change**: Track nodes per root move, scale TM by `(1.5 - bestMoveNodeFrac) * 1.7`. Stop early when best move dominates (>80% nodes), extend when unclear (<30%).
+- **Result**: **H0 at 424 games, -12.3 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Alexandria-style formula too aggressive when combined with our existing stability scaling. The multiplicative interaction between node-fraction and stability scaling caused over-early stopping. May need to replace stability scaling rather than multiply with it.
+
+### V5: Opponent Eval Feedback (REJECTED)
+- **Change**: Update opponent's move history based on `evalSum = (ss-1)->staticEval + ss->staticEval`. Penalize moves where evalSum is positive (opponent made their position worse).
+- **Result**: **H0 at 808 games, -3.9 Elo.** Dead flat.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Alexandria/Obsidian both have this, but our correction history may already capture this signal. The evalSum signal is noisy when correction adjustments are large.
+
+### V5: Complexity-Adjusted RFP (REJECTED)
+- **Change**: Widen RFP margin by `complexity/2` where complexity = `abs(correctedEval - rawEval)`.
+- **Result**: **H0 at 592 games, -6.5 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Second attempt at using eval complexity (first was LMR at -25). RFP margin widening is less harmful than LMR reduction, but still doesn't help. Conclusion: eval complexity from correction history is not a useful search signal in our engine — the correction already adjusts the eval directly.
+
+### V5: Hindsight Reduction (IN PROGRESS)
+- **Change**: When `(ss-1)->staticEval + ss->staticEval > 150`, reduce depth by 1 before NMP/pruning. Both sides think position is quiet.
+- **Status**: 786 games, +6.2 Elo. Slightly positive, still running.
+- **Notes**: Alexandria uses this with threshold 155. 5 engines have variants.
+
+### V5: Eval-Based History Depth Bonus (REJECTED)
+- **Change**: When beta cutoff occurs and staticEval <= alphaOrig (surprising cutoff), use `historyBonus(depth+1)` instead of `historyBonus(depth)`. Alexandria pattern.
+- **Result**: **H0 at 285 games, -19.5 Elo.**
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: The +1 depth bonus is too small a change to help and may over-reinforce moves that got lucky. Our history tables are already well-calibrated (pattern #4 from success analysis).
+
+### V5: Alpha-Reduce Skip Move 2 (REJECTED)
+- **Change**: Don't apply alpha-reduce to move 2 (first non-TT move) — preserve full depth for the second-best alternative when TT move raised alpha.
+- **Result**: **H0 at 173 games, -40.3 Elo.** Catastrophic.
+- **Baseline**: 836be58 with v5 sb120 net
+- **Notes**: Alpha-reduce on move 2 is actually valuable — the TT move already raised alpha, and searching move 2 at full depth wastes nodes on a likely inferior move. The alpha-reduce feature is correctly applied to ALL moves after alpha is raised.
