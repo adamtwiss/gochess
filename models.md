@@ -164,3 +164,18 @@ Methodology: EPD runner, 30 WAC positions, 3s each, single-threaded, 3 runs aver
 | 1024 CReLU | 1,773 | baseline | With Atlas wide kernels |
 | 768 pairwise | 1,654 | -7% | With Titan pairwise SIMD |
 | 1536 CReLU | 1,471 | -17% | With Atlas wide kernels |
+
+## CRITICAL FINDING: wdl=0.1 beats wdl=0.0 (2026-03-21)
+
+**1024 wdl=0.1 sb200 vs production (wdl=0.0 sb120): H1 at 742 games, +17.3 Elo ±17.6, 97.3% LOS.**
+
+A light game-result blend (10%) with enough training (200 SBs) produces a stronger net than pure score training. Key points:
+- wdl=0.1 sb120 is catastrophic (-175 Elo) — the model needs ~200 SBs to learn the blended signal
+- wdl=0.1 sb200 is +17.3 — genuinely better than wdl=0.0 at any training length
+- wdl=0.5 is still catastrophic (-300 Elo) — too much result blending collapses the eval
+
+**New recommendation**: Use wdl=0.1 with sb200+ for all future training. The optimal WDL is not zero.
+
+## Atlas Wide Kernels — Intel SPRT
+
+H1 at 1663 games, +9.2 Elo ±10.3, 95.9% LOS. Confirmed gain on Intel (smaller than AMD's +14.7 due to +5% vs +18% NPS difference).

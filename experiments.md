@@ -2288,3 +2288,13 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 ### V5: Futility 50+d*50 (REJECTED)
 - **Change**: Tighter futility from 60+d*60 to 50+d*50.
 - **Result**: **H0 at 699 games, -5.5 Elo.** Bracket: 50+d*50 (H0), 60+d*60 (current), 100+d*100 (old).
+
+### V5: Correction-Aware RFP (REJECTED)
+- **Change**: Widen RFP margin by correction history magnitude / 128.
+- **Result**: **H0 at 452 games, -10.8 Elo.**
+- **Notes**: Correction magnitude doesn't correlate well with RFP safety. The correction adjusts the eval value directly — adding it to the margin double-counts the uncertainty.
+
+### V5: Pawn History in LMR (REJECTED)
+- **Change**: Add pawn history as 4th signal in LMR continuous adjustment.
+- **Result**: **H0 at 674 games, -5.7 Elo.**
+- **Notes**: Pawn history is already in move ordering. Adding it to LMR dilutes the butterfly + contHist signals.
