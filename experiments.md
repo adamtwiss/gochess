@@ -2403,9 +2403,11 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 323fd4d (with hindsight 150) with v5 sb120 net
 - **Notes**: Bracket complete: 100 (H0, -8.5), 150 (H1, +9.4 vs no-hindsight), 200 (H1, +16.2 vs 150). 200 is clearly optimal — further from the over-pruning edge. Try 250 next to find the peak.
 
-### V5: QS Recapture-Only at Depth >= 5 (IN PROGRESS)
+### V5: QS Recapture-Only at Depth >= 5 (REJECTED)
 - **Change**: After 5+ capture plies in quiescence, restrict to recaptures only. Minic pattern to prevent QS explosion.
-- **Status**: 408 games, -3 Elo. Flat.
+- **Result**: **H0 at 734 games, -4.3 Elo.** Dead flat.
+- **Baseline**: 323fd4d with v5 sb120 net
+- **Notes**: QS rarely reaches depth 5+ in our engine — SEE pruning and delta pruning cut most captures before that. The filter fires too rarely to matter.
 
 ### V5: NMP Verification Depth 14 (MERGED)
 - **Change**: Raise NMP verification threshold from depth >= 12 to depth >= 14. Less verification = more NMP cutoffs accepted on trust.
