@@ -67,15 +67,15 @@ This is a highly advanced architecture with several cutting-edge features:
 | Input features | 704 PSQ + 60K threats per bucket | 12288 HalfKA (40960 total) |
 | King buckets | 16 (mirrored, merged) | 16 |
 | FT width | 640 | 256 |
-| Hidden layers | 3 (640->32->32->1) | 3 (512->32->32->1, pairwise) |
+| Hidden layers | 3 (640->32->32->1) | v5: shallow wide (Nx2->1x8, pairwise) |
 | Pairwise | Yes (FT output) | Yes (FT output) |
-| Dual activation | Yes (CReLU + SCReLU on L1 output) | No (CReLU only) |
+| Dual activation | Yes (CReLU + SCReLU on L1 output) | CReLU or SCReLU (UPDATE: now supports both) |
 | Threat features | 60,144 per bucket, incremental | None |
 | Output buckets | 8 (linear material) | 8 (material-based) |
 | FT quantization | 8-bit (QA=255) | 16-bit |
 | L1 quantization | 7-bit (int8 weights) | int8 weights |
 | Sparse L1 | Yes (NNZ chunk tracking) | No |
-| Refresh table | Yes (FinnyTable) | No |
+| Refresh table | Yes (FinnyTable) | Yes (Finny tables, UPDATE: merged) |
 | Scale | 400 | varies |
 
 **Key differences**: Stormphrax's threat feature inputs are unique -- they encode which pieces attack which other pieces, giving the network explicit tactical awareness. The dual CReLU+SCReLU activation on L1 doubles the effective input width to L2. The sparse L1 computation skips zero-valued FT outputs, saving significant compute. The FinnyTable reduces king-bucket-change cost from full recompute to incremental delta.
@@ -455,7 +455,7 @@ Three multiplicative factors, all tuned:
 ### Hard Time Check
 - Every 1024 nodes (kTimeCheckInterval)
 
-Compare to ours: We use instability factor (200) based on best move changes. They have a full 3-factor system. This is significantly more sophisticated. Node-based TM alone is estimated at +5-15 Elo across multiple engines. The score trend factor handles the use case of "score is dropping, spend more time" that we handle with `scoreDelta > 50 -> scale *= 1.4`.
+Compare to ours: We use instability factor (200) based on best move changes. They have a full 3-factor system. This is significantly more sophisticated. Node-based TM alone is estimated at +5-15 Elo across multiple engines. **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, addressing the "score is dropping" case. Node-based TM is still missing.)**
 
 ---
 
@@ -533,7 +533,7 @@ Compare to ours: We have Lazy SMP with shared TT only. They share correction his
 1. **Threat feature NNUE inputs** (60K features, incremental) -- unique in chess engines
 2. **Dual CReLU+SCReLU activation** on L1 output
 3. **Sparse L1 computation** (NNZ chunk tracking)
-4. **FinnyTable** (refresh table for king bucket changes)
+4. ~~**FinnyTable**~~ (refresh table for king bucket changes) **(UPDATE 2026-03-21: GoChess now has Finny tables)**
 5. **7-source correction history** (pawn + 2 non-pawn + major + 3 continuation)
 6. **Threat-aware butterfly history** (4x table: fromThreatened x toThreatened)
 7. **PieceTo history table** (averaged with butterfly for mainHist)
@@ -693,6 +693,6 @@ Stormphrax's NNUE is substantially more advanced than ours. Key architectural le
 
 3. **Sparse L1 is essential at this width**: With 640 FT outputs, many will be zero after pairwise activation. Sparse computation saves ~30-50% of L1 time.
 
-4. **FinnyTable amortizes king bucket changes**: Instead of full recompute on king moves, delta-update from cached state. Critical at 16 king buckets.
+4. **FinnyTable amortizes king bucket changes**: Instead of full recompute on king moves, delta-update from cached state. Critical at 16 king buckets. **(UPDATE 2026-03-21: GoChess now has this.)**
 
-5. **Our migration target** (`(768x16->1024)x2->1x8`) is closer to Stormphrax's scale but lacks threat features, dual activation, and sparsity. These are medium-term goals after basic architecture migration.
+5. **Our v5 architecture** (`(768x16->N)x2->1x8` with SCReLU/pairwise/Finny tables) is now at Stormphrax's scale. **(UPDATE 2026-03-21: GoChess v5 has pairwise mul, SCReLU, dynamic width, and Finny tables.)** Still lacks threat features, dual activation, and NNZ sparsity.

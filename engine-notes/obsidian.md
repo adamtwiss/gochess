@@ -78,15 +78,15 @@ This is a deep, wide, modern architecture with several advanced techniques.
 ### Compared to GoChess NNUE
 | Feature | Obsidian | GoChess |
 |---------|----------|---------|
-| Topology | (768x13->1536)x2->16->32->1x8 | (768x16->256)x2->32->32->8x1 |
-| FT width | 1536 | 256 |
+| Topology | (768x13->1536)x2->16->32->1x8 | v5: (768x16->N)x2->1x8 (shallow wide) |
+| FT width | 1536 | Dynamic (1024/1536/any) |
 | King buckets | 13 (mirror) | 16 |
 | Output buckets | 8 (linear material) | 8 (material) |
-| FT activation | Pairwise mul (uint8 out) | CReLU (int16) |
+| FT activation | Pairwise mul (uint8 out) | Pairwise + CReLU/SCReLU (UPDATE: now supports both) |
 | L1 sparse | NNZ-sparse (skip zeros) | Dense |
 | L2 activation | Dual (linear + squared) | CReLU |
 | Quantization | QA=255, QB=128 | QA=127, QB=64 |
-| Accumulator cache | FinnyTable | None |
+| Accumulator cache | FinnyTable | Finny tables (UPDATE: merged) |
 | SIMD | AVX-512/AVX2/SSSE3 | AVX2/NEON |
 
 **Key NNUE takeaways:**
@@ -94,7 +94,7 @@ This is a deep, wide, modern architecture with several advanced techniques.
 2. NNZ sparse L1 saves significant compute by skipping zeros
 3. Dual activation (linear + squared) in L2 captures non-linear interactions cheaply
 4. FinnyTable reduces king-bucket refresh cost
-5. Their FT is 6x wider than ours (1536 vs 256)
+5. Their FT is wider (1536 vs our dynamic width which can match) **(UPDATE 2026-03-21: GoChess v5 now has pairwise mul, SCReLU, dynamic width up to 1536, and Finny tables)**
 
 ---
 
@@ -575,7 +575,7 @@ The `searchPrevScore` is the score from the PREVIOUS search (different position)
 | Hard time | time*0.8 - overhead | time/5 + 3*inc/4 |
 | Node-based scaling | Yes (continuous) | No |
 | Best move stability | 0-8 counter, multiplicative | Instability factor 200 |
-| Score loss scaling | prev iter + prev search | scoreDelta > 50 → 1.4x |
+| Score loss scaling | prev iter + prev search | 2.0x/1.5x/1.2x tiered (UPDATE: merged) |
 | Triple factor | nodesFactor * stabilityFactor * scoreFactor | Single factor |
 
 ---
@@ -686,7 +686,7 @@ Don't boost the history of a move that got a trivial instant cutoff at low depth
 | **Cont-hist plies** | 1,2,4,6 | 1,2 |
 | **Cont-hist write plies** | 1,2 full; 4,6 half | 1,2 |
 | **Threat-aware ordering** | Per-piece escape/enter | None |
-| **FinnyTable** | Yes | None |
+| **FinnyTable** | Yes | Yes (UPDATE: merged) |
 | **Cuckoo repetition** | Yes | No |
 | **50mr TT key** | Yes | No |
 | **TT node-type guard** | Yes | No |
@@ -739,13 +739,13 @@ Don't boost the history of a move that got a trivial instant cutoff at low depth
 
 ### NNUE Architecture Ideas
 
-17. **Pairwise multiplication FT activation**: Critical for our migration plan — this is the activation used by top engines.
+17. ~~**Pairwise multiplication FT activation**~~: **(UPDATE 2026-03-21: GoChess now has pairwise multiplication with SIMD support)**
 
 18. **NNZ-sparse L1**: Track non-zero FT outputs, skip zeros in L1 matmul. Significant NPS gain.
 
 19. **Dual activation L2** (linear + squared): Cheap way to capture non-linear interactions.
 
-20. **FinnyTable**: Per-bucket accumulator cache to avoid full recomputes. *2 engines (Obsidian, Alexandria).*
+20. ~~**FinnyTable**~~: **(UPDATE 2026-03-21: GoChess now has Finny tables, merged)**
 
 ---
 
@@ -753,7 +753,7 @@ Don't boost the history of a move that got a trivial instant cutoff at low depth
 
 The Elo gap between Obsidian and GoChess-v5 is large. The primary sources:
 
-1. **NNUE quality** (~200+ Elo): 1536-wide FT with pairwise multiplication, NNZ-sparse L1, dual activation L2, 13 king buckets, FinnyTable. Our 256-wide CReLU net is severely underpowered.
+1. **NNUE quality** (~200+ Elo): 1536-wide FT with pairwise multiplication, NNZ-sparse L1, dual activation L2, 13 king buckets, FinnyTable. **(UPDATE 2026-03-21: GoChess v5 now has pairwise mul, SCReLU, dynamic width, and Finny tables. Still lacks NNZ-sparse L1 and dual activation. Net quality gap narrowing as training scales up.)**
 
 2. **Singular extensions** (~50-80 Elo): Full SE framework with double/triple/multi-cut/negative vs our broken SE. This is pure search Elo we're leaving on the table.
 
@@ -765,4 +765,4 @@ The Elo gap between Obsidian and GoChess-v5 is large. The primary sources:
 
 6. **Accumulated pruning refinements** (~30-50 Elo): NMP cutNode guard, complexity-adjusted LMR, quality-gated updates, eval history, 50mr TT keys, node-type TT guard, etc.
 
-The single biggest priority is the NNUE architecture migration (pairwise, wider FT, NNZ sparse), followed by fixing singular extensions.
+**(UPDATE 2026-03-21: NNUE architecture migration is largely complete -- GoChess v5 has pairwise, wider FT, SCReLU, Finny tables. Still need NNZ sparse L1 and dual activation.)** The remaining biggest priorities are NNZ-sparse L1 and fixing singular extensions.

@@ -64,7 +64,7 @@ Standard iterative deepening with aspiration windows and PVS. C++ templates for 
 - **Net size**: ~151 MB (float weights, very large for a chess net)
 
 ### Compared to our NNUE
-- Ours: HalfKA 40960->2x256->32->32->1 (16 king buckets, 8 output buckets)
+- Ours: v5 (768x16->N)x2->1x8 (16 king buckets, 8 output buckets, CReLU/SCReLU, pairwise mul, Finny tables) **(UPDATE 2026-03-21)**
 - Theirs: Simple 768->2x384 (no king buckets, 2 output buckets by game phase)
 - They have wider hidden layer (384 vs 256) but simpler input features
 - Their skip-connection architecture (concatenating all previous layer outputs) is unique

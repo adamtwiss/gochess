@@ -79,7 +79,7 @@ On each evaluation, instead of full recompute on king bucket change:
 
 This avoids full 12288-element recomputation even when the king changes buckets. Very efficient -- only pays the cost proportional to pieces that changed since the cached state.
 
-**GoChess comparison**: We use lazy accumulators with delta tracking. FinnyTable is strictly better -- it persists across king moves and search tree branches. Our NNUE is 35% of CPU time, so this could give +5-10% NPS.
+**GoChess comparison**: **(UPDATE 2026-03-21: GoChess now has Finny tables for v5 NNUE accumulator refresh, merged.)** Previously we used lazy accumulators with delta tracking; FinnyTable persists across king moves and search tree branches.
 
 ### Factoriser
 The FT has a separate `Factoriser[768 * 1536]` matrix that is added to all king bucket weights during quantization:
@@ -175,7 +175,7 @@ Scales eval toward zero as 50-move counter increases. At halfmove=100, eval beco
 - **Delta growth**: `delta *= 1.44` (vs our 1.5x)
 - **No full-width fallback** -- keeps widening until resolution
 
-**GoChess comparison**: Tighter initial delta (12 vs 15), earlier activation (depth 3 vs 5), fail-low beta contraction, and fail-high depth reduction are all proven techniques. The fail-high depth reduction is something we tested and got -353.8 Elo, but that was an implementation bug (modified outer loop depth). Worth retesting with correct implementation.
+**GoChess comparison**: Tighter initial delta (12 vs 15), earlier activation (depth 3 vs 5). **(UPDATE 2026-03-21: GoChess now has asymmetric aspiration contraction: fail-low (3a+5b)/8, fail-high (5a+3b)/8, delta=15, growth 1.5x.)** Fail-high depth reduction is something we tested and got -353.8 Elo, but that was an implementation bug (modified outer loop depth). Worth retesting with correct implementation.
 
 ### Draw Detection
 - 2-fold repetition within search tree, 3-fold including pre-root
@@ -617,7 +617,7 @@ stoptimeOpt = min(stoptimeOpt, stoptimeMax);
 `TimeOver` checks every 1024 nodes: `(nodes & 1023) == 1023`
 
 **GoChess comparison**:
-- We have basic time management with `scoreDelta > 50 -> scale *= 1.4`.
+- **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, merged.)** Still lacks node-based and bestmove-stability scaling.
 - Alexandria has THREE scaling factors (nodes, bestmove stability, eval stability) that multiply together.
 - Node-based TM is idea #24 in our SUMMARY.md, estimated +5 to +15 Elo.
 - The bestmove stability scaling alone is very high value -- a move that's been best for 4 iterations in a row should not get more time.
@@ -725,7 +725,7 @@ Only accept TT cutoffs when the expected node type (cut/all) matches the TT scor
 ### Things Alexandria Has That We DON'T (Prioritized by Impact)
 
 1. **4-table correction history** (pawn + white non-pawn + black non-pawn + continuation) with proper Zobrist keys -- HIGH PRIORITY
-2. **FinnyTable NNUE accumulator cache** -- +5-10% NPS potential
+2. ~~**FinnyTable NNUE accumulator cache**~~ -- **(UPDATE 2026-03-21: MERGED)**
 3. **Node-based time management** with bestmove stability + eval stability scaling -- estimated +5-15 Elo
 4. **Working singular extensions** with multi-cut and negative extensions -- our SE is broken, understanding their implementation is crucial
 5. **Root history table** -- separate history for root moves, 4x weight

@@ -28,9 +28,9 @@ This is BlackMarlin's most distinctive NNUE feature. The `threats()` function co
 - This means the NNUE directly "sees" hanging and en-prise pieces, not just piece placement
 
 ### Compared to GoChess NNUE
-- Ours: HalfKA 40960->2x256->32->32->1 (16 king buckets, no threat features, CReLU)
+- Ours: v5 (768x16->N)x2->1x8 (16 king buckets, 8 output buckets, CReLU/SCReLU, pairwise mul, Finny tables) **(UPDATE 2026-03-21)**
 - Theirs: 28672->2xMID->1x8 (32 king buckets mirrored, threat features, SCReLU, output buckets)
-- Key differences: (1) threat awareness baked into network inputs, (2) SCReLU activation, (3) output buckets, (4) horizontal king mirroring (32 buckets from 64 squares)
+- Key differences: (1) threat awareness baked into network inputs, (2) 32 king buckets from 64 squares. **(UPDATE 2026-03-21: GoChess now also has SCReLU, output buckets, pairwise mul, and Finny tables)**
 - The threat feature input is **extremely unusual** -- only BlackMarlin does this among all 27 engines reviewed
 
 ### SIMD
@@ -470,7 +470,7 @@ This is very unusual among engines. It's essentially a form of contempt that sca
 13. **IIR on shallow TT** -- Extend IIR trigger to also fire when `tt_depth + 4 < depth` (not just missing TT). BlackMarlin's refinement.
     - Est. Elo: +1 to +3.
 
-14. **Aspiration fail-low beta contraction** -- `beta = (alpha+beta)/2` on fail-low. Both Midnight and BlackMarlin have this. We haven't tested it.
+14. ~~**Aspiration fail-low beta contraction**~~ -- `beta = (alpha+beta)/2` on fail-low. **(UPDATE 2026-03-21: GoChess now has aspiration contraction, merged.)**
     - Est. Elo: +1 to +3.
 
 ---
@@ -484,7 +484,7 @@ Ideas from BlackMarlin that appear in SUMMARY (already tracked):
 - **Node-based time management** (#24 in Tier 2) -- BlackMarlin's triple-factor scaling. Now 6 engines.
 - **Double/triple SE + multi-cut** (#4 in Tier 1) -- BlackMarlin has all three. Now 11 engines.
 - **Eval-based history depth bonus** (#14f in Tier 2) -- BlackMarlin matches Alexandria. Now 2 engines.
-- **Aspiration fail-low beta contraction** -- BlackMarlin matches Midnight. Now 3 engines.
+- ~~**Aspiration fail-low beta contraction**~~ -- **(UPDATE 2026-03-21: GoChess now has this, merged.)**
 
 New ideas unique to BlackMarlin (not in SUMMARY):
 - **Threat features in NNUE input** -- completely novel

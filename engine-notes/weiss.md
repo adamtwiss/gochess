@@ -23,7 +23,7 @@ Standard iterative deepening with aspiration windows, PVS, and Lazy SMP. Written
 - On fail-high: widen beta by delta, **reduce depth by 1** (only for non-terminal scores)
 - Delta growth: `delta += delta / 3` (multiply by ~1.33 each iteration)
 - **Trend bonus**: `x = CLAMP(prevScore/2, -32, 32)`, applied as S(x, x/2) to eval. Biases eval in direction of last score.
-- Compare to ours: we use fixed delta=15. Their score-dependent delta is novel. Fail-low beta contraction is shared with Midnight. Trend bonus is unique.
+- Compare to ours: we use fixed delta=15, growth 1.5x. **(UPDATE 2026-03-21: GoChess now has fail-low contraction (3a+5b)/8 and fail-high contraction (5a+3b)/8.)** Their score-dependent delta is novel. Trend bonus is unique.
 
 ### Draw Detection
 - Repetition: **any** two-fold (checks all `i += 2` up to `min(rule50, histPly)`)
@@ -435,7 +435,7 @@ Compare to ours: very similar design. We use packed atomics for TT, they don't (
 5. **ProbCut score dampening** (`score - 160` on non-terminal returns)
 6. **DoDeeper search** (reduction-proportional threshold after LMR re-search)
 7. **Aspiration score-dependent delta** (`9 + prevScore^2/16384`)
-8. **Aspiration fail-low beta contraction** (`beta = (alpha+3*beta)/4`)
+8. ~~**Aspiration fail-low beta contraction**~~ (`beta = (alpha+3*beta)/4`) **(UPDATE 2026-03-21: GoChess now has aspiration contraction (3a+5b)/8)**
 9. **Aspiration fail-high depth reduction** (inner loop only)
 10. **Time-adaptive pruning enable** (`doPruning` flag delayed by time/depth)
 11. **NMP depth-dependent eval gate** (`staticEval >= beta + 138 - 13*depth`)

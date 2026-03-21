@@ -229,7 +229,7 @@ Like Midnight, Igel generates ALL moves upfront, scores them, then uses selectio
   - `softLimit *= min(1.0 + (prevScore - score) / 80.0, 1.5)`
   - Capped at hardLimit
 - Example: 40cp drop -> softLimit *= 1.5 (maximum)
-- Compare to ours: we use `scoreDelta > 50 -> scale *= 1.4`. Their system is more granular (continuous scaling from score difference) but caps at 1.5x.
+- Compare to ours: **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling.)** Their system is more granular (continuous) but caps at 1.5x; ours has higher max (2.0x) but is tiered.
 
 ### Enemy Time Bonus
 - When we have more time than opponent (but not > 5x more): `bonus = (ourTime - theirTime) / 10`
@@ -267,7 +267,7 @@ HalfKP with 32 king buckets, mirrored horizontally:
 - Tempo: +20cp added at the end
 
 ### Compared to Our NNUE
-- Ours: HalfKA 40960->2x256->32->32->1 (16 king buckets, CReLU, 8 output buckets)
+- Ours: v5 (768x16->N)x2->1x8 (16 king buckets, CReLU/SCReLU, 8 output buckets, pairwise mul, Finny tables) **(UPDATE 2026-03-21)**
 - Theirs: 22528->2x1024->16->32->1 x8 (32 king buckets, pairwise mul + dual SCReLU/CReLU, 8 output buckets)
 - Their feature transformer is much wider (2x1024 vs 2x256) but uses pairwise multiplication to compress to 1024 before L1
 - Their dual activation (SCReLU + CReLU) is unusual -- most engines use one or the other
@@ -356,7 +356,7 @@ After all threads finish, Igel uses a **vote-based** system to pick the best mov
 10. **TT NMP guard** -- skip NMP when TT fail-high with score < beta. Novel safety check.
 11. **Vote-based Lazy SMP best-move selection** -- consensus across threads.
 12. **Enemy time bonus** -- use opponent's time pressure in time allocation.
-13. **Aspiration delta=5** -- much tighter than our 15. Already in SUMMARY #40.
+13. **Aspiration delta=5** -- much tighter than our 15. Already in SUMMARY #40. **(UPDATE 2026-03-21: GoChess now has aspiration contraction but delta is still 15)**
 14. **50-move eval decay** -- `eval * (208-fifty) / 208`. Already tested (H0 at -3.0 Elo, SUMMARY #32).
 15. **Material-dependent NNUE scaling** -- `(600 + 20*nonPawnMaterial/1024) / 1024`. Similar to Alexandria's. Already in SUMMARY #14g.
 16. **TT 50-move safety** -- skip TT cutoffs at Fifty() >= 90.
@@ -419,7 +419,7 @@ After all threads finish, Igel uses a **vote-based** system to pick the best mov
 | Cont-hist depth | plies 1, 2 | plies 1, 2 |
 | Time soft | hard/4 (w/inc) or hard/6 | similar |
 | Time hard | remaining/13 + inc/2 | similar |
-| Time score-drop | min(1+(drop/80), 1.5) | scoreDelta>50 -> 1.4x |
+| Time score-drop | min(1+(drop/80), 1.5) | 2.0x/1.5x/1.2x tiered (UPDATE: merged) |
 
 ---
 

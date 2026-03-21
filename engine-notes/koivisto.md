@@ -390,12 +390,11 @@ Replace if ANY of:
 - **Memory**: 32 entries * 2 colors * (1024 bytes accumulator + 96 bytes occupancy) ~ 70KB per side
 
 ### Compared to Our NNUE
-- Ours: HalfKA 40960->2x256->32->32->1 (8 output buckets, 4 hidden layers)
+- Ours: v5 (768x16->N)x2->1x8 (8 output buckets, shallow wide, CReLU/SCReLU, Finny tables) **(UPDATE 2026-03-21: GoChess now has v5 architecture with pairwise mul, SCReLU, dynamic width, and Finny tables)**
 - Theirs: 12288->2x512->1 (no output buckets, 2 perspectives, single hidden layer)
-- They have wider hidden layer (512 vs 256) but fewer layers
-- They have FinnyTable for efficient king recomputation (we don't)
 - No output buckets (we have 8)
 - int16 weights throughout (we use int8 for hidden layer 1)
+- Both have FinnyTable for efficient king recomputation
 
 ### SIMD
 - AVX-512, AVX2, SSE2, NEON -- compile-time detection via preprocessor
@@ -409,7 +408,7 @@ Replace if ANY of:
 ### Things Koivisto has that we don't:
 1. **Threat computation at every node** -- bidirectional threat analysis driving RFP, NMP, ProbCut, history, and LMR
 2. **Threat history** -- butterfly history indexed by opponent's main threat square (replaces plain from-to)
-3. **FinnyTable (AccumulatorTable)** -- delta-based NNUE refresh on king moves
+3. ~~**FinnyTable (AccumulatorTable)**~~ -- **(UPDATE 2026-03-21: GoChess now has Finny tables)**
 4. **LMR behind-NMP adjustment** -- tracks which color is behind null move through recursion
 5. **LMR targetReached** -- searches faster when still in early time allocation
 6. **LMR new-threats reduction** -- moves creating threats get less reduction
@@ -423,7 +422,7 @@ Replace if ANY of:
 14. **TT depth relaxation after null move** -- TT entries after NMP treated as much deeper for fail-highs
 15. **ProbCut threat guard** -- only ProbCut when own threats exist
 16. **NMP threat guard** -- disable NMP at shallow depth when enemy has threats
-17. **Aspiration fail-low beta contraction** -- `beta = (alpha + beta) / 2`
+17. ~~**Aspiration fail-low beta contraction**~~ -- `beta = (alpha + beta) / 2` **(UPDATE 2026-03-21: GoChess now has aspiration contraction)**
 18. **Aspiration fail-high depth reduction** -- `sDepth--`
 19. **QSearch good-delta pruning** -- `SEE + stand_pat > beta + 200 => return beta`
 20. **Draw randomization (Beal effect)** -- `8 - (nodes & 15)`
@@ -477,9 +476,9 @@ Replace if ANY of:
 | History gravity | MAX_HIST=512 | divisor 5000 |
 | QS good-delta | SEE+stand_pat > beta+200 | No |
 | King buckets | 16 | 16 |
-| NNUE hidden | 2x512 | 2x256->32->32 |
+| NNUE hidden | 2x512 | v5: dynamic width (1024/1536/any) |
 | Output buckets | None | 8 |
-| FinnyTable | Yes | No |
+| FinnyTable | Yes | Yes (UPDATE: merged) |
 | Mate distance | Yes | No |
 | Draw randomization | 8-(nodes&15) | No |
 

@@ -237,11 +237,10 @@ Compare to ours: we use instability factor (200) based on best move changes. The
 - Final: `(sum + output_bias) * 400 / (181 * 64)`
 
 ### Compared to our NNUE
-- Ours: HalfKA 40960->2x256->32->32->1 (king-relative features, 16 king buckets)
+- Ours: v5 shallow wide (768x16->N)x2->1x8 (16 king buckets, 8 output buckets, CReLU/SCReLU, Finny tables) **(UPDATE 2026-03-21: GoChess now supports SCReLU, pairwise multiplication, dynamic width, and Finny tables)**
 - Theirs: Simple 768->768->1 (piece-square only, no king buckets)
-- They have a much wider single hidden layer (768 vs our 256)
 - No output buckets
-- SCReLU activation vs our CReLU
+- SCReLU activation (we now also support SCReLU)
 
 ### Accumulator
 - Stack-based (push_copy on make, pop on unmake)
@@ -281,7 +280,7 @@ Replace if ANY of:
 2. **Separate LMR tables for captures vs quiets** (captures get less reduction: base 1.40 vs 1.50)
 3. **Two-tier LMP**: strict table-based LMP at depth<=3, plus loose `depth*9` quiet LMP at depth<=6
 4. **Aspiration fail-high depth reduction** (reduce search depth on fail-high)
-5. **Aspiration fail-low beta narrowing**: `beta = (alpha + 3*beta) / 4` on fail-low
+5. **Aspiration fail-low beta narrowing**: `beta = (alpha + 3*beta) / 4` on fail-low **(UPDATE 2026-03-21: GoChess now has aspiration contraction: fail-low (3a+5b)/8, fail-high (5a+3b)/8)**
 6. **Capture history in SEE-based capture ordering** (100,000 + cap_hist) * SEE_pass
 
 ### Things we have that Midnight doesn't:

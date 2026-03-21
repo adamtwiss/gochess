@@ -306,7 +306,7 @@ After applying a capture, if even the worst case (losing our piece immediately) 
 
 6. **NMP TT Guard**: Won't attempt null move if TT entry has upper bound < beta, saving a wasted null-move search.
 
-7. **NMP Tactical Bonus**: +1 to null move reduction if the previous move was a capture/promotion (opponent just made a tactical move, so null move is more likely to work).
+7. **NMP Tactical Bonus**: +1 to null move reduction if the previous move was a capture/promotion (opponent just made a tactical move, so null move is more likely to work). **(UPDATE 2026-03-21: GoChess now has NMP R-1 after captures -- the opposite direction, reducing R when last move was a capture, merged.)**
 
 8. **ProbCut Two-Tier Verification**: At depth >= 10, ProbCut first verifies with qsearch before the reduced search. Prevents false ProbCut cutoffs at high depth.
 

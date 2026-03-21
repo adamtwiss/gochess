@@ -62,17 +62,17 @@ NNUE: (768x16 -> 1024)x2 -> 16 -> 32 -> 1 (4-layer, int8 L1 with sparse matmul, 
 ### Compared to GoChess NNUE
 | Feature | Berserk | GoChess |
 |---------|---------|---------|
-| Architecture | (768x16->1024)x2->16->32->1 | HalfKA 40960->2x256->32->32->8 |
+| Architecture | (768x16->1024)x2->16->32->1 | v5: (768x16->N)x2->1x8 (shallow wide) |
 | King buckets | 16 (custom mapping, mirrored) | 16 |
-| Hidden size | 1024 | 256 |
+| Hidden size | 1024 | Dynamic (1024/1536/any) |
 | Output buckets | None (1 output) | 8 (material-based) |
 | L1 computation | int8 sparse matmul (NNZ skip) | int8 dense matmul |
 | L2/L3 | float (16->32->1) | int8/int16 (32->32->8) |
-| Activation | ReLU | CReLU |
-| FinnyTable | Yes (per-bucket delta refresh) | No |
+| Activation | ReLU | CReLU/SCReLU (UPDATE: now supports both) |
+| FinnyTable | Yes (per-bucket delta refresh) | Yes (UPDATE: merged) |
 | Phase scaling | Yes (1.0x-1.5x by phase) | No |
 
-**Key differences**: Berserk has a much wider first hidden layer (1024 vs 256) but only one output — no output buckets. The sparse L1 matmul is a major optimization: skipping zero int8 activations saves significant compute when many neurons are inactive post-ReLU. The FinnyTable avoids full accumulator recompute on most king moves. Float layers L2/L3 are very small (16 and 32 neurons) so the cost is negligible.
+**Key differences**: Berserk has a 4-layer architecture while our v5 is shallow wide. The sparse L1 matmul is a major optimization: skipping zero int8 activations saves significant compute when many neurons are inactive post-ReLU. **(UPDATE 2026-03-21: GoChess now has Finny tables, pairwise mul, SCReLU inference, and dynamic NNUE width.)** Float layers L2/L3 are very small (16 and 32 neurons) so the cost is negligible.
 
 ---
 
@@ -379,7 +379,7 @@ Three multiplicative factors:
 | Soft base | ~5.75% of total | similar |
 | Hard limit | ~5.5x soft | similar |
 | Stability | 10-level counter, continuous scaling | 200-based instability counter |
-| Score change | 3-iter-ago + previous search, clamped | scoreDelta > 50 -> 1.4x |
+| Score change | 3-iter-ago + previous search, clamped | 2.0x/1.5x/1.2x tiered (UPDATE: merged) |
 | Node fraction | Continuous, range [0.45, 2.72] | Not implemented |
 | Single move | Cap at 250ms | Not implemented |
 
@@ -469,7 +469,7 @@ Root moves track `avgScore = (avgScore + score) / 2` as running average. Aspirat
 4. **Threat-indexed butterfly history** (4x table) — proven in 12+ engines
 5. **Capture-indexed continuation history** — doubles CH quality
 6. **4-level deep continuation history** (plies 1,2,4,6) with write at all levels
-7. **FinnyTable** (accumulator refresh cache) — saves NPS on king moves
+7. ~~**FinnyTable**~~ (accumulator refresh cache) **(UPDATE 2026-03-21: GoChess now has Finny tables)**
 8. **TT PV flag** in LMR (+2 reduction for non-PV) — very aggressive reduction
 9. **Cutnode LMR** (+1 cap, +2 quiet at cut nodes)
 10. **Dynamic good-capture SEE threshold** (-score/2) in move picker
@@ -487,7 +487,7 @@ Root moves track `avgScore = (avgScore + score) / 2` as running average. Aspirat
 
 ### Things we have that Berserk doesn't:
 1. **Output buckets** in NNUE (8 material-based)
-2. **SCReLU activation** (planned — they use plain ReLU)
+2. **SCReLU activation** **(UPDATE 2026-03-21: GoChess now supports SCReLU inference with SIMD)** — they use plain ReLU
 3. **Correction history** as separate table (they have pawn correction only, /2 weight)
 4. **TT score dampening** (they don't blend TT cutoff scores)
 5. **Fail-high score blending** in main search (they don't)
@@ -580,7 +580,7 @@ Root moves track `avgScore = (avgScore + score) / 2` as running average. Aspirat
 
 11. **Aspiration delta 9** — Much tighter than our 15. With fail-high depth reduction. Multiple parameters to tune together. Est. +2-5 Elo.
 
-12. **FinnyTable** (accumulator refresh cache) — Per-king-bucket delta cache avoiding full recompute. 2 top engines have this (Berserk + Alexandria). Est. +5-10% NPS.
+12. ~~**FinnyTable**~~ (accumulator refresh cache) — **(UPDATE 2026-03-21: MERGED)**
 
 ### Lower priority:
 13. **Mate distance pruning** — 3 lines, universal, free.

@@ -199,16 +199,17 @@ When in a recapture position, not improving, and eval + best available capture <
 - **Complexity**: Easy — need `bestCapture()` helper + one condition.
 - **Est. Elo**: +3 to +8.
 
-### 16. Score-Drop Time Extension ⭐ NEW
+### 16. Score-Drop Time Extension ⭐ MERGED
 When ID score drops 20+ cp from previous iteration, extend time allowance significantly (2-4x).
 - **Engines**: Tucano (running counter: -3 on 20cp drop, +1 on stable; sigmoid scaling)
-- **Our status**: GoChess has `scoreDelta > 50 → scale *= 1.4` which is conservative.
+- **Our status**: **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, merged.)**
 - **Complexity**: Easy — strengthen existing score-delta time scaling.
 - **Est. Elo**: +3 to +10.
 
-### 17. NMP Less Reduction After Captures ⭐ NEW
+### 17. NMP Less Reduction After Captures ⭐ MERGED
 Reduce NMP R by 1 when the previous move was a capture (position is more forcing).
 - **Engines**: Tucano (`R -= 1 if !move_is_quiet(lastMove)`)
+- **(UPDATE 2026-03-21: GoChess now has NMP R-1 after captures, merged.)**
 - **Complexity**: Trivial — one condition.
 - **Est. Elo**: +2 to +5.
 
@@ -346,11 +347,11 @@ When no TT move found, reduce PV nodes by 2 instead of 1.
 - **Complexity**: 1 line change.
 - **Est. Elo**: +1 to +3.
 
-### 40. Aspiration Window Tightening ⭐ NEW
+### 40. Aspiration Window Tightening ⭐ PARTIALLY IMPLEMENTED
 Initial delta = 5-6 instead of 15. Also asymmetric widening: on fail-low, contract beta toward alpha.
 - **Engines**: **Igel** (delta=5), **Altair** (delta=6+85/(depth-2); on fail-low: `beta = (3*alpha+5*beta)/8`)
 - **Complexity**: 2-3 lines.
-- **Note**: Much tighter than our delta=15. More re-searches but tighter bounds.
+- **Note**: **(UPDATE 2026-03-21: GoChess now has asymmetric aspiration window contraction: fail-low (3a+5b)/8, fail-high (5a+3b)/8, delta=15, growth 1.5x. The contraction is implemented; tighter initial delta is still untested.)**
 
 ---
 
@@ -413,10 +414,10 @@ Predict whether there's time for the next iteration using effective branching fa
 Store 2 counter-moves per `[piece][to]` instead of 1, FIFO-updated.
 - **Engines**: Tucano
 
-### 42. FinnyTable (NNUE Accumulator Cache) ⭐ NEW
+### 42. FinnyTable (NNUE Accumulator Cache) ⭐ MERGED
 Per-king-bucket cache of board state + NNUE accumulator. On king refresh, compare cached vs actual and apply only deltas instead of full recompute.
 - **Engines**: **Obsidian** (`FinnyEntry[2][KingBuckets]` with byColor/byPiece BBs + accumulator), **Alexandria** (`FinnyTableEntry[2][INPUT_BUCKETS][2]` with per-piece occupancy BBs + accumCache; indexed by [side][kingBucket][flip])
-- **Evidence**: Reduces NNUE refresh cost significantly. Our NNUE inference is 35% of CPU time. **2 engines now** (both top-10 CCRL).
+- **(UPDATE 2026-03-21: GoChess now has Finny tables for v5 NNUE accumulator refresh, merged.)**
 - **Complexity**: Medium — need per-thread cache of accumulators per king bucket.
 - **Est. NPS**: +5-10% (search speed, not Elo directly).
 
@@ -440,12 +441,19 @@ These appeared in multiple engines but GoChess already has them or has tested:
 - Improving flag ✓
 - Correction history (pawn) ✓
 - ProbCut ✓ (tightened to +170)
-- Singular extensions ✓ (single only)
+- Singular extensions ✓ (single only — still broken/disabled as of 2026-03-21, every attempt -60 to -140 Elo)
 - IIR ✓ (tested true IID, neutral)
 - Alpha-reduce ✓ (MERGED, +13.0 Elo)
 - Check extension: tested and removed (-11.2 Elo). Tucano uses SEE-filtered variant — different but low priority given our result.
 - NMP verification at depth 12 ✓
+- NMP R-1 after captures ✓ (MERGED 2026-03-21)
 - History pruning ✓
+- FinnyTable ✓ (MERGED 2026-03-21 for v5 NNUE)
+- Score-drop time extension ✓ (MERGED 2026-03-21, 2.0x/1.5x/1.2x tiered)
+- Aspiration window contraction ✓ (MERGED 2026-03-21, fail-low (3a+5b)/8, fail-high (5a+3b)/8)
+- SCReLU activation ✓ (v5 NNUE inference support with SIMD)
+- Pairwise multiplication ✓ (v5 NNUE inference support with SIMD)
+- Dynamic NNUE width ✓ (loads 1024/1536/768pw/any width)
 - NMP TT guard: tested, 0 Elo (retry candidate)
 - RFP score dampening: tested, -16.7 Elo
 - History bonus by score diff: tested, -33.9 Elo
@@ -474,7 +482,7 @@ Based on success pattern alignment, multi-engine consensus, and implementation e
 - **Cutnode LMR +2** (Weiss/Obsidian/BlackMarlin — 110 games, +23.2 Elo)
 - **NMP-170** (NMP divisor 200→170 — 483 games, +5 Elo, weakening)
 - **ContHist4** (4-ply cont-hist at 1/4 weight — 49 games, -58 Elo, likely H0)
-- **NMP postcap** (R-1 after captures — 32 games, early)
+- ~~**NMP postcap** (R-1 after captures — 32 games, early)~~ **(MERGED 2026-03-21)**
 
 **Next up (post-Alexandria review, re-prioritized):**
 1. **FIX SINGULAR EXTENSIONS** (Alexandria-style: depth>=6, margin d*5/8, ply limiter, multi-cut, negative ext -2. Our SE is broken at -58 Elo — this is the single highest-value fix)
@@ -494,7 +502,7 @@ Based on success pattern alignment, multi-engine consensus, and implementation e
 15. **Opponent eval history** (2 engines — Alexandria + Obsidian)
 16. **Threat-aware history** (12 engines — highest consensus but medium complexity)
 17. **Complexity-adjusted LMR** (Obsidian + Alexandria — 2 lines)
-18. **Aspiration delta=12** (Alexandria — tighter than our 15, with fail-low beta contraction)
+18. **Aspiration delta=12** (Alexandria — tighter than our 15; **(UPDATE 2026-03-21: GoChess now has fail-low/fail-high contraction (3a+5b)/8 and (5a+3b)/8, only tighter delta untested)**)
 19. **Eval-based history depth bonus** (Alexandria — +1 depth when eval <= alpha)
 20. **Material scaling of NNUE output** (Alexandria — cheap endgame correction)
 
@@ -510,7 +518,7 @@ Alexandria (v9.0.3) is CCRL #6, using similar NNUE architecture class to our mig
 - **Output buckets**: Non-linear `(63-pc)(32-pc)/225` — finer middlegame granularity
 - **King buckets**: 16, mirrored horizontally (flip when king on files e-h)
 - **Quantization**: FT_QUANT=255, L1_QUANT=64, NET_SCALE=362
-- **FinnyTable**: Per-[side][bucket][flip] accumulator cache with per-piece occupancy BBs — avoids full recompute even on king bucket changes
+- **FinnyTable**: Per-[side][bucket][flip] accumulator cache with per-piece occupancy BBs — avoids full recompute even on king bucket changes **(UPDATE 2026-03-21: GoChess now has Finny tables)**
 - **Factoriser**: Shared 768×1536 base matrix added to all king bucket weights at quantization time
 - **NNZ-sparse L1**: Tracks non-zero output chunks, only multiplies non-zero entries
 - **SIMD**: AVX-512 + AVX2 (no ARM/NEON)
@@ -549,4 +557,4 @@ Alexandria (v9.0.3) is CCRL #6, using similar NNUE architecture class to our mig
 9. **Opponent eval history** — 2 engines now.
 10. **TT cutoff CH malus** — Penalize opponent's move on TT cutoff. Novel.
 11. **Material scaling of NNUE output** — Cheap post-processing.
-12. **FinnyTable** — +5-10% NPS, 2 top engines.
+12. **FinnyTable** — +5-10% NPS, 2 top engines. **(UPDATE 2026-03-21: MERGED)**

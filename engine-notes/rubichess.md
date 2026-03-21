@@ -37,8 +37,8 @@ Strength: #6 in our RR at +247 Elo (355 above GoChess-v5)
 
 ### Compared to GoChess NNUE
 - RubiChess V5 is a much more modern SFNNv5-compatible architecture with horizontal mirroring, PSQT buckets, and the dual SqrCReLU+CReLU activation path
-- Our HalfKA 40960->2x256->32->32->1 with 8 output buckets is closer to V1 but with king buckets
-- RubiChess has FinnyTable-style accumulator cache; we don't
+- Our v5 (768x16->N)x2->1x8 with 8 output buckets, CReLU/SCReLU, pairwise mul, Finny tables **(UPDATE 2026-03-21)**
+- RubiChess has FinnyTable-style accumulator cache; **(UPDATE 2026-03-21: GoChess now has Finny tables too)**
 - The fwd/bypass neuron design in V5 is unique — one neuron directly contributes a PSQT-like signal
 
 ---
@@ -348,7 +348,7 @@ Replace if ANY of:
   - Score drop detection
   - Material phase in allocation
   - Ponder hit bonus
-- We use `instability * 200` for best-move changes and `scoreDelta > 50 -> scale *= 1.4`. Their system is more granular
+- **(UPDATE 2026-03-21: GoChess now has score-drop time extension 2.0x/1.5x/1.2x, merged.)** We use instability * 200 for best-move changes. Their system is more granular
 
 ---
 
@@ -418,9 +418,9 @@ Root LMR reduction includes `inWindowLast - 1`: when last iteration failed low (
 | Cont-hist plies | -1,-2,-4 (read -4,-6 at half) | -1,-2 |
 | Correction history | 3 tables (pawn + 2x non-pawn) | 1 table (pawn only) |
 | Aspiration delta | 15 (depth>4) | 15 |
-| Aspiration fail-low | beta contraction | no contraction |
-| Time management | node ratio + stability + score | instability + score delta |
-| NNUE arch | SFNNv5 1024, 8 output buckets | HalfKA 256, 8 output buckets |
+| Aspiration fail-low | beta contraction | contraction (3a+5b)/8 (UPDATE: merged) |
+| Time management | node ratio + stability + score | instability + score-drop 2.0x/1.5x/1.2x (UPDATE) |
+| NNUE arch | SFNNv5 1024, 8 output buckets | v5: dynamic width, 8 output buckets (UPDATE) |
 
 ---
 
@@ -462,7 +462,7 @@ Root LMR reduction includes `inWindowLast - 1`: when last iteration failed low (
    - Alexandria uses `ply*2 < RootDepth*5`; RubiChess uses the extensionguard nibble approach
    - **Status**: Critical for fixing our singular extensions
 
-7. **Aspiration fail-low beta contraction**: `beta = (alpha + beta) / 2`
+7. ~~**Aspiration fail-low beta contraction**~~: `beta = (alpha + beta) / 2` **(UPDATE 2026-03-21: GoChess now has aspiration contraction)**
    - Tighter re-search window after fail-low
    - Midnight also has this (`beta = (alpha + 3*beta) / 4`)
    - **Status**: Not tested yet

@@ -248,7 +248,7 @@ Two adjustments based on parent reduction and eval trajectory:
 - Effect: uses `extended_move_time` (4x normal) instead of `normal_move_time` when score is dropping
 - Won't start new iteration when `used_time >= normal_move_time` UNLESS score_drop is true
 - Also: won't start new iteration when `used_time >= extended_move_time * 0.6` regardless
-- Compare to ours: we have `scoreDelta > 50 => scale *= 1.4`. Tucano gives up to 4x more time with a running counter that decays. Already in SUMMARY.md as idea #16.
+- Compare to ours: **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, merged.)** Tucano's running counter approach gives up to 4x; ours uses fixed tiers.
 
 ### ProbCut Move-Count Reduction
 - In ProbCut, the search depth is reduced further based on how many captures have been tried: `depth - 4 - pc_move_count/5`
@@ -315,11 +315,11 @@ Two adjustments based on parent reduction and eval trajectory:
 - Net file: `tucano_nn03.bin` (external, not embedded)
 
 ### Compared to Our NNUE
-- **Same topology**: HalfKP -> 2x256 -> 32 -> 32 -> 1 (nearly identical to ours!)
-- Ours: HalfKA 40960 -> 2x256 -> 32 -> 32 -> 8 (8 output buckets)
+- Theirs: HalfKP -> 2x256 -> 32 -> 32 -> 1
+- Ours: v5 (768x16->N)x2->1x8 (8 output buckets, shallow wide, CReLU/SCReLU, Finny tables) **(UPDATE 2026-03-21: GoChess v5 is now a completely different, more modern architecture)**
 - They lack output buckets (material-based) -- our 8-bucket output is an advantage
 - They lack king buckets (no horizontal mirroring) -- we have 16 king buckets
-- CReLU activation (same as ours currently; we plan SCReLU migration)
+- CReLU activation only (we now also support SCReLU)
 
 ### Accumulator Updates
 - Stack-based: `nnue_data[MAX_HIST]` stores accumulator + changes at each ply
@@ -382,8 +382,8 @@ Replace if ANY of:
 5. **ProbCut move-count reduction** (novel, pc_move_count/5)
 6. **Recapture depth reduction** (not improving + eval + best_capture < alpha) -- already in SUMMARY.md #15
 7. **Hindsight depth adjustment** (parent reduction + eval trajectory) -- already in SUMMARY.md #8
-8. **Score-drop time extension** (var counter, up to 4x) -- already in SUMMARY.md #16
-9. **NMP -1 R after captures** (less reduction when last move was capture) -- already in SUMMARY.md #17
+8. **Score-drop time extension** (var counter, up to 4x) -- **(UPDATE 2026-03-21: GoChess now has score-drop time extension 2.0x/1.5x/1.2x, merged)**
+9. **NMP -1 R after captures** (less reduction when last move was capture) -- **(UPDATE 2026-03-21: GoChess now has NMP R-1 after captures, merged)**
 10. **Free passer exception** in LMP
 11. **SEE-filtered check extension** (SEE >= 0 at depth >= 4)
 12. **Two counter-moves** per parent move -- already in SUMMARY.md #41
@@ -420,7 +420,7 @@ Replace if ANY of:
 | NMP base R | 5 | 3 |
 | NMP depth scaling | (d-4)/4 | d/3 |
 | NMP eval scaling | min((eval-beta)/200, 3) | min((eval-beta)/200, 3) |
-| NMP post-capture | R-1 when last move capture | No |
+| NMP post-capture | R-1 when last move capture | Yes (UPDATE: merged) |
 | LMR formula | 1.0 + log(d)*log(m)*0.5 | Separate cap/quiet tables |
 | LMR captures | Never reduced | Reduced (C=1.80) |
 | LMP depth | <=6 | 3+d^2 |
@@ -437,7 +437,7 @@ Replace if ANY of:
 | Check extension | SEE-filtered at depth>=4 | None |
 | Aspiration delta | 25, growth 4x | 15 |
 | TT structure | Single-entry, non-atomic | 4-slot, lockless |
-| NNUE | HalfKP 40960->2x256->32->32->1 | HalfKA 40960->2x256->32->32->8 |
+| NNUE | HalfKP 40960->2x256->32->32->1 | v5: (768x16->N)x2->1x8 (UPDATE) |
 | Counter-moves | 2 per slot | 1 per slot |
 | Cont-hist | None | Plies 1-2 |
 
@@ -448,8 +448,8 @@ Replace if ANY of:
 ### Already in SUMMARY.md (priority reinforced):
 1. **ProbCut QS pre-filter** (SUMMARY #6) -- Tucano confirms two-stage approach at depth>10
 2. **Recapture depth reduction** (SUMMARY #15) -- `!improving && eval + bestCapture < alpha`
-3. **Score-drop time extension** (SUMMARY #16) -- running var counter, up to 4x time
-4. **NMP -1 R after captures** (SUMMARY #17) -- `R -= 1 if !move_is_quiet(lastMove)`
+3. ~~**Score-drop time extension**~~ (SUMMARY #16) -- **(UPDATE 2026-03-21: MERGED, 2.0x/1.5x/1.2x)**
+4. ~~**NMP -1 R after captures**~~ (SUMMARY #17) -- **(UPDATE 2026-03-21: MERGED)**
 5. **Hindsight depth adjustment** (SUMMARY #8) -- `prior_reduction >= 3 && !opponent_worsening => depth++`
 6. **Two counter-moves** (SUMMARY #41)
 

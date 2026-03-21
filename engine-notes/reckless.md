@@ -82,13 +82,13 @@ pieces: 29-32 -> bucket 7
 | Input features | PST (768x10) + Threats (66864) | HalfKA (40960) |
 | King buckets | 10 (non-uniform) | 16 (uniform) |
 | Output buckets | 8 (piece count) | 8 (material) |
-| Hidden layers | 768->16->32->1 | 256->32->32->8 |
-| FT activation | Pairwise (CReLU * signed) | CReLU |
+| Hidden layers | 768->16->32->1 | v5: Nx2->1x8 (shallow wide) |
+| FT activation | Pairwise (CReLU * signed) | Pairwise + CReLU/SCReLU (UPDATE: now supports both) |
 | L1 activation | ReLU [0,1] | CReLU |
 | Threat features | 66864 attack-relation features | None |
-| FinnyTable cache | Yes (per pov/flip/bucket) | No |
+| FinnyTable cache | Yes (per pov/flip/bucket) | Yes (UPDATE: merged) |
 | NNZ-sparse L1 | Yes (skip zero FT outputs) | No |
-| FT width | 768 | 256 |
+| FT width | 768 | Dynamic (1024/1536/768pw/any) |
 
 **Key insight**: The threat accumulator is a major novelty. Instead of relying solely on piece-square features (which encode static placement), Reckless explicitly encodes which pieces attack which other pieces. This gives the network direct access to tactical information that other architectures must learn indirectly. The 66864-feature threat space is large but sparse (typically <100 active threats per position), and incremental updates keep it efficient.
 
@@ -106,7 +106,7 @@ pieces: 29-32 -> bucket 7
 - On fail-high: `alpha = max(beta - delta, alpha)`, `beta = score + delta`, `reduction += 1`, `delta += 63*delta/128`
 - Average maintained as running average: `(prev_average + score) / 2`
 - **Optimism**: `169 * best_avg / (best_avg.abs() + 187)` — Stockfish-style contempt from shared best stats
-- Compare to ours: delta=15 fixed. They have score-adaptive delta and optimism.
+- Compare to ours: delta=15, growth 1.5x. **(UPDATE 2026-03-21: GoChess now has aspiration contraction: fail-low (3a+5b)/8, fail-high (5a+3b)/8.)** They have score-adaptive delta and optimism.
 
 ### Draw Detection
 - `is_draw(ply)` — repetition/50-move
@@ -460,7 +460,7 @@ All 5 factors multiply together: `nodes * pv_stability * eval_stability * score_
 | Node-based scaling | 5-factor multiplicative | Best-move instability only |
 | PV stability | Dedicated factor (0.85-1.25) | Instability counter |
 | Eval stability | Dedicated factor (0.88-1.2) | No |
-| Score trend | 0.80-1.45x | scoreDelta > 50 → 1.4x |
+| Score trend | 0.80-1.45x | 2.0x/1.5x/1.2x tiered (UPDATE: merged) |
 | Fullmove scaling | Exponential approach | No |
 | SMP voting | 65% majority voting | No (main thread decides) |
 
@@ -507,7 +507,7 @@ Compare to ours: Similar TT-sharing model. They additionally share correction hi
 
 ### Things Reckless Has That We Don't:
 1. **Threat accumulator in NNUE** — 66864 attack-relationship features, incrementally updated
-2. **FinnyTable accumulator cache** — avoids full recompute on king bucket change
+2. ~~**FinnyTable accumulator cache**~~ — **(UPDATE 2026-03-21: GoChess now has Finny tables)**
 3. **NNZ-sparse L1 matmul** — only processes non-zero FT outputs
 4. **6-component correction history** (pawn, minor, non-pawn white, non-pawn black, cont-corr ply-2, cont-corr ply-4)
 5. **Mate distance pruning** — trivial to add

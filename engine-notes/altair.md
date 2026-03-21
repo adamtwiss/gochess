@@ -26,7 +26,7 @@ Standard iterative deepening with aspiration windows and PVS. Lazy SMP with shar
 - On fail-high: decrease asp_depth (clamp >= 6)
 - Delta growth: `delta += delta * ASP_delta_scaler(2) / ASP_delta_divisor(5)` = multiply by 1.4 each re-search
 - Full-width fallback when alpha <= -1000 or beta >= 1000
-- Compare to ours: delta=15 fixed, no depth-adaptive delta, no fail-high depth reduction, no beta contraction on fail-low
+- Compare to ours: delta=15, growth 1.5x. **(UPDATE 2026-03-21: GoChess now has fail-low contraction (3a+5b)/8 and fail-high contraction (5a+3b)/8, matching Altair's asymmetric style. No depth-adaptive delta yet.)**
 
 ### Draw Detection
 - Fifty-move rule: >= 100 half-moves
@@ -301,7 +301,7 @@ Altair has a unique `position_time_scale()` function that considers:
 - The asymmetry is intentional: score drops extend time more than score rises
 - `soft_time_limit = original_soft * node_scaling * score_scaling`
 
-Compare to ours: we have basic instability factor (200) and score delta (>50 => 1.4x). Their system is much more granular with continuous node scaling and asymmetric score scaling.
+Compare to ours: **(UPDATE 2026-03-21: GoChess now has score-drop time extension with 2.0x/1.5x/1.2x tiered scaling, merged.)** Their system is more granular with continuous node scaling and asymmetric score scaling; ours is tiered but goes up to 2.0x.
 
 ---
 
@@ -332,12 +332,11 @@ Compare to ours: we have basic instability factor (200) and score delta (>50 => 
 - Final: `(sum + output_bias[bucket]) * 400 / (255 * 64)`
 
 ### Compared to our NNUE
-- Ours: HalfKA (40960 -> 2x256 -> 32 -> 32 -> 1), 16 king buckets, 8 output buckets, CReLU
+- Ours: v5 (768x16->N)x2->1x8, 16 king buckets, 8 output buckets, CReLU/SCReLU, Finny tables **(UPDATE 2026-03-21: GoChess now has v5 shallow wide architecture with SCReLU inference support, pairwise multiplication, dynamic width, and Finny tables)**
 - Theirs: (768x5 -> 1024)x2 -> 1x8, 5 king buckets, 8 output buckets, SCReLU
-- They have a much wider single hidden layer (1024 vs our 256)
 - Fewer king buckets (5 vs our 16) but still king-relative
-- SCReLU vs our CReLU -- SCReLU gives quadratic gradient which helps training
-- No deep layers (no 32->32 like ours) -- simpler but wider
+- Both use SCReLU now; both have shallow wide architecture
+- No Finny tables (full recompute on king bucket change) -- we now have Finny tables
 
 ### Accumulator
 - Stack-based: push copy on make_move, pop on undo_move
@@ -491,7 +490,7 @@ move_history_score <= SEE_base_history(5800)
 6. **NMP base R=5** (vs our R=3 -- significantly more aggressive)
 7. **IIR extra reduction on PV** (depth -= 1 + pv_node)
 8. **Aspiration depth-adaptive delta** (starts ~49, shrinks over iterations)
-9. **Aspiration fail-low beta contraction** (beta = (3*alpha + 5*beta) / 8)
+9. ~~**Aspiration fail-low beta contraction**~~ (beta = (3*alpha + 5*beta) / 8) **(UPDATE 2026-03-21: GoChess now has this)**
 10. **RFP score dampening** (return (eval+beta)/2)
 11. **Position-phase time scaling** (game phase + pawn structure)
 12. **Score-based time scaling** (asymmetric: drops extend more than gains)
@@ -499,7 +498,7 @@ move_history_score <= SEE_base_history(5800)
 14. **TT PV flag** stored and used in replacement policy + LMR
 15. **Continuation history at ply 4**
 16. **SEE pruning history gate** (skip SEE if history > 5800)
-17. **SCReLU activation** in NNUE
+17. ~~**SCReLU activation**~~ in NNUE **(UPDATE 2026-03-21: GoChess now supports SCReLU inference with SIMD)**
 18. **Draw score randomization** (3 - (nodes & 8))
 19. **DoDeeper/DoShallower** after LMR re-search
 
@@ -540,14 +539,14 @@ move_history_score <= SEE_base_history(5800)
 | Singular beta | tt_score - depth | tt_score - 3*depth |
 | Double ext margin | 12 | N/A |
 | Double ext limit | 7 | N/A |
-| Aspiration delta | 6+85/(asp_d-2) | 15 |
+| Aspiration delta | 6+85/(asp_d-2) | 15 (UPDATE: now with contraction) |
 | ContHist plies | 1, 2, 4 | 1, 2 |
 | History max | quiet=9000, noisy=12000, cont=11000 | ~10000 |
 | Correction tables | 4 (pawn/np/major/minor) | 1 (pawn) |
 | King buckets | 5 | 16 |
 | Output buckets | 8 | 8 |
-| Hidden layer | 1024 | 256 |
-| Activation | SCReLU | CReLU |
+| Hidden layer | 1024 | Dynamic (1024/1536/768pw/any) |
+| Activation | SCReLU | CReLU/SCReLU (UPDATE: now supports both) |
 
 ---
 
@@ -566,7 +565,7 @@ move_history_score <= SEE_base_history(5800)
 8. **SEE pruning history gate** -- skip SEE pruning when history > threshold. Prevents over-pruning tactically important moves. Easy: 1 condition.
 9. **Null-move killer protection** -- store refutation in slot 1 instead of overwriting slot 0 after NMP. Trivial.
 10. **Position-phase time scaling** -- material+pawn structure to allocate less time in openings/endgames.
-11. **Asymmetric score-based time scaling** -- score drops extend time more than score rises.
+11. **Asymmetric score-based time scaling** -- score drops extend time more than score rises. **(UPDATE 2026-03-21: GoChess now has score-drop time extension 2.0x/1.5x/1.2x, merged)**
 12. **MaxHeap for expected-all nodes** -- build heap for PV/exact TT nodes after first quiet. Could save move ordering time.
 
 ### Priority for GoChess Testing:

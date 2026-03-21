@@ -202,11 +202,11 @@ Limited details available:
 
 ### Notable Differences from GoChess NNUE
 - Only 2 king buckets (vs our 16)
-- 5 output nodes selected by material (output buckets) -- we have 1 output
-- Leaky ReLU (vs clipped ReLU)
+- 5 output nodes selected by material (output buckets) -- we have 8
+- Leaky ReLU (vs our CReLU/SCReLU)
 - Net merging/pruning technique for training
 - Hybrid mode: switches to hand-crafted eval if material advantage >= 4 pawns (v5.20)
-- *Compare to GoChess*: We use HalfKA 40960->2x256->32->32->1 with 16 king buckets, clipped ReLU
+- *Compare to GoChess*: We use v5 (768x16->N)x2->1x8 with 16 king buckets, CReLU/SCReLU, pairwise mul, Finny tables **(UPDATE 2026-03-21)**
 
 ---
 

@@ -394,7 +394,7 @@ max_budget = 10/3 * (remaining - 150ms) / mtg
 4. **ProbCut QS pre-filter** (run QSearch first, only do full search if QS passes) -- saves nodes
 5. **NMP TT-move SEE guard** (block NMP when TT suggests good capture at SEE > 226) -- unique
 6. **Upcoming cycle detection** (Cuckoo hashing for upcoming repetitions) -- more sophisticated than our repetition check
-7. **Feature reset cache (FinnyTable)** for NNUE king-move recomputes -- avoids full recompute
+7. ~~**Feature reset cache (FinnyTable)**~~ for NNUE king-move recomputes **(UPDATE 2026-03-21: GoChess now has Finny tables)**
 8. **Residual concatenation** in NNUE hidden layers -- all intermediate features available to output
 9. **NNUE output feature hash** for correction history -- captures "what the net thinks is important"
 10. **Creates-threat LMR reduction** (-1 for moves creating threats)
@@ -489,7 +489,7 @@ Note: Seer uses `logit_scale = 1024`, so direct centipawn comparisons require di
 
 ### Lower Priority / Already Covered
 
-11. **Feature reset cache (FinnyTable)** -- already in our queue (#42). Seer confirms it's valuable for HalfKA architectures. Would need adaptation for our king-bucket system.
+11. ~~**Feature reset cache (FinnyTable)**~~ -- **(UPDATE 2026-03-21: GoChess now has Finny tables, merged.)**
 
 12. **Lazy NNUE evaluation** -- we already have lazy accumulators. Seer's dirty-node pattern is equivalent.
 
@@ -504,7 +504,7 @@ Note: Seer uses `logit_scale = 1024`, so direct centipawn comparisons require di
 ### Seer's Strength Profile
 Seer is 293 Elo above GoChess-v5, which is a massive gap. The main structural advantages appear to be:
 
-1. **NNUE quality**: HalfKA with all 64 king squares (vs our 16 buckets), residual connections, FinnyTable caching. The network is deeper (4 layers vs our 4) but with residual skip connections ensuring gradient flow. The CReLU255 + float hidden layers is a pragmatic mix.
+1. **NNUE quality**: HalfKA with all 64 king squares (vs our 16 buckets), residual connections, FinnyTable caching. **(UPDATE 2026-03-21: GoChess now also has Finny tables, SCReLU, pairwise mul, and dynamic width v5 architecture.)** The network is deeper (4 layers) with residual skip connections ensuring gradient flow. The CReLU255 + float hidden layers is a pragmatic mix.
 
 2. **Correction history breadth**: 4 tables covering different position aspects (pawns, NNUE output signature, move sequences) vs our 1. This is likely the single biggest search-side difference.
 
