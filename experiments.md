@@ -2384,3 +2384,23 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 248 games, -25.3 Elo.**
 - **Baseline**: 836be58 with v5 sb120 net
 - **Notes**: TT cutoffs fire very frequently and cheaply — applying history malus at every one pollutes the history tables with noisy data. Our TT cutoff history BONUS works (+22 Elo merged) because bonuses reinforce good moves; malus on the opponent's move is the wrong signal.
+
+### V5: LMR Eval-Alpha Distance (REJECTED)
+- **Change**: Increase LMR reduction when `abs(staticEval - alpha) > 175` (+1) or `> 350` (+2). Koivisto pattern: when eval is far from alpha, the position is clearly decided, reduce more.
+- **Result**: **H0 at 250 games, -23.7 Elo.**
+- **Baseline**: 323fd4d (with hindsight reduction) with v5 sb120 net
+- **Notes**: The eval-alpha distance is already implicitly captured by our existing LMR adjustments (improving, failing, alpha-raised count). Adding an explicit distance check over-reduces in positions where the eval is high but tactically rich.
+
+### V5: Hindsight Threshold 100 (IN PROGRESS)
+- **Change**: More aggressive hindsight reduction: threshold 150 → 100. Reduces in more positions.
+- **Status**: 386 games, -6 Elo. Flat/slightly negative.
+- **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching.
+
+### V5: Hindsight Threshold 200 (IN PROGRESS)
+- **Change**: Less aggressive hindsight reduction: threshold 150 → 200. Reduces only in very quiet positions.
+- **Status**: 396 games, +6 Elo. Slightly positive.
+- **Notes**: Bracket test. May indicate 150 was slightly too aggressive and 200 is closer to optimal.
+
+### V5: QS Recapture-Only at Depth >= 5 (IN PROGRESS)
+- **Change**: After 5+ capture plies in quiescence, restrict to recaptures only. Minic pattern to prevent QS explosion.
+- **Status**: 237 games, -4 Elo. Flat.
