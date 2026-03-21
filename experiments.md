@@ -2407,6 +2407,8 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Change**: After 5+ capture plies in quiescence, restrict to recaptures only. Minic pattern to prevent QS explosion.
 - **Status**: 408 games, -3 Elo. Flat.
 
-### V5: NMP Verification Depth 14 (IN PROGRESS)
+### V5: NMP Verification Depth 14 (MERGED)
 - **Change**: Raise NMP verification threshold from depth >= 12 to depth >= 14. Less verification = more NMP cutoffs accepted on trust.
-- **Status**: 141 games, +24.9 Elo. Very early but strong positive signal.
+- **Result**: **H1 at 324 games, +27.9 Elo ±24.3, LOS 98.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 323fd4d (with hindsight 150) with v5 sb120 net
+- **Notes**: NMP verification at depth 12 was wasting nodes re-confirming cutoffs that were almost always correct. Raising to 14 saves significant search effort. Big win. Try depth 16 next to continue bracketing.
