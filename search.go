@@ -1484,7 +1484,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			if contHistPtr2 != nil {
 				histPruneScore += int32(contHistPtr2[movedPiece][move.To()]) / 2
 			}
-			if histPruneScore < -1500*int32(depth) {
+			if histPruneScore < -2000*int32(depth) {
 				continue
 			}
 		}
@@ -1494,7 +1494,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		isBadNoisy := false
 		if isCap && !inCheck && ply > 0 && depth <= 4 && move != ttMove &&
 			!move.IsPromotion() && bestScore > -MateScore+100 &&
-			staticEval > -Infinity && staticEval+depth*50 <= alpha {
+			staticEval > -Infinity && staticEval+depth*75 <= alpha {
 			isBadNoisy = !b.SEESign(move, 0)
 		}
 
