@@ -94,3 +94,26 @@ func (b *Board) PawnHash() uint64 {
 	}
 	return hash
 }
+
+// NonPawnHashes computes per-color Zobrist hashes for non-pawn, non-king pieces.
+// Used for multi-source correction history.
+func (b *Board) NonPawnHashes() [2]uint64 {
+	var keys [2]uint64
+	// White non-pawn pieces (knights, bishops, rooks, queens)
+	for piece := WhiteKnight; piece <= WhiteQueen; piece++ {
+		bb := b.Pieces[piece]
+		for bb != 0 {
+			sq := bb.PopLSB()
+			keys[White] ^= Zobrist.Pieces[piece][sq]
+		}
+	}
+	// Black non-pawn pieces
+	for piece := BlackKnight; piece <= BlackQueen; piece++ {
+		bb := b.Pieces[piece]
+		for bb != 0 {
+			sq := bb.PopLSB()
+			keys[Black] ^= Zobrist.Pieces[piece][sq]
+		}
+	}
+	return keys
+}

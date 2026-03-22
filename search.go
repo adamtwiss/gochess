@@ -153,11 +153,16 @@ type SearchInfo struct {
 	// equal-MVV-LVA captures. ~11.4KB per thread (int16).
 	CaptHistory [13][64][7]int16
 
-	// Correction history: indexed by [color][pawnHash % corrHistSize].
-	// Stores the average error between static eval and search score,
-	// scaled by corrHistGrain. Used to adjust static eval for pruning.
-	// ~64KB per thread.
+	// Multi-source correction history: captures eval error patterns from
+	// different position features. Each table indexes a different aspect of
+	// the position, enabling more precise eval correction.
+	//
+	// Pawn correction: indexed by pawn structure hash (~64KB per thread)
 	CorrectionHistory [2][corrHistSize]int32
+	// Non-pawn correction: indexed by per-color non-pawn piece hash (~128KB per thread)
+	NonPawnCorrHistory [2][2][corrHistSize]int32
+	// Continuation correction: indexed by opponent's last move piece+to (~3.2KB per thread)
+	ContCorrHistory [13][64]int32
 
 	// Pawn history: indexed by [pawnHash % pawnHistSize][piece][toSquare].
 	// Captures move patterns correlated with pawn structure — a stable, low-noise
@@ -327,12 +332,37 @@ func (info *SearchInfo) updatePawnHistory(pawnKey uint64, piece Piece, to Square
 	info.PawnHistory[idx][piece][to] = int16(v + bonus - v*abs/16384)
 }
 
-// correctedStaticEval adjusts the raw static eval using the pawn-hash-based
-// correction history. The correction captures the average error between static
-// eval and search scores for positions with similar pawn structures.
+// correctedStaticEval adjusts the raw static eval using multi-source
+// correction history. Blends pawn structure, non-pawn piece configuration,
+// and continuation move corrections for more precise eval adjustment.
 func (info *SearchInfo) correctedStaticEval(b *Board, rawEval int) int {
-	entry := info.CorrectionHistory[b.SideToMove][b.PawnHashKey%corrHistSize]
-	adjusted := rawEval + int(entry)/corrHistGrain
+	stm := b.SideToMove
+
+	// Pawn correction (existing)
+	pawnCorr := int(info.CorrectionHistory[stm][b.PawnHashKey%corrHistSize])
+
+	// Non-pawn corrections (per color)
+	whiteNPCorr := int(info.NonPawnCorrHistory[stm][White][b.NonPawnKey[White]%corrHistSize])
+	blackNPCorr := int(info.NonPawnCorrHistory[stm][Black][b.NonPawnKey[Black]%corrHistSize])
+
+	// Continuation correction (from opponent's last move)
+	contCorr := int32(0)
+	if len(b.UndoStack) > 0 {
+		lastUndo := b.UndoStack[len(b.UndoStack)-1]
+		if lastUndo.Move != NoMove {
+			prevPiece := b.Squares[lastUndo.Move.To()]
+			if prevPiece != Empty {
+				contCorr = info.ContCorrHistory[prevPiece][lastUndo.Move.To()]
+			}
+		}
+	}
+
+	// Weighted blend: pawn correction is the strongest signal (proven +20 Elo alone).
+	// Non-pawn sources add secondary information. Weights sum to 1024 for integer math.
+	// Pawn: 512/1024 (50%), white NP: 204/1024 (20%), black NP: 204/1024 (20%), cont: 104/1024 (10%)
+	totalCorr := (pawnCorr*512 + whiteNPCorr*204 + blackNPCorr*204 + int(contCorr)*104) / 1024
+
+	adjusted := rawEval + totalCorr/corrHistGrain
 	// Clamp to avoid mate score range
 	if adjusted > MateScore-100 {
 		adjusted = MateScore - 100
@@ -343,12 +373,21 @@ func (info *SearchInfo) correctedStaticEval(b *Board, rawEval int) int {
 	return adjusted
 }
 
-// updateCorrectionHistory updates the pawn-hash-based correction entry using a
+// updateCorrEntry applies the gravity update to a single correction history entry.
+func updateCorrEntry(entry *int32, err int, weight int32) {
+	newVal := (*entry*(corrHistGrain-weight) + int32(err)*corrHistGrain*weight) / corrHistGrain
+	if newVal > corrHistLimit {
+		newVal = corrHistLimit
+	}
+	if newVal < -corrHistLimit {
+		newVal = -corrHistLimit
+	}
+	*entry = newVal
+}
+
+// updateCorrectionHistory updates all correction history tables using a
 // gravity/exponential moving average. Deeper searches receive more weight.
 func (info *SearchInfo) updateCorrectionHistory(b *Board, searchScore, rawEval, depth int) {
-	idx := b.PawnHashKey % corrHistSize
-	entry := info.CorrectionHistory[b.SideToMove][idx]
-
 	// Compute error, clamped to avoid extreme values
 	err := searchScore - rawEval
 	if err > corrHistMax {
@@ -364,15 +403,25 @@ func (info *SearchInfo) updateCorrectionHistory(b *Board, searchScore, rawEval, 
 		weight = 16
 	}
 
-	// Gravity update: blend old value with new error
-	newVal := (entry*(corrHistGrain-weight) + int32(err)*corrHistGrain*weight) / corrHistGrain
-	if newVal > corrHistLimit {
-		newVal = corrHistLimit
+	stm := b.SideToMove
+
+	// Update pawn correction
+	updateCorrEntry(&info.CorrectionHistory[stm][b.PawnHashKey%corrHistSize], err, weight)
+
+	// Update non-pawn corrections (per color)
+	updateCorrEntry(&info.NonPawnCorrHistory[stm][White][b.NonPawnKey[White]%corrHistSize], err, weight)
+	updateCorrEntry(&info.NonPawnCorrHistory[stm][Black][b.NonPawnKey[Black]%corrHistSize], err, weight)
+
+	// Update continuation correction (from opponent's last move)
+	if len(b.UndoStack) > 0 {
+		lastUndo := b.UndoStack[len(b.UndoStack)-1]
+		if lastUndo.Move != NoMove {
+			prevPiece := b.Squares[lastUndo.Move.To()]
+			if prevPiece != Empty {
+				updateCorrEntry(&info.ContCorrHistory[prevPiece][lastUndo.Move.To()], err, weight)
+			}
+		}
 	}
-	if newVal < -corrHistLimit {
-		newVal = -corrHistLimit
-	}
-	info.CorrectionHistory[b.SideToMove][idx] = newVal
 }
 
 // Search performs iterative deepening search and returns the best move
@@ -427,6 +476,8 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 
 	// Clear correction history
 	info.CorrectionHistory = [2][corrHistSize]int32{}
+	info.NonPawnCorrHistory = [2][2][corrHistSize]int32{}
+	info.ContCorrHistory = [13][64]int32{}
 
 	// Clear excluded moves
 	for i := range info.ExcludedMove {
@@ -772,6 +823,8 @@ func helperSearch(b *Board, maxDepth int, info *SearchInfo) {
 	info.ContHistory = [13][64][13][64]int16{}
 	info.CaptHistory = [13][64][7]int16{}
 	info.CorrectionHistory = [2][corrHistSize]int32{}
+	info.NonPawnCorrHistory = [2][2][corrHistSize]int32{}
+	info.ContCorrHistory = [13][64]int32{}
 	for i := range info.ExcludedMove {
 		info.ExcludedMove[i] = NoMove
 	}
@@ -1128,10 +1181,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// extract the opponent's best reply from the TT. -1 = no threat detected.
 	threatSq := Square(-1)
 
-	// Hindsight reduction: when both sides' evals sum above threshold,
-	// the position is likely quiet — reduce depth by 1.
-	// Note: can stack with IIR above for a total -2 reduction. This
-	// combination was validated by SPRT (+9.4 Elo) and is intentional.
+	// Hindsight reduction: when both sides think the position is quiet
+	// (parent's eval + current eval are both positive), reduce depth by 1.
+	// Source: Alexandria (reduction>=1 && (ss-1)->staticEval + ss->staticEval >= 155)
 	if !inCheck && ply >= 1 && depth >= 3 &&
 		info.StaticEvals[ply-1] > -MateScore+100 && staticEval > -Infinity {
 		evalSum := info.StaticEvals[ply-1] + staticEval
@@ -1347,7 +1399,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// SEE capture pruning: at shallow depths, prune captures that lose material
 		if isCap && ply > 0 && !inCheck && depth <= 6 &&
 			move != ttMove && bestScore > -MateScore+100 &&
-			!b.SEESign(move, -depth*80) {
+			!b.SEESign(move, -depth*100) {
 			continue
 		}
 

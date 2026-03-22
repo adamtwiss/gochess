@@ -5,6 +5,7 @@ package chess
 type UndoInfo struct {
 	HashKey       uint64
 	PawnHashKey   uint64
+	NonPawnKey    [2]uint64
 	Move          Move
 	HalfmoveClock int16
 	Captured      Piece
@@ -48,6 +49,7 @@ func (b *Board) MakeMove(m Move) {
 		HalfmoveClock: b.HalfmoveClock,
 		HashKey:       b.HashKey,
 		PawnHashKey:   b.PawnHashKey,
+		NonPawnKey:    b.NonPawnKey,
 	}
 	b.UndoStack = append(b.UndoStack, undo)
 
@@ -75,6 +77,10 @@ func (b *Board) MakeMove(m Move) {
 		if captured == WhitePawn || captured == BlackPawn {
 			b.PawnHashKey ^= Zobrist.Pieces[captured][to]
 		}
+		// Update non-pawn key if a non-pawn non-king piece was captured
+		if captured != WhitePawn && captured != BlackPawn && captured != WhiteKing && captured != BlackKing {
+			b.NonPawnKey[captured.Color()] ^= Zobrist.Pieces[captured][to]
+		}
 	}
 
 	// Move the piece
@@ -86,6 +92,11 @@ func (b *Board) MakeMove(m Move) {
 	if piece == WhitePawn || piece == BlackPawn {
 		b.PawnHashKey ^= Zobrist.Pieces[piece][from]
 		b.PawnHashKey ^= Zobrist.Pieces[piece][to]
+	}
+	// Update non-pawn key for non-pawn non-king moves
+	if piece != WhitePawn && piece != BlackPawn && piece != WhiteKing && piece != BlackKing {
+		b.NonPawnKey[piece.Color()] ^= Zobrist.Pieces[piece][from]
+		b.NonPawnKey[piece.Color()] ^= Zobrist.Pieces[piece][to]
 	}
 
 	// Handle promotion
@@ -99,6 +110,8 @@ func (b *Board) MakeMove(m Move) {
 		b.HashKey ^= Zobrist.Pieces[promoPiece][to] // Add promoted piece to hash
 		// Pawn disappears from pawn hash on promotion
 		b.PawnHashKey ^= Zobrist.Pieces[piece][to]
+		// Promoted piece appears in non-pawn key
+		b.NonPawnKey[b.SideToMove] ^= Zobrist.Pieces[promoPiece][to]
 		b.removePiece(to)
 		b.putPiece(promoPiece, to)
 	}
@@ -110,20 +123,28 @@ func (b *Board) MakeMove(m Move) {
 				b.movePiece(NewSquare(7, 0), NewSquare(5, 0))
 				b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(7, 0)]
 				b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(5, 0)]
+				b.NonPawnKey[White] ^= Zobrist.Pieces[WhiteRook][NewSquare(7, 0)]
+				b.NonPawnKey[White] ^= Zobrist.Pieces[WhiteRook][NewSquare(5, 0)]
 			} else { // Queenside
 				b.movePiece(NewSquare(0, 0), NewSquare(3, 0))
 				b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(0, 0)]
 				b.HashKey ^= Zobrist.Pieces[WhiteRook][NewSquare(3, 0)]
+				b.NonPawnKey[White] ^= Zobrist.Pieces[WhiteRook][NewSquare(0, 0)]
+				b.NonPawnKey[White] ^= Zobrist.Pieces[WhiteRook][NewSquare(3, 0)]
 			}
 		} else {
 			if to == NewSquare(6, 7) { // Kingside
 				b.movePiece(NewSquare(7, 7), NewSquare(5, 7))
 				b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(7, 7)]
 				b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(5, 7)]
+				b.NonPawnKey[Black] ^= Zobrist.Pieces[BlackRook][NewSquare(7, 7)]
+				b.NonPawnKey[Black] ^= Zobrist.Pieces[BlackRook][NewSquare(5, 7)]
 			} else { // Queenside
 				b.movePiece(NewSquare(0, 7), NewSquare(3, 7))
 				b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(0, 7)]
 				b.HashKey ^= Zobrist.Pieces[BlackRook][NewSquare(3, 7)]
+				b.NonPawnKey[Black] ^= Zobrist.Pieces[BlackRook][NewSquare(0, 7)]
+				b.NonPawnKey[Black] ^= Zobrist.Pieces[BlackRook][NewSquare(3, 7)]
 			}
 		}
 	}
@@ -358,6 +379,7 @@ func (b *Board) UnmakeMove(m Move) {
 	b.HalfmoveClock = undo.HalfmoveClock
 	b.HashKey = undo.HashKey
 	b.PawnHashKey = undo.PawnHashKey
+	b.NonPawnKey = undo.NonPawnKey
 	if b.SideToMove == Black {
 		b.FullmoveNum--
 	}

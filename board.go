@@ -139,6 +139,7 @@ type Board struct {
 	FullmoveNum   int
 	HashKey       uint64
 	PawnHashKey   uint64
+	NonPawnKey    [2]uint64 // per-color non-pawn piece Zobrist keys (for correction history)
 
 	// Bitboards for fast move generation
 	Pieces    [13]Bitboard // One bitboard per piece type (index 0 unused)
@@ -210,6 +211,7 @@ func (b *Board) Clear() {
 	b.FullmoveNum = 1
 	b.HashKey = 0
 	b.PawnHashKey = 0
+	b.NonPawnKey = [2]uint64{}
 	b.PSTScoreMG[White] = 0
 	b.PSTScoreMG[Black] = 0
 	b.PSTScoreEG[White] = 0
@@ -313,6 +315,7 @@ func (b *Board) Reset() {
 	b.FullmoveNum = 1
 	b.HashKey = b.Hash()
 	b.PawnHashKey = b.PawnHash()
+	b.NonPawnKey = b.NonPawnHashes()
 	// Recompute NNUE accumulator
 	if b.NNUENet != nil && b.NNUEAcc != nil {
 		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
@@ -405,6 +408,7 @@ func (b *Board) SetFEN(fen string) error {
 
 	b.HashKey = b.Hash()
 	b.PawnHashKey = b.PawnHash()
+	b.NonPawnKey = b.NonPawnHashes()
 	// Recompute NNUE accumulator
 	if b.NNUENet != nil && b.NNUEAcc != nil {
 		b.NNUENet.RecomputeAccumulator(b.NNUEAcc.Current(), b)
