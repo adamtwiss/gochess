@@ -2596,6 +2596,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: Futility 50+d*50 Retry (REJECTED)
+- **Change**: Tighten futility from 60+d*60 to 50+d*50. Retry after RFP/badnoisy landscape shift.
+- **Result**: **H0 at 577 games, -7.8 Elo.**
+- **Baseline**: 40c8eb4 with v5 sb120 net
+- **Notes**: Unlike RFP depth 8 which gained +37.7 from landscape shift, futility margin is robust to other changes. 60+d*60 confirmed optimal across multiple retests.
+
 ### V5: SEE Cap Threshold 70 (REJECTED)
 - **Change**: Tighten SEE cap from `-depth*80` to `-depth*70`.
 - **Result**: **H0 at 1650 games, +0.8 Elo.** Dead flat.
