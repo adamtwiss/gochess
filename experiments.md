@@ -2623,3 +2623,11 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Result**: **H0 at 411 games, -12.7 Elo.**
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Declining eval often means a tactical sequence where deeper search is needed, not less. The condition fires too broadly — needs a minimum decline threshold per step to filter natural oscillation. Retry with margin (e.g., each step must decline by 50+ cp).
+
+### V5: Threat-Aware History (REJECTED)
+- **Change**: 4x butterfly history indexed by [from_threatened][to_threatened] using enemy pawn attacks. Added to move ordering, LMR adjustment, and history pruning.
+- **Result**: **H0 at 452 games, -8.5 Elo.**
+- **Notes**: Simple pawn-threat version doesn't help. The existing threat escape bonus (+8000 for NMP threat square) may already capture the useful signal. Full threat computation (minor attacks majors, etc.) might be needed but adds NPS cost.
+
+### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
+- **Status**: -1.1 Elo at 668 games, heading H0. The 50/20/20/10 blend from the merged version is already near-optimal.
