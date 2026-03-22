@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: LMP Tight Base 2+d² (REJECTED)
+- **Change**: Tighten LMP limit from `3 + depth*depth` to `2 + depth*depth`.
+- **Result**: **H0 at 345 games, -16.1 Elo.**
+- **Baseline**: 1cf3871 with v5 sb120 net
+- **Notes**: Pruning one more move at each depth is too aggressive — the 3rd-to-last move at each depth is still valuable often enough to matter. Base 3 confirmed optimal.
+
 ### V5: NMP Verify Depth 16 (REJECTED)
 - **Change**: Raise NMP verification from depth >= 14 to depth >= 16.
 - **Result**: **H0 at 2045 games, +1.7 Elo.** Dead flat.
