@@ -3,17 +3,24 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"chess"
-	"golang.org/x/term"
 )
 
 func main() {
+	// Check for subcommands before flag parsing
+	if len(os.Args) > 1 && os.Args[1] == "fetch-net" {
+		runFetchNet()
+		return
+	}
+
 	epdFile := flag.String("e", "", "EPD test suite file to run")
 	maxTimeMS := flag.Int("t", 5000, "max time per position in milliseconds")
 	maxPositions := flag.Int("n", 0, "number of positions to run (0 = all)")
@@ -36,7 +43,7 @@ func main() {
 	bookFile := flag.String("book", "", "opening book file for UCI mode")
 
 	// NNUE flags
-	nnueFile := flag.String("nnue", "", "NNUE network file (default: net.nnue in current directory)")
+	nnueFile := flag.String("nnue", "", "NNUE network file (explicit override)")
 	classical := flag.Bool("classical", false, "disable NNUE, use classical eval only")
 
 	// Syzygy tablebase flag
@@ -48,13 +55,14 @@ func main() {
 	benchCompare := flag.String("compare", "", "compare against saved benchmark JSON file")
 
 	// Mode flags
-	forceUCI := flag.Bool("uci", false, "force UCI protocol mode (default when stdin is not a terminal)")
+	forceUCI := flag.Bool("uci", false, "force UCI protocol mode")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n       chess fetch-net\n\nOptions:\n")
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nSubcommands:\n")
+		fmt.Fprintf(os.Stderr, "  fetch-net                                      # download NNUE net from net.txt URL\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  chess                                          # interactive mode\n")
 		fmt.Fprintf(os.Stderr, "  chess -uci                                     # UCI mode\n")
 		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20 -threads 4\n")
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200                            # run benchmark\n")
@@ -85,12 +93,7 @@ func main() {
 		return
 	}
 
-	// Resolve binary directory for auto-loading net.nnue and book.bin.
-	// CWD is unreliable (cutechess-cli sets it to /tmp), so look next to the binary.
-	exePath, _ := os.Executable()
-	exeDir := filepath.Dir(exePath)
-
-	// Load NNUE network (before any mode branches)
+	// Load NNUE network (unified for all modes)
 	var nnueNet *chess.NNUENet
 	var nnueNetV5 *chess.NNUENetV5
 	if *classical {
@@ -121,21 +124,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
 		}
 	} else {
-		// Try net.nnue next to the binary, then in CWD
-		defaultNet := filepath.Join(exeDir, "net.nnue")
-		var err error
-		nnueNet, err = chess.LoadNNUEAnyVersion(defaultNet)
+		// Use net.txt to find the expected net filename
+		net4, net5, loadedPath, err := chess.LoadNNUEFromNetTxt()
 		if err != nil {
-			// Fall back to CWD (for development convenience)
-			nnueNet, err = chess.LoadNNUEAnyVersion("net.nnue")
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: net.nnue not found (tried %s and CWD), NNUE available via UCI NNUEFile option\n", exeDir)
-			// Don't set UseNNUE=false — the eval checks b.NNUENet != nil,
-			// and a GUI may load a net later via UCI NNUEFile option.
-		} else {
-			chess.GlobalNNUENet = nnueNet
-			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", defaultNet)
+		if net5 != nil {
+			nnueNetV5 = net5
+			chess.GlobalNNUENetV5 = net5
+			fmt.Fprintf(os.Stderr, "NNUE v5 loaded from %s (fingerprint %s)\n", loadedPath, net5.Fingerprint())
+		} else if net4 != nil {
+			nnueNet = net4
+			chess.GlobalNNUENet = net4
+			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", loadedPath)
 		}
 	}
 
@@ -151,6 +153,10 @@ func main() {
 			}
 		}
 	}
+
+	// Resolve binary directory for auto-loading book.bin
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
 
 	// Load opening book (before any mode branches)
 	var book *chess.OpeningBook
@@ -185,29 +191,75 @@ func main() {
 		return
 	}
 
-	// If forced UCI or stdin is not a terminal, use UCI mode
-	if *forceUCI || !term.IsTerminal(int(os.Stdin.Fd())) {
-		engine := chess.NewUCIEngine()
-		if book != nil {
-			engine.SetBook(book)
-		}
-		if nnueNetV5 != nil {
-			engine.SetNNUEV5(nnueNetV5)
-		} else if nnueNet != nil {
-			engine.SetNNUE(nnueNet)
-		}
-		engine.Run()
-		return
+	// UCI mode (always — no more interactive CLI)
+	if !*forceUCI {
+		// Still enter UCI even without -uci flag
+	}
+	engine := chess.NewUCIEngine()
+	if book != nil {
+		engine.SetBook(book)
+	}
+	if nnueNetV5 != nil {
+		engine.SetNNUEV5(nnueNetV5)
+	} else if nnueNet != nil {
+		engine.SetNNUE(nnueNet)
+	}
+	engine.Run()
+}
+
+func runFetchNet() {
+	url, err := chess.NetTxtURL()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Interactive CLI mode
-	cli := chess.NewCLIEngine()
-	if nnueNetV5 != nil {
-		cli.SetNNUEV5(nnueNetV5)
-	} else if nnueNet != nil {
-		cli.SetNNUE(nnueNet)
+	// Extract filename from URL
+	parts := strings.Split(url, "/")
+	filename := parts[len(parts)-1]
+	if filename == "" {
+		fmt.Fprintf(os.Stderr, "Error: net.txt URL has no filename\n")
+		os.Exit(1)
 	}
-	cli.Run()
+
+	// Save next to the executable
+	exePath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error finding executable path: %v\n", err)
+		os.Exit(1)
+	}
+	exeDir := filepath.Dir(exePath)
+	outPath := filepath.Join(exeDir, filename)
+
+	fmt.Printf("Downloading %s\n", url)
+	fmt.Printf("Saving to %s\n", outPath)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error downloading: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "Error: HTTP %d %s\n", resp.StatusCode, resp.Status)
+		os.Exit(1)
+	}
+
+	out, err := os.Create(outPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating file: %v\n", err)
+		os.Exit(1)
+	}
+	defer out.Close()
+
+	written, err := io.Copy(out, resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Done: %d bytes written\n", written)
 }
 
 // formatHitrate formats a probes/hits pair as "hits/probes (pct%)"
