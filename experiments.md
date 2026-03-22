@@ -2575,3 +2575,8 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Result**: **H1 at 324 games, +27.9 Elo ±24.3, LOS 98.8%.** SPRT bounds: elo0=-5, elo1=15.
 - **Baseline**: 323fd4d (with hindsight 150) with v5 sb120 net
 - **Notes**: NMP verification at depth 12 was wasting nodes re-confirming cutoffs that were almost always correct. Raising to 14 saves significant search effort. Big win. Try depth 16 next to continue bracketing.
+
+### V5: Multi-Source Correction History (REJECTED — revisit with tuned weights)
+- **Change**: Added 3 new correction tables: white non-pawn Zobrist, black non-pawn Zobrist, continuation (opponent's last move piece+to). Equal-weight blend of all 4 sources.
+- **Result**: **H0 at 485 games, -7.2 Elo.** Showed +20.9 at 114 games before fading.
+- **Notes**: The concept is proven (12+ engines use multi-source correction). The equal-weight blend likely dilutes the strong pawn correction signal. Retry with: (a) tuned asymmetric weights (Weiss uses different weights per source), (b) just non-pawn tables without continuation correction, (c) different table sizes. The high draw rate (68%) suggests the correction is working but overcorrecting in some positions.
