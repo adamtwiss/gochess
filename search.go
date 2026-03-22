@@ -1255,7 +1255,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// NNUE-tuned margins: tighter than classical since eval is more accurate.
 		// improving = true -> depth * 60 (trust rising eval, prune aggressively)
 		// improving = false -> depth * 100
-		if depth <= 7 && ply > 0 {
+		if depth <= 8 && ply > 0 {
 			margin := depth * 100
 			if improving {
 				margin = depth * 70

@@ -2596,6 +2596,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: RFP Depth Gate 8 Retry (MERGED)
+- **Change**: Extend RFP from depth<=7 to depth<=8. Retry of previously flat test.
+- **Result**: **H1 at 268 games, +37.7 Elo ±28.9, LOS 99.5%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 9c10566 with v5 sb120 net
+- **Notes**: Previously H0 (-0.5 Elo at 1377 games) before bad-noisy/SEE-cap/hist-prune changes. The tighter capture pruning shifted the search landscape — depth 8 positions now benefit from static eval pruning because bad captures are already removed. **This validates retesting failed experiments after conditions change.**
+
 ### V5: SEE Cap Threshold 90 (REJECTED → RETRY CANDIDATE)
 - **Change**: Loosen SEE cap pruning from `-depth*80` back to `-depth*90`.
 - **Result**: **H0 at 2161 games, +1.6 Elo.** Dead flat.
