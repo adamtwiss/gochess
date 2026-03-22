@@ -2593,6 +2593,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: SEE Quiet Threshold -15*d² (REJECTED)
+- **Change**: Less aggressive SEE quiet pruning: threshold from `-20*d²` to `-15*d²`.
+- **Result**: **H0 at 491 games, -9.9 Elo.**
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Less pruning wastes nodes on quiet moves that land on bad squares. -20*d² confirmed optimal.
+
 ### V5: Pawn Push LMR Relief (REJECTED)
 - **Change**: Reduce LMR by 1 for pawn pushes to rank 5+ (approaching promotion).
 - **Result**: **H0 at 450 games, -10.0 Elo.**
