@@ -2596,6 +2596,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: SEE Cap Threshold 70 (REJECTED)
+- **Change**: Tighten SEE cap from `-depth*80` to `-depth*70`.
+- **Result**: **H0 at 1650 games, +0.8 Elo.** Dead flat.
+- **Baseline**: 920ac92 (old) with v5 sb120 net
+- **Notes**: Full bracket: 60 (H0, -52), 70 (H0, +0.8), **80 (H1, +25)**, 90 (H0, +1.6). Peak confirmed at 80.
+
 ### V5: RFP Depth Gate 8 Retry (MERGED)
 - **Change**: Extend RFP from depth<=7 to depth<=8. Retry of previously flat test.
 - **Result**: **H1 at 268 games, +37.7 Elo ±28.9, LOS 99.5%.** SPRT bounds: elo0=-5, elo1=15.
