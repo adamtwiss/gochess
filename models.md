@@ -231,3 +231,41 @@ The optimal WDL blend is very small — just 5% game result signal. The sweep:
 | 768pw sb400 (SIMD) | 185 | -37 | Heading H0 |
 
 Despite lower validation loss and 7% NPS advantage, pairwise architecture produces compressed eval scale that hurts search pruning decisions. Not viable with current search framework.
+
+## SPRT Results (2026-03-22)
+
+### 1536 Training Progression (wdl=0.0, cosine over 800 SBs)
+
+| Test | Games | Elo | Status |
+|------|-------|-----|--------|
+| 1536 sb800 vs 1024 production | 991 | **+13.7** | **H1** |
+| 1536 sb800 vs 1536 sb700 (same run) | 1456 | **+10.7** | **H1 — still improving!** |
+| 1536 sb800 vs 1536 sb500 (same run) | 158 | **+66.8** | **H1** |
+
+**Key finding**: 1536 is still improving at sb700→sb800 (+10.7 Elo). The model hasn't plateaued. However, the advantage over 1024 production is ~+14 Elo, similar to sb400's +18. The NPS penalty (~17%) largely offsets the eval quality gain.
+
+**Note**: sb800 was from a fresh training run with cosine decay over 800 SBs (not an extension of the sb400 run). The sb400 from this run has a different LR profile than the previous sb400 run — direct comparison between runs is confounded.
+
+### Search Experiments
+
+| Test | Games | Elo | Status |
+|------|-------|-----|--------|
+| Multi-source corr weighted (H1, already merged) | 280 | +28.6 | Previous batch |
+| Multi-source corr weights v2 (60/15/15/10) | 954 | -1.5 | **H0** — current weights near-optimal |
+| Threat-aware history (pawn-threat indexed) | 452 | -8.5 | **H0** — simple version doesn't help |
+
+### Next Steps for Model Training
+
+1. **1536 wdl=0.05 sb800** — combines best architecture with best WDL setting. Priority.
+2. **1536 sb1000+** — training still improving at sb800, more SBs could help
+3. **SCReLU at 1024** — untested with correct wdl=0.0, every top engine uses it
+4. **Second hidden layer** — verify Bullet can train it with wdl=0.0
+
+### NPS Summary (Intel Xeon E-2288G, latest binary)
+
+| Architecture | NPS (kNPS) | vs 1024 |
+|-------------|-----------|---------|
+| 1024 wdl=0.05 | 1,795 | +7% (search tree difference) |
+| 1024 production | 1,676 | baseline |
+| 768 pairwise | 1,760 | +5% |
+| 1536 CReLU | 1,425 | -15% |

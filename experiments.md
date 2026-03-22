@@ -2723,3 +2723,20 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Status**: -1.1 Elo at 668 games, heading H0. The 50/20/20/10 blend from the merged version is already near-optimal.
+
+### Model: 1536 sb800 vs 1024 Production (H1)
+- **Change**: 1536 CReLU wdl=0.0 sb800 (cosine over 800 SBs) vs 1024 production.
+- **Result**: **H1 at 991 games, +13.7 Elo ±15.0, LOS 96.3%.**
+- **Notes**: Similar to sb400's +18.2. The 1536 architecture is consistently +10-15 over 1024 but the NPS penalty limits the gap.
+
+### Model: 1536 sb800 vs sb700 (H1 — same training run)
+- **Change**: sb800 vs sb700 from same cosine-over-800 run.
+- **Result**: **H1 at 1456 games, +10.7 Elo ±12.0, LOS 96.0%.**
+- **Notes**: Training still improving at sb700→sb800. 1536 hasn't plateaued. sb1000+ could help.
+
+### Model: 1536 sb800 vs sb500 (H1 — same training run)
+- **Change**: sb800 vs sb500 from same run.
+- **Result**: **H1 at 158 games, +66.8 Elo.**
+
+### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
+- **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
