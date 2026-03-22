@@ -2,11 +2,9 @@
 
 package chess
 
-import "unsafe"
-
 // NEON is always available on ARM64, no runtime detection needed.
 var nnueUseSIMD = true
-var nnueUseSIMDV5 = false // v5 dot-product kernels not yet implemented in NEON
+var nnueUseSIMDV5 = true
 
 // nnueCReLU256 applies ClippedReLU (clamp to [0, 127]) to 256 int16 values.
 //
@@ -87,69 +85,59 @@ func nnueMatMul32x32ReLU(input *int32, weightsT *int16, biases *int32, output *i
 //go:noescape
 func nnueDotReLU32(input *int32, weights *int16) int32
 
-// Width-generic stubs — delegate to 256-wide NEON kernels
-func nnueAccAddN(acc *int16, weights *int16, count int) {
-	// Cast to slices for safe indexing
-	a := unsafe.Slice(acc, count)
-	w := unsafe.Slice(weights, count)
-	for off := 0; off < count; off += 256 {
-		nnueAccAdd256(&a[off], &w[off])
-	}
-}
+// nnueAccAddN computes acc[i] += weights[i] for i=0..count-1.
+// count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccAddN(acc *int16, weights *int16, count int)
 
-func nnueAccSubN(acc *int16, weights *int16, count int) {
-	a := unsafe.Slice(acc, count)
-	w := unsafe.Slice(weights, count)
-	for off := 0; off < count; off += 256 {
-		nnueAccSub256(&a[off], &w[off])
-	}
-}
+// nnueAccSubN computes acc[i] -= weights[i] for i=0..count-1.
+// count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccSubN(acc *int16, weights *int16, count int)
 
-func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int) {
-	a := unsafe.Slice(acc, count)
-	o := unsafe.Slice(oldW, count)
-	n := unsafe.Slice(newW, count)
-	for off := 0; off < count; off += 256 {
-		nnueAccSubAdd256(&a[off], &o[off], &n[off])
-	}
-}
+// nnueAccSubAddN computes acc[i] += newW[i] - oldW[i] for i=0..count-1.
+// count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int)
 
-func nnueAccCopySubAddN(dst *int16, src *int16, oldW *int16, newW *int16, count int) {
-	d := unsafe.Slice(dst, count)
-	s := unsafe.Slice(src, count)
-	o := unsafe.Slice(oldW, count)
-	n := unsafe.Slice(newW, count)
-	for off := 0; off < count; off += 256 {
-		nnueAccCopySubAdd256(&d[off], &s[off], &o[off], &n[off])
-	}
-}
+// nnueAccCopySubAddN computes dst[i] = src[i] + newW[i] - oldW[i] for i=0..count-1.
+// count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccCopySubAddN(dst *int16, src *int16, oldW *int16, newW *int16, count int)
 
-func nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16, count int) {
-	d := unsafe.Slice(dst, count)
-	s := unsafe.Slice(src, count)
-	o := unsafe.Slice(oldW, count)
-	n := unsafe.Slice(newW, count)
-	c := unsafe.Slice(capW, count)
-	for off := 0; off < count; off += 256 {
-		nnueAccCopySubSubAdd256(&d[off], &s[off], &o[off], &n[off], &c[off])
-	}
-}
+// nnueAccCopySubSubAddN computes dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i=0..count-1.
+// count must be a multiple of 16.
+//
+//go:noescape
+func nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16, count int)
 
 // nnueV5CReLUDot1024 computes clamped dot product for v5 output layer.
-// TODO: implement NEON version
+//
 //go:noescape
 func nnueV5CReLUDot1024(acc *int16, weights *int16) int32
 
+// nnueV5SCReLUDot1024 computes approximate SCReLU dot product for v5 output layer.
+//
 //go:noescape
 func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
 
+// nnueV5CReLUDotN computes CReLU dot product for any width (multiple of 16).
+//
 //go:noescape
 func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
 
+// nnueV5SCReLUDotN computes exact SCReLU dot product for any width (multiple of 16).
+// Returns int64 (caller divides by QA=255).
+//
 //go:noescape
 func nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
 
 // nnueV5PairwiseDotN computes pairwise dot product for v5 768pw.
-// TODO: implement NEON version
+// Returns int64 (caller divides by QA=255).
+//
 //go:noescape
 func nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count int) int64

@@ -1118,3 +1118,73 @@ func TestNNUEIncrementalRandomGames(t *testing.T) {
 		}
 	}
 }
+
+// TestNNUEV5SIMDvsGeneric validates that SIMD v5 forward pass matches the Go fallback
+// across multiple net architectures and positions.
+func TestNNUEV5SIMDvsGeneric(t *testing.T) {
+	if !nnueUseSIMDV5 {
+		t.Skip("v5 SIMD not available")
+	}
+
+	nets := []string{
+		"net-v5-120sb-sb120.nnue",
+		"net-v5-1536-wdl00-sb800.nnue",
+		"net-v5-768pw-wdl0-sb400.nnue",
+		"net-v5-screlu-sb120.nnue",
+	}
+
+	positions := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"r1bqkbnr/pppppppp/2n5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+		"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+		"rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+		"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+	}
+
+	for _, netName := range nets {
+		net, err := LoadNNUEV5(netName)
+		if err != nil {
+			t.Logf("Skipping %s: %v", netName, err)
+			continue
+		}
+		t.Run(filepath.Base(netName), func(t *testing.T) {
+			for _, fen := range positions {
+				var board Board
+				board.SetFEN(fen)
+				board.AttachNNUEV5(net)
+				board.NNUEAccV5.MaterializeV5(net, &board)
+				acc := board.NNUEAccV5.Current()
+				pieceCount := board.AllPieces.Count()
+
+				// SIMD path
+				simdScore := net.Forward(acc, board.SideToMove, pieceCount)
+
+				// Go fallback path
+				origV5 := nnueUseSIMDV5
+				nnueUseSIMDV5 = false
+				genericScore := net.Forward(acc, board.SideToMove, pieceCount)
+				nnueUseSIMDV5 = origV5
+
+				// Pairwise nets have expected rounding differences: SIMD divides
+			// by QA once at the end while the Go fallback divides per-element,
+			// causing truncation differences of a few centipawns.
+			if net.UsePairwise {
+				diff := simdScore - genericScore
+				if diff < 0 { diff = -diff }
+				if diff > 20 {
+					t.Errorf("FEN %q: SIMD=%d Generic=%d (diff %d too large for pairwise rounding)",
+						fen, simdScore, genericScore, diff)
+				} else {
+					t.Logf("FEN %q: SIMD=%d Generic=%d (diff %d, pairwise rounding OK)",
+						fen, simdScore, genericScore, diff)
+				}
+			} else if simdScore != genericScore {
+				t.Errorf("FEN %q: SIMD=%d Generic=%d (mismatch)",
+					fen, simdScore, genericScore)
+			} else {
+				t.Logf("FEN %q: SIMD=%d Generic=%d (match)", fen, simdScore, genericScore)
+			}
+			}
+		})
+	}
+}

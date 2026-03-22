@@ -812,42 +812,501 @@ TEXT ·nnueDotReLU32(SB), NOSPLIT, $0-24
 	RET
 
 // ============================================================================
+// nnueAccAddN(acc *int16, weights *int16, count int)
+// Computes: acc[i] += weights[i] for i = 0..count-1
+// count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueAccAddN(SB), NOSPLIT, $0-24
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $4, R2, R2                // count / 16
+
+accaddn_loop:
+	VLD1 (R0), [V0.B16]
+	VLD1 (R1), [V1.B16]
+	WORD $0x4E618400              // ADD V0.8H, V0.8H, V1.8H
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	VLD1 (R0), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E638442              // ADD V2.8H, V2.8H, V3.8H
+	VST1 [V2.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE accaddn_loop
+
+	RET
+
+// ============================================================================
+// nnueAccSubN(acc *int16, weights *int16, count int)
+// Computes: acc[i] -= weights[i] for i = 0..count-1
+// count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueAccSubN(SB), NOSPLIT, $0-24
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $4, R2, R2
+
+accsubn_loop:
+	VLD1 (R0), [V0.B16]
+	VLD1 (R1), [V1.B16]
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	VLD1 (R0), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VST1 [V2.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE accsubn_loop
+
+	RET
+
+// ============================================================================
+// nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int)
+// Computes: acc[i] += newW[i] - oldW[i] for i = 0..count-1
+// count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueAccSubAddN(SB), NOSPLIT, $0-32
+	MOVD acc+0(FP), R0
+	MOVD oldW+8(FP), R1
+	MOVD newW+16(FP), R2
+	MOVD count+24(FP), R3
+	LSR $4, R3, R3
+
+accsubaddn_loop:
+	VLD1 (R2), [V0.B16]          // new weights
+	VLD1 (R1), [V1.B16]          // old weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old)
+	VLD1 (R0), [V1.B16]          // accumulator
+	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (acc + delta)
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	VLD1 (R2), [V2.B16]
+	VLD1 (R1), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R0), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	SUBS $1, R3, R3
+	BNE accsubaddn_loop
+
+	RET
+
+// ============================================================================
+// nnueAccCopySubAddN(dst *int16, src *int16, oldW *int16, newW *int16, count int)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] for i = 0..count-1
+// count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueAccCopySubAddN(SB), NOSPLIT, $0-40
+	MOVD dst+0(FP), R0
+	MOVD src+8(FP), R1
+	MOVD oldW+16(FP), R2
+	MOVD newW+24(FP), R3
+	MOVD count+32(FP), R4
+	LSR $4, R4, R4
+
+copysubaddn_loop:
+	VLD1 (R3), [V0.B16]          // new weights
+	VLD1 (R2), [V1.B16]          // old weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old)
+	VLD1 (R1), [V1.B16]          // src (parent accumulator)
+	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (src + delta)
+	VST1 [V0.B16], (R0)          // store to dst
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	VLD1 (R3), [V2.B16]
+	VLD1 (R2), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	SUBS $1, R4, R4
+	BNE copysubaddn_loop
+
+	RET
+
+// ============================================================================
+// nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, capW *int16, count int)
+// Computes: dst[i] = src[i] + newW[i] - oldW[i] - capW[i] for i = 0..count-1
+// count must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueAccCopySubSubAddN(SB), NOSPLIT, $0-48
+	MOVD dst+0(FP), R0
+	MOVD src+8(FP), R1
+	MOVD oldW+16(FP), R2
+	MOVD newW+24(FP), R3
+	MOVD capW+32(FP), R4
+	MOVD count+40(FP), R5
+	LSR $4, R5, R5
+
+copysubsubaddn_loop:
+	VLD1 (R3), [V0.B16]          // new weights
+	VLD1 (R2), [V1.B16]          // old weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old)
+	VLD1 (R4), [V1.B16]          // capture weights
+	WORD $0x6E618400              // SUB V0.8H, V0.8H, V1.8H  (new - old - cap)
+	VLD1 (R1), [V1.B16]          // src (parent accumulator)
+	WORD $0x4E608420              // ADD V0.8H, V1.8H, V0.8H  (src + delta)
+	VST1 [V0.B16], (R0)          // store to dst
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	ADD $16, R4, R4
+	VLD1 (R3), [V2.B16]
+	VLD1 (R2), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R4), [V3.B16]
+	WORD $0x6E638442              // SUB V2.8H, V2.8H, V3.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E628460              // ADD V0.8H, V3.8H, V2.8H
+	VST1 [V0.B16], (R0)
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	ADD $16, R3, R3
+	ADD $16, R4, R4
+	SUBS $1, R5, R5
+	BNE copysubsubaddn_loop
+
+	RET
+
+// ============================================================================
 // nnueV5CReLUDot1024(acc *int16, weights *int16) int32
-// V5 clamped dot product — TODO: optimize with NEON
-// For now, returns 0 (fallback to Go code)
+//
+// Computes: sum = sum_i( clamp(acc[i], 0, 255) * weights[i] ) for i=0..1023
+// Uses SMAX/SMIN for clamping, SMULL/SMLAL2 for multiply-accumulate.
+// 1024 elements / 16 per iteration (2x unrolled) = 64 iterations.
 // ============================================================================
 TEXT ·nnueV5CReLUDot1024(SB), NOSPLIT, $0-24
-	// Stub — this should not be called on ARM64 until NEON is implemented
-	// The Go fallback in Forward handles this case
-	MOVW $0, R0
-	MOVW R0, ret+16(FP)
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
+
+	VEOR V0.B16, V0.B16, V0.B16  // V0 = zero (floor)
+	MOVD $255, R3
+	WORD $0x4E020C61              // DUP V1.8H, W3 (255 broadcast)
+	VEOR V16.B16, V16.B16, V16.B16  // int32 accumulator 1
+	VEOR V17.B16, V17.B16, V17.B16  // int32 accumulator 2
+
+	MOVD $64, R2                  // 64 iterations
+
+v5crelu1024_loop:
+	// First 8 elements
+	VLD1 (R0), [V2.B16]          // load 8 acc int16
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R1), [V3.B16]          // load 8 weights
+	WORD $0x0E63C044              // SMULL V4.4S, V2.4H, V3.4H
+	WORD $0x4E638044              // SMLAL2 V4.4S, V2.8H, V3.8H
+	WORD $0x4EA48610              // ADD V16.4S, V16.4S, V4.4S
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	// Second 8 elements
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x0E63C044              // SMULL V4.4S, V2.4H, V3.4H
+	WORD $0x4E638044              // SMLAL2 V4.4S, V2.8H, V3.8H
+	WORD $0x4EA48631              // ADD V17.4S, V17.4S, V4.4S
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE v5crelu1024_loop
+
+	// Merge accumulators
+	WORD $0x4EB18610              // ADD V16.4S, V16.4S, V17.4S
+
+	// Horizontal sum: V16.4S -> scalar
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C              // FMOV W12, S16
+	MOVW R12, ret+16(FP)
+
 	RET
 
 // ============================================================================
-// nnueV5SCReLUDot1024 stub — TODO: NEON implementation
+// nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
+//
+// Approximate SCReLU: sum = sum_i( (clamp(acc[i], 0, 255)^2 >> 8) * weights[i] )
+// for i=0..1023. Uses MUL for squaring, USHR for >>8, SMULL/SMLAL2 with weights.
 // ============================================================================
 TEXT ·nnueV5SCReLUDot1024(SB), NOSPLIT, $0-24
-	MOVW $0, R0
-	MOVW R0, ret+16(FP)
-	RET
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
 
-TEXT ·nnueV5CReLUDotN(SB), NOSPLIT, $0-28
-	MOVW $0, R0
-	MOVW R0, ret+24(FP)
+	VEOR V0.B16, V0.B16, V0.B16  // V0 = zero
+	MOVD $255, R3
+	WORD $0x4E020C61              // DUP V1.8H, W3
+	VEOR V16.B16, V16.B16, V16.B16  // int32 accumulator 1
+	VEOR V17.B16, V17.B16, V17.B16  // int32 accumulator 2
+
+	MOVD $64, R2
+
+v5screlu1024_loop:
+	// First 8 elements
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	WORD $0x4E629C43              // MUL V3.8H, V2.8H, V2.8H  (square)
+	WORD $0x6F180463              // USHR V3.8H, V3.8H, #8     (>> 8)
+	VLD1 (R1), [V5.B16]          // weights
+	WORD $0x0E65C064              // SMULL V4.4S, V3.4H, V5.4H
+	WORD $0x4E658064              // SMLAL2 V4.4S, V3.8H, V5.8H
+	WORD $0x4EA48610              // ADD V16.4S, V16.4S, V4.4S
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	// Second 8 elements
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	WORD $0x4E629C43              // MUL V3.8H, V2.8H, V2.8H
+	WORD $0x6F180463              // USHR V3.8H, V3.8H, #8
+	VLD1 (R1), [V5.B16]
+	WORD $0x0E65C064              // SMULL V4.4S, V3.4H, V5.4H
+	WORD $0x4E658064              // SMLAL2 V4.4S, V3.8H, V5.8H
+	WORD $0x4EA48631              // ADD V17.4S, V17.4S, V4.4S
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE v5screlu1024_loop
+
+	WORD $0x4EB18610              // ADD V16.4S, V16.4S, V17.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C              // FMOV W12, S16
+	MOVW R12, ret+16(FP)
+
 	RET
 
 // ============================================================================
-// nnueV5SCReLUDotN stub — TODO: NEON implementation
+// nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
+//
+// Generic width CReLU dot product. count must be a multiple of 16.
+// 2x unrolled, count/16 iterations.
+// ============================================================================
+TEXT ·nnueV5CReLUDotN(SB), NOSPLIT, $0-28
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $4, R2, R2                // count / 16
+
+	VEOR V0.B16, V0.B16, V0.B16
+	MOVD $255, R3
+	WORD $0x4E020C61              // DUP V1.8H, W3
+	VEOR V16.B16, V16.B16, V16.B16
+	VEOR V17.B16, V17.B16, V17.B16
+
+v5creludotn_loop:
+	// First 8 elements
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x0E63C044              // SMULL V4.4S, V2.4H, V3.4H
+	WORD $0x4E638044              // SMLAL2 V4.4S, V2.8H, V3.8H
+	WORD $0x4EA48610              // ADD V16.4S, V16.4S, V4.4S
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	// Second 8 elements
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R1), [V3.B16]
+	WORD $0x0E63C044              // SMULL V4.4S, V2.4H, V3.4H
+	WORD $0x4E638044              // SMLAL2 V4.4S, V2.8H, V3.8H
+	WORD $0x4EA48631              // ADD V17.4S, V17.4S, V4.4S
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE v5creludotn_loop
+
+	WORD $0x4EB18610              // ADD V16.4S, V16.4S, V17.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C              // FMOV W12, S16
+	MOVW R12, ret+24(FP)
+
+	RET
+
+// ============================================================================
+// nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
+//
+// Exact SCReLU dot product for any width (multiple of 16).
+// Computes: sum = sum_i( clamp(acc[i], 0, 255)^2 * weights[i] )
+// Returns int64 (caller divides by QA=255).
+//
+// Per 8 elements: clamp, widen to int32, square, multiply by widened weights,
+// widen to int64 and accumulate.
+//
+// Register allocation:
+//   R0   = acc pointer
+//   R1   = weights pointer
+//   R2   = loop counter (count/8)
+//   V0   = zero
+//   V1   = 255 broadcast
+//   V2   = loaded acc values (8 int16)
+//   V3   = loaded weights (8 int16)
+//   V4,V5 = widened values (int32)
+//   V6   = product (int32)
+//   V7   = scratch for widening
+//   V16-V19 = int64 accumulators
 // ============================================================================
 TEXT ·nnueV5SCReLUDotN(SB), NOSPLIT, $0-32
-	MOVD $0, R0
-	MOVD R0, ret+24(FP)
+	MOVD acc+0(FP), R0
+	MOVD weights+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $3, R2, R2                // count / 8
+
+	VEOR V0.B16, V0.B16, V0.B16
+	MOVD $255, R3
+	WORD $0x4E020C61              // DUP V1.8H, W3
+	VEOR V16.B16, V16.B16, V16.B16  // int64 acc 0
+	VEOR V17.B16, V17.B16, V17.B16  // int64 acc 1
+	VEOR V18.B16, V18.B16, V18.B16  // int64 acc 2
+	VEOR V19.B16, V19.B16, V19.B16  // int64 acc 3
+
+v5screludotn_loop:
+	VLD1 (R0), [V2.B16]          // load 8 acc int16
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R1), [V3.B16]          // load 8 weights
+
+	// --- Low 4 elements ---
+	WORD $0x0F10A444              // SSHLL V4.4S, V2.4H, #0  (x[0..3] -> int32)
+	WORD $0x0F10A465              // SSHLL V5.4S, V3.4H, #0  (w[0..3] -> int32)
+	WORD $0x4EA49C86              // MUL V6.4S, V4.4S, V4.4S (x^2)
+	WORD $0x4EA59CC6              // MUL V6.4S, V6.4S, V5.4S (x^2 * w)
+	WORD $0x0F20A4C7              // SSHLL V7.2D, V6.2S, #0  (low 2 -> int64)
+	WORD $0x4EE78610              // ADD V16.2D, V16.2D, V7.2D
+	WORD $0x4F20A4C7              // SSHLL2 V7.2D, V6.4S, #0 (high 2 -> int64)
+	WORD $0x4EE78631              // ADD V17.2D, V17.2D, V7.2D
+
+	// --- High 4 elements ---
+	WORD $0x4F10A444              // SSHLL2 V4.4S, V2.8H, #0 (x[4..7] -> int32)
+	WORD $0x4F10A465              // SSHLL2 V5.4S, V3.8H, #0 (w[4..7] -> int32)
+	WORD $0x4EA49C86              // MUL V6.4S, V4.4S, V4.4S
+	WORD $0x4EA59CC6              // MUL V6.4S, V6.4S, V5.4S
+	WORD $0x0F20A4C7              // SSHLL V7.2D, V6.2S, #0
+	WORD $0x4EE78652              // ADD V18.2D, V18.2D, V7.2D
+	WORD $0x4F20A4C7              // SSHLL2 V7.2D, V6.4S, #0
+	WORD $0x4EE78673              // ADD V19.2D, V19.2D, V7.2D
+
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE v5screludotn_loop
+
+	// Horizontal sum: V16+V17+V18+V19 -> single int64
+	WORD $0x4EF18610              // ADD V16.2D, V16.2D, V17.2D
+	WORD $0x4EF38652              // ADD V18.2D, V18.2D, V19.2D
+	WORD $0x4EF28610              // ADD V16.2D, V16.2D, V18.2D
+	WORD $0x4EF0BE10              // ADDP V16.2D, V16.2D, V16.2D
+	WORD $0x9E66020C              // FMOV X12, D16
+	MOVD R12, ret+24(FP)
+
 	RET
 
 // ============================================================================
-// nnueV5PairwiseDotN stub — TODO: NEON implementation
+// nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count int) int64
+//
+// Pairwise dot product for v5 768pw architecture.
+// Computes: sum = sum_i( clamp(a[i],0,255) * clamp(b[i],0,255) * weights[i] )
+// for i=0..count-1. Returns int64 (caller divides by QA=255).
+//
+// Register allocation:
+//   R0   = accFirst pointer
+//   R1   = accSecond pointer
+//   R2   = weights pointer
+//   R3   = loop counter (count/8)
+//   V0   = zero
+//   V1   = 255 broadcast
+//   V2   = clamped a
+//   V3   = clamped b
+//   V5   = weights
+//   V4,V6,V7,V8 = scratch
+//   V16-V19 = int64 accumulators
 // ============================================================================
 TEXT ·nnueV5PairwiseDotN(SB), NOSPLIT, $0-40
-	MOVD $0, R0
-	MOVD R0, ret+32(FP)
+	MOVD accFirst+0(FP), R0
+	MOVD accSecond+8(FP), R1
+	MOVD weights+16(FP), R2
+	MOVD count+24(FP), R3
+	LSR $3, R3, R3                // count / 8
+
+	VEOR V0.B16, V0.B16, V0.B16
+	MOVD $255, R4
+	WORD $0x4E020C81              // DUP V1.8H, W4
+	VEOR V16.B16, V16.B16, V16.B16
+	VEOR V17.B16, V17.B16, V17.B16
+	VEOR V18.B16, V18.B16, V18.B16
+	VEOR V19.B16, V19.B16, V19.B16
+
+v5pwdotn_loop:
+	// Load and clamp a
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
+	// Load and clamp b
+	VLD1 (R1), [V3.B16]
+	WORD $0x4E606463              // SMAX V3.8H, V3.8H, V0.8H
+	WORD $0x4E616C63              // SMIN V3.8H, V3.8H, V1.8H
+	// Load weights
+	VLD1 (R2), [V5.B16]
+
+	// --- Low 4 elements ---
+	WORD $0x0F10A444              // SSHLL V4.4S, V2.4H, #0  (a[0..3] -> int32)
+	WORD $0x0F10A466              // SSHLL V6.4S, V3.4H, #0  (b[0..3] -> int32)
+	WORD $0x0F10A4A7              // SSHLL V7.4S, V5.4H, #0  (w[0..3] -> int32)
+	WORD $0x4EA69C84              // MUL V4.4S, V4.4S, V6.4S (a*b)
+	WORD $0x4EA79C84              // MUL V4.4S, V4.4S, V7.4S (a*b*w)
+	WORD $0x0F20A488              // SSHLL V8.2D, V4.2S, #0  (low 2 -> int64)
+	WORD $0x4EE88610              // ADD V16.2D, V16.2D, V8.2D
+	WORD $0x4F20A488              // SSHLL2 V8.2D, V4.4S, #0 (high 2 -> int64)
+	WORD $0x4EE88631              // ADD V17.2D, V17.2D, V8.2D
+
+	// --- High 4 elements ---
+	WORD $0x4F10A444              // SSHLL2 V4.4S, V2.8H, #0 (a[4..7] -> int32)
+	WORD $0x4F10A466              // SSHLL2 V6.4S, V3.8H, #0 (b[4..7] -> int32)
+	WORD $0x4F10A4A7              // SSHLL2 V7.4S, V5.8H, #0 (w[4..7] -> int32)
+	WORD $0x4EA69C84              // MUL V4.4S, V4.4S, V6.4S
+	WORD $0x4EA79C84              // MUL V4.4S, V4.4S, V7.4S
+	WORD $0x0F20A488              // SSHLL V8.2D, V4.2S, #0
+	WORD $0x4EE88652              // ADD V18.2D, V18.2D, V8.2D
+	WORD $0x4F20A488              // SSHLL2 V8.2D, V4.4S, #0
+	WORD $0x4EE88673              // ADD V19.2D, V19.2D, V8.2D
+
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	SUBS $1, R3, R3
+	BNE v5pwdotn_loop
+
+	// Horizontal sum
+	WORD $0x4EF18610              // ADD V16.2D, V16.2D, V17.2D
+	WORD $0x4EF38652              // ADD V18.2D, V18.2D, V19.2D
+	WORD $0x4EF28610              // ADD V16.2D, V16.2D, V18.2D
+	WORD $0x4EF0BE10              // ADDP V16.2D, V16.2D, V16.2D
+	WORD $0x9E66020C              // FMOV X12, D16
+	MOVD R12, ret+32(FP)
+
 	RET
