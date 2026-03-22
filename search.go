@@ -1548,7 +1548,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					}
 				}
 			}
-			if staticEval+60+lmrDepth*60 <= alpha {
+			if staticEval+50+lmrDepth*50 <= alpha {
 				b.UnmakeMove(move)
 				continue
 			}

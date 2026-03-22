@@ -2821,3 +2821,15 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Result**: **H0 at 270 games, -19.3 Elo.**
 - **Baseline**: d0bdf4f with v5 sb120 net
 - **Notes**: Both directions fail: -15*d² (-10) and -25*d² (-19). -20*d² confirmed optimal.
+
+### V5: Retry Futility 50+d*50 (MERGED — landscape shift win!)
+- **Change**: Tighten futility margin from 60+d*60 to 50+d*50.
+- **Result**: **H1 at 1665 games, +10.2 Elo ±9.7, LOS 98.1%.** Tight SPRT bounds: elo0=-2, elo1=8.
+- **Previous result**: H0 at 699 games, -5.5 Elo (before bad noisy, SEE cap, RFP depth 8 changes).
+- **Notes**: Confirms landscape shift hypothesis. The search tree changes from other tightening patches made tighter futility viable. This is why periodic retesting matters.
+
+### V5: Retry LMP Depth 9 (REJECTED again)
+- **Result**: **H0 at 650 games, -16.0 Elo.** Landscape shift didn't help LMP.
+
+### V5: Retry Razoring Depth 3 (heading H0)
+- **Status**: -16.2 Elo at 613 games, heading H0.
