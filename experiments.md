@@ -2748,6 +2748,18 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
 
+### V5: LMR Quiet C=1.25 Retry (REJECTED)
+- **Change**: Tighten quiet LMR from C=1.30 to C=1.25. Retry after landscape shift.
+- **Result**: **H0 at 165 games, -35.9 Elo.** Even worse than before (-7).
+- **Baseline**: 414ea5c with v5 sb120 net
+- **Notes**: C=1.30 is robust. The landscape shift made C=1.25 worse — tighter pruning elsewhere means the remaining quiet moves at each node are more important, not less.
+
+### V5: Cap LMR Divisor 4000 (REJECTED)
+- **Change**: Tighter capture LMR history adjustment: /5000 → /4000.
+- **Result**: **H0 at 272 games, -19.2 Elo.**
+- **Baseline**: 414ea5c with v5 sb120 net
+- **Notes**: /4000 over-adjusts capture reductions. /5000 matches the quiet LMR divisor and is confirmed optimal.
+
 ### V5: Bad Noisy Depth 5 Retry (REJECTED)
 - **Change**: Extend bad noisy futility from depth<=4 to depth<=5. Retry with margin 50.
 - **Result**: **H0 at 317 games, -17.6 Elo.**
