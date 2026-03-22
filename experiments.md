@@ -6,6 +6,23 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 
 **Net convention**: All experiments use the checked-in `net.nnue`, referenced by commit hash.
 
+## Retry Candidates (Tighter SPRT Bounds)
+
+Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with our standard elo0=-5/elo1=15 bounds. These may be real ~+3-5 Elo gains that need elo0=-2/elo1=8 (or similar) to resolve. Small gains compound — five +4 patches = +20 Elo.
+
+| Experiment | Elo | Games | Notes |
+|---|---|---|---|
+| LMP depth 9 | ~+4 | ~1500 | Extend LMP from depth<=8 to depth<=9. Persistent +3-5 throughout |
+| NMP Divisor 170 | +2.7 | 3963 | NMP eval divisor 200→170. 75% LOS, massive game count |
+| LMP 4+d² | +2.3 | 2453 | Already flagged as retest candidate. +3-5 / 75-85% LOS |
+| Futility 50+d*50 | +1.9 | 2329 | Just barely too tight. Persistent +3-5 early |
+| NMP Verify Depth 16 | +1.7 | 2045 | 16 vs 14 barely different. Could stack with other NMP changes |
+| Opponent Material LMR <4 | +1.9 | 2710 | oppNonPawn < 4 instead of < 3. 67% LOS |
+| TT Near-Miss Margin 96 | +1.6 | 2590 | Widen from 80 to 96. 63% LOS |
+| Mate Distance Pruning | +0.7 | 1559 | Universal technique. Might help at longer TC |
+| NMP Deep Reduction d>=14 | +0.6 | 1657 | Already flagged. +4-9 for first 1000 games |
+| Threat-Aware SEE Quiet | +0.8 | 1675 | Already flagged. +5-12 early then regressed |
+
 ---
 
 ## 2026-03-09: Correction History v1
