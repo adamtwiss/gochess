@@ -134,7 +134,7 @@ Pieces 1-12 (Empty=0). White 1-6 (Pawn..King), Black 7-12. Use `pieceOf(WhiteKni
 - `IsLegal(m, pinned, inCheck)` uses pin-aware fast paths; `PinnedAndCheckers()` called once per node
 
 ### Search Overview
-Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features: null-move pruning, reverse futility, futility, LMR (separate quiet/capture tables, threat-aware adjustments), LMP, SEE pruning, ProbCut, history pruning, IIR, singular extensions, recapture extensions, alpha-reduce (reduce after alpha raise), failing heuristic (aggressive pruning when eval is deteriorating), fail-high score blending (dampen inflated cutoff scores). Quiescence with SEE filtering, evasion handling, and beta blending. Move ordering: TT move -> good captures -> killers -> counter-move -> quiets -> bad captures. History tables: main history, capture history, continuation history, pawn-hash correction history.
+Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features: null-move pruning, reverse futility, futility, LMR (separate quiet/capture tables, threat-aware adjustments), LMP, SEE pruning, ProbCut, history pruning, IIR, hindsight reduction (reduce quiet positions where both evals are high), singular extensions, recapture extensions, alpha-reduce (reduce after alpha raise), failing heuristic (aggressive pruning when eval is deteriorating), fail-high score blending (dampen inflated cutoff scores). Quiescence with SEE filtering, evasion handling, and beta blending. Move ordering: TT move -> good captures -> killers -> counter-move -> quiets -> bad captures. History tables: main history, capture history, continuation history, pawn-hash correction history.
 
 ### Lazy SMP
 All threads share only the TT (lockless via XOR-verified packed atomics). Board, SearchInfo, pawn table, and NNUE accumulator stack are per-thread.
@@ -145,7 +145,9 @@ Two architectures supported, selected by network file version:
 - **v4 (HalfKA deep)**: 12288 → 2×256 → 32 → 32 → 8. Two hidden layers with int8 quantized layer 1 (VPMADDUBSW/SMULL+SADALP for doubled throughput). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. 8 material-based output buckets.
 - **v5 (Bullet shallow wide)**: (12288 → N)×2 → 1×8. Single hidden layer, dynamic width (1024/1536/any, auto-detected from file). Supports CReLU and SCReLU activations, optional pairwise multiplication (halves effective width). Quantization: QA=255, QB=64. Designed for Bullet GPU trainer.
 
-Both share: lazy accumulator (MakeMove stores deltas, Materialize() applies on demand), king moves trigger full recompute, incremental updates skip kings. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64).
+Both share: lazy accumulator (MakeMove stores deltas, Materialize() applies on demand), incremental updates skip kings. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64). Width-generic SIMD kernels (`nnueAccAddN`, `nnueAccSubN`, `nnueAccSubAddN`, `nnueAccCopySubAddN`, `nnueAccCopySubSubAddN`) process the full hidden width in a single call, avoiding per-256-chunk function call overhead.
+
+Finny table: per-perspective `[NNUEKingBuckets][mirror]` cache of accumulated weights and piece bitboards. On king bucket changes, `RefreshAccumulator` diffs cached vs current piece bitboards and applies only changed features (~5 delta ops vs ~30 full recompute ops). Invalidated on SetFEN/Reset. Deep-copied for Lazy SMP threads.
 
 ### Training Data Formats
 - **Binpack** (`.bin`): Fixed-size 32-byte records, no file header. Stores packed board position (occupancy bitmap + piece nibbles), score (int16), result (uint8). Files can be concatenated with `cat`. Features extracted at training time. Block-shuffled reader (64KB = 2048 records/block) for efficient I/O.

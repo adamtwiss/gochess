@@ -1128,9 +1128,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// extract the opponent's best reply from the TT. -1 = no threat detected.
 	threatSq := Square(-1)
 
-	// Hindsight reduction: when both sides think the position is quiet
-	// (parent's eval + current eval are both positive), reduce depth by 1.
-	// Source: Alexandria (reduction>=1 && (ss-1)->staticEval + ss->staticEval >= 155)
+	// Hindsight reduction: when both sides' evals sum above threshold,
+	// the position is likely quiet — reduce depth by 1.
+	// Note: can stack with IIR above for a total -2 reduction. This
+	// combination was validated by SPRT (+9.4 Elo) and is intentional.
 	if !inCheck && ply >= 1 && depth >= 3 &&
 		info.StaticEvals[ply-1] > -MateScore+100 && staticEval > -Infinity {
 		evalSum := info.StaticEvals[ply-1] + staticEval

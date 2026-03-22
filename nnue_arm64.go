@@ -110,8 +110,7 @@ func nnueAccSubAddN(acc *int16, oldW *int16, newW *int16, count int) {
 	o := unsafe.Slice(oldW, count)
 	n := unsafe.Slice(newW, count)
 	for off := 0; off < count; off += 256 {
-		nnueAccSub256(&a[off], &o[off])
-		nnueAccAdd256(&a[off], &n[off])
+		nnueAccSubAdd256(&a[off], &o[off], &n[off])
 	}
 }
 
