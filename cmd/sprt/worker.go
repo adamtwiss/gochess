@@ -330,7 +330,12 @@ func (w *Worker) resolveNNUEPath(path string) string {
 	if filepath.IsAbs(path) {
 		return path
 	}
-	return filepath.Join(w.repoDir, path)
+	// Always return absolute path so cutechess engines can find the file
+	abs, err := filepath.Abs(filepath.Join(w.repoDir, path))
+	if err != nil {
+		return filepath.Join(w.repoDir, path)
+	}
+	return abs
 }
 
 func (w *Worker) buildCutechessArgs(claim *WorkClaim, newBin, baseBin, openingsFile string) []string {
