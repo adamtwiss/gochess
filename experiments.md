@@ -2593,6 +2593,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: Pawn Push LMR Relief (REJECTED)
+- **Change**: Reduce LMR by 1 for pawn pushes to rank 5+ (approaching promotion).
+- **Result**: **H0 at 450 games, -10.0 Elo.**
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Too broad — history already captures which pawn pushes are good.
+
 ### V5: Eval Monotonicity Reduction (REJECTED)
 - **Change**: When eval has been consistently declining over 3 measurements (ply-4 > ply-2 > ply), reduce depth by 1. Novel idea: use eval trend, not just two-point comparison.
 - **Result**: **H0 at 411 games, -12.7 Elo.**
