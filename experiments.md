@@ -2397,6 +2397,18 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: History Pruning Threshold 1000 (REJECTED)
+- **Change**: Tighten history pruning from `-1500*depth` to `-1000*depth`.
+- **Result**: **H0 at 474 games, -11.0 Elo.**
+- **Baseline**: 77c0cd7 (with hist-prune 1500) with v5 sb120 net
+- **Notes**: Too aggressive — prunes moves that still have tactical value. Bracket: 1000 (H0), 1500 (H1), 2000 (H0). 1500 confirmed optimal.
+
+### V5: History Pruning Threshold 2000 Reverse (REJECTED)
+- **Change**: Loosen history pruning back from `-1500*depth` to `-2000*depth` (reverse of merged change).
+- **Result**: **H0 at 570 games, -6.7 Elo.**
+- **Baseline**: 77c0cd7 (with hist-prune 1500) with v5 sb120 net
+- **Notes**: Confirms 1500 is better than 2000. Full bracket: 1000 (H0), **1500 (H1, +14.7)**, 2000 (H0). Peak at 1500.
+
 ### V5: History Pruning Threshold 1500 (MERGED)
 - **Change**: Tighten history pruning threshold from `-2000*depth` to `-1500*depth`. Prunes more quiet moves with bad history.
 - **Result**: **H1 at 687 games, +14.7 Elo ±15.7, LOS 96.6%.** SPRT bounds: elo0=-5, elo1=15.
