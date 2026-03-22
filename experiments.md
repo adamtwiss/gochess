@@ -2608,6 +2608,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 40c8eb4 with v5 sb120 net
 - **Notes**: LMP limit is robust to landscape changes. `3+d²` confirmed optimal across retests.
 
+### V5: RFP Depth Gate 9 (REJECTED)
+- **Change**: Extend RFP from depth<=8 to depth<=9.
+- **Result**: **H0 at 564 games, -6.8 Elo.**
+- **Baseline**: 9c10566 with v5 sb120 net
+- **Notes**: Depth 9 positions are too complex for static eval pruning. Bracket: 7 (old), **8 (H1, +37.7)**, 9 (H0). Peak at 8.
+
 ### V5: Futility 50+d*50 Retry (REJECTED)
 - **Change**: Tighten futility from 60+d*60 to 50+d*50. Retry after RFP/badnoisy landscape shift.
 - **Result**: **H0 at 577 games, -7.8 Elo.**
