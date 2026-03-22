@@ -2594,6 +2594,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: NMP Dampening (score+beta)/2 (REJECTED)
+- **Change**: Stronger NMP score dampening: `(score*2+beta)/3` → `(score+beta)/2`.
+- **Result**: **H0 at 513 games, -10.2 Elo.**
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: More dampening makes NMP cutoff scores too conservative, causing the engine to miss good cutoffs. `(score*2+beta)/3` is well-calibrated.
+
 ### V5: TT Dampening Depth-Adaptive v1 (REJECTED → RETRY CANDIDATE)
 - **Change**: Replace fixed `(3*score+beta)/4` with `(score*ttDepth+beta)/(ttDepth+1)`. Trust deeper TT entries more.
 - **Result**: **H0 at 1335 games, -0.5 Elo.** Showed +6-8 for 300+ games before fading.
