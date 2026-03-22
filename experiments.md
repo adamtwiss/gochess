@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: Hindsight Threshold 250 (REJECTED)
+- **Change**: Less aggressive hindsight reduction: threshold 200 → 250.
+- **Result**: **H0 at 672 games, -5.2 Elo.**
+- **Baseline**: 5c6dbba (with hindsight 200) with v5 sb120 net
+- **Notes**: Full bracket complete: 100 (H0, -8.5), 150 (H1, +9.4), 200 (H1, +16.2), 250 (H0, -5.2). Peak confirmed at 200 — reducing too rarely (250) misses beneficial pruning opportunities.
+
 ### V5: Hindsight Threshold 200 (MERGED)
 - **Change**: Less aggressive hindsight reduction: threshold 150 → 200. Reduces only in very quiet positions.
 - **Result**: **H1 at 664 games, +16.2 Elo ±16.7, LOS 97.1%.** SPRT bounds: elo0=-5, elo1=15.
