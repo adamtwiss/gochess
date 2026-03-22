@@ -2397,11 +2397,23 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: NMP Verify Depth 16 (REJECTED)
+- **Change**: Raise NMP verification from depth >= 14 to depth >= 16.
+- **Result**: **H0 at 2045 games, +1.7 Elo.** Dead flat.
+- **Baseline**: 3856669 (with NMP verify 14) with v5 sb120 net
+- **Notes**: Bracket: 12 (old), 14 (H1, +27.9), 16 (H0), never (H0). Depth 14 confirmed optimal.
+
+### V5: NMP No Verification (REJECTED)
+- **Change**: Remove NMP verification search entirely (was `if depth >= 14`).
+- **Result**: **H0 at 1478 games, +0.2 Elo.** Dead flat.
+- **Baseline**: 3856669 (with NMP verify 14) with v5 sb120 net
+- **Notes**: Verification at depth >= 14 rarely fires at 10+0.1s TC. Keeping it is safer for longer TCs.
+
 ### V5: Futility 50+d*50 (REJECTED)
 - **Change**: Tighten futility margin from 60+d*60 to 50+d*50.
 - **Result**: **H0 at 2329 games, +1.9 Elo.** Dead flat.
 - **Baseline**: 323fd4d (pre-hindsight-200/NMP-14) with v5 sb120 net
-- **Notes**: Was also tested on hercules with similar flat result. 60+d*60 is well-calibrated. Bracket: 50+d*50 (H0), 60+d*60 (current), 80+d*80 (old). Margin confirmed optimal.
+- **Notes**: 60+d*60 confirmed optimal. Bracket: 50+d*50 (H0), 60+d*60 (current), 80+d*80 (old).
 
 ### V5: Hindsight Threshold 250 (REJECTED)
 - **Change**: Less aggressive hindsight reduction: threshold 200 → 250.
