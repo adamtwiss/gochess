@@ -19,6 +19,7 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 | NMP Verify Depth 16 | +1.7 | 2045 | 16 vs 14 barely different. Could stack with other NMP changes |
 | Opponent Material LMR <4 | +1.9 | 2710 | oppNonPawn < 4 instead of < 3. 67% LOS |
 | TT Near-Miss Margin 96 | +1.6 | 2590 | Widen from 80 to 96. 63% LOS |
+| LMP Depth 9 | +0.6 | 1615 | Extend LMP from depth<=8 to depth<=9. Persistent +3-5 early |
 | Mate Distance Pruning | +0.7 | 1559 | Universal technique. Might help at longer TC |
 | NMP Deep Reduction d>=14 | +0.6 | 1657 | Already flagged. +4-9 for first 1000 games |
 | Threat-Aware SEE Quiet | +0.8 | 1675 | Already flagged. +5-12 early then regressed |
@@ -2450,7 +2451,8 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 65cf9d1 with v5 sb120 net
 - **Notes**: R=4 is too aggressive for our search framework — more null-move cutoffs are incorrect, especially in positions with zugzwang risk. Our R=3+depth/3 formula is well-calibrated. Previously tested NMP divisor changes (200→150, 200→170) which also failed.
 
-### V5: LMP Depth 9 (IN PROGRESS)
+### V5: LMP Depth 9 (REJECTED → RETRY CANDIDATE)
+- **Result**: **H0 at 1615 games, +0.6 Elo.** Dead flat at wide bounds but persistent +3-5 early.
 - **Change**: Extend LMP from `depth <= 8` to `depth <= 9`.
 - **Status**: 476 games, +11 Elo. Holding positive.
 
