@@ -1720,22 +1720,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				reduction = lmrTableCap[d][m]
 
 				if reduction > 0 {
-					// Adjust by capture history: good captures reduce less, bad more
+					// Continuous capture history adjustment (mirrors quiet LMR pattern)
 					piece := b.Squares[move.From()]
 					cpt := capturedType(b.Squares[move.To()])
 					if move.Flags() == FlagEnPassant {
 						cpt = 1 // pawn
 					}
 					captHistVal := info.CaptHistory[piece][move.To()][cpt]
-
-					// Positive capture history: reduce less
-					if captHistVal > 2000 {
-						reduction--
-					}
-					// Negative capture history: reduce more
-					if captHistVal < -2000 {
-						reduction++
-					}
+					reduction -= int(captHistVal / 5000)
 
 					if reduction < 0 {
 						reduction = 0

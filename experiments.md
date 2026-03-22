@@ -2596,6 +2596,18 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: Cap LMR Continuous History (MERGED)
+- **Change**: Replace binary capture LMR history (±2000 threshold → ±1 reduction) with continuous `/5000` divisor, matching the quiet LMR pattern.
+- **Result**: **H1 at 1243 games, +10.6 Elo ±12.0, LOS 95.8%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 920ac92 (pre-retries) with v5 sb120 net
+- **Notes**: The binary ±2000 threshold was too coarse — continuous adjustment gives finer-grained reduction that matches capture quality better. Same divisor (5000) as quiet LMR works well.
+
+### V5: LMP 4+d² Retry (REJECTED)
+- **Change**: Loosen LMP from `3+d²` to `4+d²`. Retry after landscape shift.
+- **Result**: **H0 at 716 games, -4.9 Elo.**
+- **Baseline**: 40c8eb4 with v5 sb120 net
+- **Notes**: LMP limit is robust to landscape changes. `3+d²` confirmed optimal across retests.
+
 ### V5: Futility 50+d*50 Retry (REJECTED)
 - **Change**: Tighten futility from 60+d*60 to 50+d*50. Retry after RFP/badnoisy landscape shift.
 - **Result**: **H0 at 577 games, -7.8 Elo.**
