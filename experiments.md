@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: QS Stand-Pat Blend Tighter (REJECTED)
+- **Change**: Less dampening on QS stand-pat fail-high: `(bestScore+beta)/2` → `(2*bestScore+beta)/3`.
+- **Result**: **H0 at 266 games, -17.0 Elo.**
+- **Baseline**: 6e4d4a9 with v5 sb120 net
+- **Notes**: The current 50/50 blend is well-calibrated. Less dampening lets noisy QS scores through, hurting search accuracy. Our QS blend was +4.9 Elo when added; the 50/50 ratio is the sweet spot.
+
 ### V5: SEE Capture Pruning Depth 8 (REJECTED)
 - **Change**: Extend SEE capture pruning from `depth <= 6` to `depth <= 8`.
 - **Result**: **H0 at 696 games, -3.5 Elo.** Dead flat.
