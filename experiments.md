@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: Remove TT Score Dampening (REJECTED)
+- **Change**: Remove TT lower-bound score dampening `(3*score+beta)/4`. Test if still needed after aspiration/FH blending changes.
+- **Result**: **H0 at 153 games, -43.4 Elo.** Catastrophic.
+- **Baseline**: 15666ab with v5 sb120 net
+- **Notes**: TT dampening is still critical (+22 Elo when added, -43 when removed). The aspiration contractions and fail-high blending don't replace it — they operate at different points in the search. TT dampening prevents score inflation from stale lower-bound entries.
+
 ### V5: IIR Depth Gate 5 (REJECTED)
 - **Change**: Lower IIR gate from `depth >= 6` to `depth >= 5`.
 - **Result**: **H0 at 357 games, -15.6 Elo.**
