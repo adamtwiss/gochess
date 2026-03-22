@@ -11,11 +11,12 @@ go test -run TestX         # Run a specific test
 go test -bench .           # Run benchmarks
 go test -short             # Run unit tests only (skips slow EPD suites)
 
-go build -o chess ./cmd/chess    # Build CLI binary
+go build -o chess ./cmd/chess    # Build engine binary
 go build -o tuner ./cmd/tuner   # Build Texel tuner binary
+./chess fetch-net                                       # Download NNUE net from GitHub releases
 ./chess -e testdata/wac.epd -t 5000 -n 20              # Run EPD test suite
 ./chess -e testdata/wac.epd -t 5000 -n 20 -threads 4   # Run EPD with Lazy SMP (4 threads)
-./chess -uci                                            # Start UCI mode
+./chess                                                 # Start UCI mode (default)
 ./chess -benchmark -t 200                               # Run multi-suite benchmark (quick)
 ./chess -benchmark -t 200 -save base.json               # Save benchmark results to JSON
 ./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
@@ -39,8 +40,8 @@ cat a.bin b.bin > combined.bin                                               # C
 ./tuner compare-nets -net1 a.nnue -net2 b.nnue                              # Compare two networks
 ./tuner convert-net -input old.nnue -output new.nnue                         # Convert net versions
 
-./chess -nnue net.nnue -uci                             # UCI with NNUE
-./chess -syzygy /path/to/tablebases -uci                # UCI with Syzygy tablebases
+./chess -nnue net.nnue                                   # UCI with specific NNUE net
+./chess -syzygy /path/to/tablebases                      # UCI with Syzygy tablebases
 
 # Self-play testing with cutechess-cli (ALWAYS use these patterns)
 cutechess-cli \
@@ -57,8 +58,8 @@ cutechess-cli \
 # SPRT testing (stops early when statistically significant):
 cutechess-cli \
   -tournament gauntlet \
-  -engine name=GoChess-new cmd=./chess arg=-uci \
-  -engine name=GoChess-old cmd=./chess.older arg=-uci \
+  -engine name=GoChess-new cmd=./chess proto=uci \
+  -engine name=GoChess-old cmd=./chess.older proto=uci \
   -each tc=0/10+0.1 option.Hash=64 \
   -rounds 5000 -concurrency 8 \
   -sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 \
@@ -68,10 +69,10 @@ cutechess-cli \
 
 ## Project Structure
 
-Chess engine in Go using bitboard representation. Core library is `package chess` in the root; CLI is `cmd/chess/`.
+Chess engine in Go using bitboard representation. Core library is `package chess` in the root; entry point is `cmd/chess/`. NNUE net files are hosted in GitHub releases (not committed to git); `net.txt` references the current net URL.
 
 ```
-cmd/chess/main.go    CLI entry point (EPD runner, UCI mode, book builder, interactive CLI)
+cmd/chess/main.go    Entry point (UCI mode, EPD runner, book builder, fetch-net)
 cmd/tuner/main.go    Texel tuner CLI (selfplay data generation, parameter optimization)
 testdata/            EPD suites (wac, ecm, arasan, lct, sbd, etc.), noob_3moves.epd, 2600.pgn
 board.go             Board struct, piece types, FEN parsing
@@ -94,7 +95,7 @@ pgn.go               PGN game parsing
 benchmark.go         Multi-suite benchmark with JSON save/compare
 book.go / polyglot.go  Polyglot opening book (build and load)
 uci.go               UCI protocol implementation
-cli.go               Interactive CLI engine
+netload.go           NNUE net loading from net.txt (URL resolution, fetch-net support)
 selfplay.go          Self-play game generation for tuning data (binpack output)
 rescore.go           Rescore .bin training data with deeper search
 binpack.go           Fixed-size binary training data format (32 bytes/record, no header)
@@ -177,7 +178,7 @@ Via bundled Fathom (CGO). Root: DTZ probe before search. Interior nodes: WDL pro
 - NNUE v5 hidden size is auto-detected from file — do not hardcode dimensions
 - Syzygy `tbchess.inc` is `#include`d by `tbprobe.c` — must NOT be compiled separately
 - Syzygy WDL probes require `HalfmoveClock == 0`; DTZ probes accept any value
-- **cutechess-cli**: Each flag and value must be separate `arg=` params (`arg=-nnue arg=/path/to/net.nnue`). `-uci` flag NOT needed (auto-detected). Use absolute paths
+- **cutechess-cli**: Each flag and value must be separate `arg=` params (`arg=-nnue arg=/path/to/net.nnue`). Use `proto=uci`. Use absolute paths
 
 ## Search/Eval Optimization Workflow
 

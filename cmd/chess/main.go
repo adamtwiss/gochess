@@ -54,16 +54,14 @@ func main() {
 	benchSave := flag.String("save", "", "save benchmark results to JSON file")
 	benchCompare := flag.String("compare", "", "compare against saved benchmark JSON file")
 
-	// Mode flags
-	forceUCI := flag.Bool("uci", false, "force UCI protocol mode")
-
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n       chess fetch-net\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n       chess fetch-net\n\nWith no flags, starts in UCI protocol mode.\n\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nSubcommands:\n")
 		fmt.Fprintf(os.Stderr, "  fetch-net                                      # download NNUE net from net.txt URL\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  chess -uci                                     # UCI mode\n")
+		fmt.Fprintf(os.Stderr, "  chess                                              # UCI mode\n")
+		fmt.Fprintf(os.Stderr, "  chess fetch-net                                    # download NNUE net\n")
 		fmt.Fprintf(os.Stderr, "  chess -e testdata/wac.epd -t 5000 -n 20 -threads 4\n")
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200                            # run benchmark\n")
 		fmt.Fprintf(os.Stderr, "  chess -benchmark -t 200 -save base.json            # save results\n")
@@ -191,10 +189,7 @@ func main() {
 		return
 	}
 
-	// UCI mode (always — no more interactive CLI)
-	if !*forceUCI {
-		// Still enter UCI even without -uci flag
-	}
+	// UCI mode (default when no subcommand given)
 	engine := chess.NewUCIEngine()
 	if book != nil {
 		engine.SetBook(book)

@@ -16,6 +16,16 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Full UCI protocol support for use with chess GUIs
 - EPD test suite runner (WAC, ECM, Arasan, Eigenmann, LCT, SBD, STS, and more)
 
+## Quick Start
+
+```bash
+go build -o chess ./cmd/chess
+./chess fetch-net
+./chess
+```
+
+This builds the engine, downloads the current NNUE network from GitHub releases, and starts UCI mode.
+
 ## Building
 
 Requires Go 1.21 or later and a C compiler (for Syzygy tablebase support via CGO).
@@ -27,19 +37,27 @@ go build -o tuner ./cmd/tuner   # Texel tuner
 
 The engine bundles the [Fathom](https://github.com/jdart1/Fathom) C library for Syzygy tablebase probing. This is compiled automatically via CGO during `go build` — no separate build step is needed. CGO is enabled by default in Go; if you've disabled it (`CGO_ENABLED=0`), the engine will still build but without tablebase support.
 
+### NNUE Network
+
+The NNUE network file is managed via GitHub releases (not committed to git). The `fetch-net` subcommand downloads the current network referenced by `net.txt`:
+
+```bash
+./chess fetch-net
+```
+
+This saves the network file next to the binary. The engine auto-loads it on startup.
+
 ## Usage
 
-The engine has five modes of operation: interactive CLI (default), UCI mode, EPD test suite runner, benchmark, and opening book builder.
+The engine has four modes of operation: UCI mode (default), EPD test suite runner, benchmark, and opening book builder.
 
 ### UCI Mode
 
-Start the engine in UCI protocol mode for use with a chess GUI:
+With no flags, the engine starts in UCI protocol mode:
 
 ```bash
-./chess -uci
+./chess
 ```
-
-The engine also enters UCI mode automatically when stdin is not a terminal (e.g., when launched by a GUI).
 
 #### UCI Options
 
@@ -48,7 +66,7 @@ The engine also enters UCI mode automatically when stdin is not a terminal (e.g.
 | `Hash` | 64 | Transposition table size in MB |
 | `Threads` | 1 | Number of search threads (Lazy SMP) |
 | `Ponder` | true | Enable pondering |
-| `UseNNUE` | true | Enable NNUE evaluation (auto-loads `net.nnue` from working directory) |
+| `UseNNUE` | true | Enable NNUE evaluation (auto-loads net from working directory) |
 | `NNUEFile` | | Path to NNUE network file (`.nnue`); overrides auto-detection |
 | `MoveOverhead` | 50 | Move overhead in milliseconds (accounts for communication delay) |
 | `OwnBook` | true | Use the engine's opening book |
@@ -69,9 +87,10 @@ The engine speaks the [UCI protocol](https://www.chessprogramming.org/UCI) and w
 To add the engine to your GUI:
 
 1. Build the binary with `go build -o chess ./cmd/chess`
-2. In your GUI, find the engine management settings (usually under "Engines" or "Engine Management")
-3. Add a new engine and point it to the `chess` binary
-4. The GUI will communicate with the engine over UCI automatically
+2. Download the NNUE net with `./chess fetch-net`
+3. In your GUI, find the engine management settings (usually under "Engines" or "Engine Management")
+4. Add a new engine and point it to the `chess` binary
+5. The GUI will communicate with the engine over UCI automatically
 
 To use an opening book with a GUI, either set the `OwnBook` and `BookFile` UCI options through the GUI's engine configuration, or start the engine with the `-book` flag. Any standard Polyglot `.bin` book file will work:
 
@@ -147,7 +166,7 @@ The tuner optimizes ~1268 evaluation parameters (material values, piece-square t
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -classical   # Use classical eval
 ```
 
-Selfplay uses NNUE evaluation by default (auto-loads `net.nnue` from the working directory). Use `-classical` to fall back to handcrafted eval, or `-nnue path/to/net.nnue` to specify a network file.
+Selfplay uses NNUE evaluation by default (auto-loads the net from the working directory). Use `-classical` to fall back to handcrafted eval, or `-nnue path/to/net.nnue` to specify a network file.
 
 This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the search score and game result in binpack format (`.bin`). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
 
@@ -163,7 +182,7 @@ Use `-time` for time-limited or `-depth` for depth-limited search (mutually excl
 | `-hash` | 16 | TT size in MB per game |
 | `-openings` | `testdata/noob_3moves.epd` | EPD file with starting positions |
 | `-output` | `training.bin` | Output file for training data |
-| `-nnue` | | NNUE network file (default: auto-load `net.nnue`) |
+| `-nnue` | | NNUE network file (default: auto-load from net.txt) |
 | `-classical` | false | Disable NNUE, use classical eval only |
 
 If neither `-time` nor `-depth` is specified, defaults to `-time 200`. With `-time 200 -concurrency 6`, expect roughly 1-2 games/second. 20K games produces ~1-2M training positions.
@@ -281,12 +300,12 @@ You can train on a subset first, then fine-tune on the full dataset:
 ./tuner nnue-train -data training.bin -resume net-v1.nnue -epochs 100 -lr 0.005 -output net-v2.nnue
 ```
 
-#### Using NNUE in UCI mode
+#### Using NNUE
 
-The engine auto-loads `net.nnue` from the working directory on startup. To use a different network:
+The engine auto-loads the NNUE net referenced by `net.txt` on startup. To use a different network:
 
 ```bash
-./chess -nnue /path/to/custom.nnue -uci
+./chess -nnue /path/to/custom.nnue
 ```
 
 Use `-classical` to disable NNUE and use the handcrafted eval. You can also toggle NNUE at runtime via UCI options:
@@ -295,24 +314,6 @@ Use `-classical` to disable NNUE and use the handcrafted eval. You can also togg
 setoption name UseNNUE value true
 setoption name NNUEFile value /path/to/net.nnue
 ```
-
-#### Using NNUE in the interactive CLI
-
-NNUE is enabled by default when `net.nnue` is present. Use `-classical` for handcrafted eval:
-
-```bash
-./chess              # Auto-loads net.nnue if present
-./chess -classical   # Force classical eval
-```
-
-In the interactive CLI, additional NNUE commands are available:
-
-| Command | Description |
-|---------|-------------|
-| `nnue load <file>` | Load a network file |
-| `nnue on` | Enable NNUE evaluation |
-| `nnue off` | Switch back to classical evaluation |
-| `nnue eval` | Show NNUE evaluation of the current position |
 
 #### Performance
 
@@ -350,7 +351,7 @@ mkdir -p /path/to/tablebases
 Via CLI flag:
 
 ```bash
-./chess -syzygy /path/to/tablebases -uci
+./chess -syzygy /path/to/tablebases
 ```
 
 Via UCI option (from a GUI or at runtime):
