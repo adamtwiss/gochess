@@ -20,6 +20,8 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 | Opponent Material LMR <4 | +1.9 | 2710 | oppNonPawn < 4 instead of < 3. 67% LOS |
 | TT Near-Miss Margin 96 | +1.6 | 2590 | Widen from 80 to 96. 63% LOS |
 | TT Damp Depth-Adaptive v1 | -0.5 | 1335 | Trust deeper TT entries more. Showed +6-8 for 300 games |
+| TT Damp Depth-Adaptive v2 | +0.2 | 1557 | Floor-3 variant. Dead flat |
+| FH Blend Depth Gate 4 | ~+3 | ~1900 | Disable FH blending at depth 3. Persistent +3 |
 | LMP Depth 9 | +0.6 | 1615 | Extend LMP from depth<=8 to depth<=9. Persistent +3-5 early |
 | Mate Distance Pruning | +0.7 | 1559 | Universal technique. Might help at longer TC |
 | NMP Deep Reduction d>=14 | +0.6 | 1657 | Already flagged. +4-9 for first 1000 games |
@@ -2611,6 +2613,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Result**: **H0 at 1335 games, -0.5 Elo.** Showed +6-8 for 300+ games before fading.
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: The idea is sound — deep TT entries ARE more reliable. But the formula over-dampens shallow entries (ttDepth=1: 50% vs current 75%). Try v2 with floor at 3 (running separately). Retry candidate at tighter bounds.
+
+### V5: TT Dampening Depth-Adaptive v2 Floor 3 (REJECTED → RETRY CANDIDATE)
+- **Change**: Like v1 but floor ttDepth at 3: `(score*max(ttDepth,3)+beta)/(max(ttDepth,3)+1)`.
+- **Result**: **H0 at 1557 games, +0.2 Elo.** Dead flat.
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Floor fixes the over-dampening but deep-entry benefit is too small. Both v1/v2 are retry candidates.
 
 ### V5: SEE Quiet Threshold -15*d² (REJECTED)
 - **Change**: Less aggressive SEE quiet pruning: threshold from `-20*d²` to `-15*d²`.
