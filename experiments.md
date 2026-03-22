@@ -2596,6 +2596,18 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: QS Delta Buffer 280 (MERGED)
+- **Change**: Widen QS delta pruning buffer from 240 to 280. Less aggressive delta pruning preserves more captures.
+- **Result**: **H1 at 1173 games, +11.0 Elo ±12.3, LOS 96.0%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Previous change 200→240 was +31.2 Elo. Further widening to 280 gains +11 more. The NNUE eval benefits from seeing more capture lines in QS. Try 320 next to bracket.
+
+### V5: FH Blend Depth Gate 4 (REJECTED → RETRY CANDIDATE)
+- **Change**: Only apply fail-high score blending at depth >= 4 instead of depth >= 3.
+- **Result**: **H0 at 2243 games, +1.9 Elo.** Dead flat.
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Persistent +3 for 1000+ games but couldn't reach H1. Retry candidate at tighter bounds.
+
 ### V5: Bad Noisy Margin 60 (MERGED)
 - **Change**: Tighten bad noisy futility margin from `depth*75` to `depth*60`. Prunes more losing captures when eval is below alpha.
 - **Result**: **H1 at 258 games, +32.4 Elo ±26.3, LOS 99.2%.** SPRT bounds: elo0=-5, elo1=15.
