@@ -2397,6 +2397,22 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: SEE Quiet Pruning Depth 10 (REJECTED)
+- **Change**: Extend SEE quiet pruning from `depth <= 8` to `depth <= 10`.
+- **Result**: **H0 at 1788 games, +1.4 Elo.** Dead flat.
+- **Baseline**: 15666ab with v5 sb120 net
+- **Notes**: SEE quiet pruning at depth 9-10 doesn't help. Depth 8 confirmed optimal.
+
+### V5: Bad Noisy Futility Depth 5 (REJECTED)
+- **Change**: Extend bad noisy futility from `depth <= 4` to `depth <= 5`.
+- **Result**: **H0 at 316 games, -15.4 Elo.**
+- **Baseline**: 7ac7d81 with v5 sb120 net
+- **Notes**: Previously tested at depth 6 (-5.3). Both 5 and 6 lose Elo. Depth 4 confirmed optimal — captures at depth 5 are too tactical to prune based on SEE alone.
+
+### V5: LMP Depth 9 (IN PROGRESS)
+- **Change**: Extend LMP from `depth <= 8` to `depth <= 9`.
+- **Status**: 476 games, +11 Elo. Holding positive.
+
 ### V5: History Pruning Threshold 1000 (REJECTED)
 - **Change**: Tighten history pruning from `-1500*depth` to `-1000*depth`.
 - **Result**: **H0 at 474 games, -11.0 Elo.**
