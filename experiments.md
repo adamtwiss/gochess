@@ -23,6 +23,7 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 | TT Damp Depth-Adaptive v2 | +0.2 | 1557 | Floor-3 variant. Dead flat |
 | FH Blend Depth Gate 4 | +1.9 | 2243 | Disable FH blending at depth 3. Persistent +3 |
 | History Divisor 4000 | +1.0 | 1776 | More aggressive LMR history. Persistent +3-5 |
+| History Pruning Depth 4 | -0.5 | 1321 | Extend hist prune to depth 4. +5.5 at 1141 games |
 | LMP Depth 9 | +0.6 | 1615 | Extend LMP from depth<=8 to depth<=9. Persistent +3-5 early |
 | Mate Distance Pruning | +0.7 | 1559 | Universal technique. Might help at longer TC |
 | NMP Deep Reduction d>=14 | +0.6 | 1657 | Already flagged. +4-9 for first 1000 games |
@@ -2747,6 +2748,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
+
+### V5: History Pruning Depth 4 (REJECTED → RETRY CANDIDATE)
+- **Change**: Extend history pruning from depth<=3 to depth<=4.
+- **Result**: **H0 at 1321 games, -0.5 Elo.** Showed +5.5 at 1141 games before fading.
+- **Baseline**: 414ea5c with v5 sb120 net
+- **Notes**: Persistent +3-5 for hundreds of games. Retry candidate at tighter bounds.
 
 ### V5: Capture History Pruning (REJECTED)
 - **Change**: Prune captures with deeply negative capture history (`captHist < -3000*depth`) at depth<=3.
