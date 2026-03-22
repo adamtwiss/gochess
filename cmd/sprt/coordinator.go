@@ -173,18 +173,22 @@ func (c *Coordinator) findExperiment(id string) *Experiment {
 // maxConsecutiveErrors is the threshold after which an experiment is paused.
 const maxConsecutiveErrors = 3
 
-// activeExperiment returns the highest-priority running experiment (fill-one-first).
+// activeExperiment returns a random running experiment for load balancing.
 // Skips experiments that have hit the consecutive error limit.
 func (c *Coordinator) activeExperiment() *Experiment {
+	var candidates []*Experiment
 	for _, e := range c.experiments {
 		if e.Result.Status == "" || e.Result.Status == "running" {
 			if e.ConsecutiveErrors >= maxConsecutiveErrors {
 				continue // paused due to errors
 			}
-			return e
+			candidates = append(candidates, e)
 		}
 	}
-	return nil
+	if len(candidates) == 0 {
+		return nil
+	}
+	return candidates[time.Now().UnixNano()%int64(len(candidates))]
 }
 
 // Handler methods

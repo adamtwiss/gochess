@@ -161,6 +161,20 @@ func (w *Worker) runBatch(claim *WorkClaim) BatchReport {
 		return report
 	}
 
+	// Ensure NNUE file exists (run fetch-net if needed)
+	if claim.NNUEFile != "" {
+		nnuePath := w.resolveNNUEPath(claim.NNUEFile)
+		if _, err := os.Stat(nnuePath); os.IsNotExist(err) {
+			log.Printf("NNUE file %s not found, running fetch-net...", nnuePath)
+			cmd := exec.Command(newBin, "fetch-net")
+			cmd.Dir = w.repoDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				log.Printf("fetch-net output: %s", string(out))
+				// Not fatal — the engine might work via UCI option
+			}
+		}
+	}
+
 	// Find openings file
 	openingsFile := w.findOpeningsFile()
 	if openingsFile == "" {
@@ -362,9 +376,19 @@ func (w *Worker) buildCutechessArgs(claim *WorkClaim, newBin, baseBin, openingsF
 		args = append(args, fmt.Sprintf("option.%s=%s", k, v))
 	}
 
+	// Use local core count for concurrency (cores/2 since each game needs 2 engines)
+	// Fall back to experiment-specified concurrency if cores not set
+	concurrency := claim.Concurrency
+	if w.cores >= 2 {
+		concurrency = w.cores / 2
+		if concurrency < 1 {
+			concurrency = 1
+		}
+	}
+
 	args = append(args,
 		"-rounds", strconv.Itoa(claim.BatchSize),
-		"-concurrency", strconv.Itoa(claim.Concurrency),
+		"-concurrency", strconv.Itoa(concurrency),
 		"-openings", "file="+openingsFile, "format=epd", "order=random",
 		fmt.Sprintf("start=%d", claim.OpeningStart+1), // cutechess uses 1-based
 		"-draw", "movenumber=20", "movecount=10", "score=10",
