@@ -2749,6 +2749,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
 
+### V5: Hindsight Depth Gate 4 (REJECTED)
+- **Change**: Raise hindsight reduction gate from depth>=3 to depth>=4.
+- **Result**: **H0 at 1486 games, +0.5 Elo.** Dead flat.
+- **Baseline**: 414ea5c with v5 sb120 net
+- **Notes**: Depth 3 is optimal — hindsight reduction at depth 3 positions is cheap and beneficial. Raising the gate to 4 just misses these opportunities.
+
 ### V5: RFP Improving Margin 65 (REJECTED)
 - **Change**: Tighten RFP improving margin from depth*70 to depth*65.
 - **Result**: **H0 at 569 games, -7.3 Elo.**
