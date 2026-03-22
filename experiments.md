@@ -2748,6 +2748,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
 
+### V5: Capture History Pruning (REJECTED)
+- **Change**: Prune captures with deeply negative capture history (`captHist < -3000*depth`) at depth<=3.
+- **Result**: **H0 at 219 games, -30.2 Elo.**
+- **Baseline**: 414ea5c with v5 sb120 net
+- **Notes**: Captures are fundamentally different from quiets — even captures with bad history can be tactically important (discovered attacks, pins). SEE pruning already handles truly bad captures. Adding history-based pruning on top is redundant and harmful.
+
 ### V5: LMR Quiet C=1.25 Retry (REJECTED)
 - **Change**: Tighten quiet LMR from C=1.30 to C=1.25. Retry after landscape shift.
 - **Result**: **H0 at 165 games, -35.9 Elo.** Even worse than before (-7).
