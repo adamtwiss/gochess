@@ -2409,6 +2409,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 7ac7d81 with v5 sb120 net
 - **Notes**: Previously tested at depth 6 (-5.3). Both 5 and 6 lose Elo. Depth 4 confirmed optimal — captures at depth 5 are too tactical to prune based on SEE alone.
 
+### V5: SEE Capture Pruning Threshold 60 (REJECTED)
+- **Change**: Tighten SEE capture pruning from `-depth*80` to `-depth*60`.
+- **Result**: **H0 at 107 games, -52.3 Elo.** Catastrophic.
+- **Baseline**: 920ac92 (with SEE cap 80) with v5 sb120 net
+- **Notes**: Bracket complete: 60 (H0, -52), **80 (H1, +25)**, 100 (old). 60 prunes too many captures that are only slightly losing — they still have tactical value. Peak at 80.
+
 ### V5: SEE Capture Pruning Threshold 80 (MERGED)
 - **Change**: Tighten SEE capture pruning threshold from `-depth*100` to `-depth*80`. Prunes more losing captures.
 - **Result**: **H1 at 331 games, +25.2 Elo ±22.7, LOS 98.5%.** SPRT bounds: elo0=-5, elo1=15.
