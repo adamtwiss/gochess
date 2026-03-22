@@ -2749,6 +2749,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
 
+### V5: RFP Improving Margin 65 (REJECTED)
+- **Change**: Tighten RFP improving margin from depth*70 to depth*65.
+- **Result**: **H0 at 569 games, -7.3 Elo.**
+- **Baseline**: f951efe with v5 sb120 net
+- **Notes**: Previously tested 60 (H0, -2.9) and 80 (H0, -0.6). Now 65 also fails. Bracket: 60/65/70/80 — 70 confirmed optimal even with RFP depth 8.
+
 ### V5: History Pruning Depth 4 (REJECTED → RETRY CANDIDATE)
 - **Change**: Extend history pruning from depth<=3 to depth<=4.
 - **Result**: **H0 at 1321 games, -0.5 Elo.** Showed +5.5 at 1141 games before fading.
