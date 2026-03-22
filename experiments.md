@@ -21,7 +21,8 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 | TT Near-Miss Margin 96 | +1.6 | 2590 | Widen from 80 to 96. 63% LOS |
 | TT Damp Depth-Adaptive v1 | -0.5 | 1335 | Trust deeper TT entries more. Showed +6-8 for 300 games |
 | TT Damp Depth-Adaptive v2 | +0.2 | 1557 | Floor-3 variant. Dead flat |
-| FH Blend Depth Gate 4 | ~+3 | ~1900 | Disable FH blending at depth 3. Persistent +3 |
+| FH Blend Depth Gate 4 | +1.9 | 2243 | Disable FH blending at depth 3. Persistent +3 |
+| History Divisor 4000 | +1.0 | 1776 | More aggressive LMR history. Persistent +3-5 |
 | LMP Depth 9 | +0.6 | 1615 | Extend LMP from depth<=8 to depth<=9. Persistent +3-5 early |
 | Mate Distance Pruning | +0.7 | 1559 | Universal technique. Might help at longer TC |
 | NMP Deep Reduction d>=14 | +0.6 | 1657 | Already flagged. +4-9 for first 1000 games |
@@ -2607,6 +2608,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Result**: **H0 at 716 games, -4.9 Elo.**
 - **Baseline**: 40c8eb4 with v5 sb120 net
 - **Notes**: LMP limit is robust to landscape changes. `3+d²` confirmed optimal across retests.
+
+### V5: History Divisor 4000 (REJECTED → RETRY CANDIDATE)
+- **Change**: More aggressive history-based LMR: divisor 5000 → 4000.
+- **Result**: **H0 at 1776 games, +1.0 Elo.** Dead flat.
+- **Baseline**: 920ac92 (old) with v5 sb120 net
+- **Notes**: Persistent +3-5 for hundreds of games but couldn't reach H1. Retry candidate at tighter bounds.
 
 ### V5: RFP Depth Gate 9 (REJECTED)
 - **Change**: Extend RFP from depth<=8 to depth<=9.
