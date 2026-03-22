@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: Contempt 5 (REJECTED)
+- **Change**: Lower contempt from 10 to 5 (less draw avoidance).
+- **Result**: **H0 at 342 games, -14.2 Elo.**
+- **Baseline**: 1cf3871 with v5 sb120 net
+- **Notes**: Contempt 10 is well-calibrated. Lower contempt accepts too many draws in self-play. Previously tested contempt 15 (H0, -5.2). Bracket: 5 (H0), 10 (current), 15 (H0).
+
 ### V5: LMP Tight Base 2+d² (REJECTED)
 - **Change**: Tighten LMP limit from `3 + depth*depth` to `2 + depth*depth`.
 - **Result**: **H0 at 345 games, -16.1 Elo.**
