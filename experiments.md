@@ -2409,6 +2409,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 7ac7d81 with v5 sb120 net
 - **Notes**: Previously tested at depth 6 (-5.3). Both 5 and 6 lose Elo. Depth 4 confirmed optimal — captures at depth 5 are too tactical to prune based on SEE alone.
 
+### V5: NMP Base R=4 (REJECTED)
+- **Change**: Increase NMP base reduction from R=3 to R=4. Alexandria uses R=4.
+- **Result**: **H0 at 254 games, -24.7 Elo.**
+- **Baseline**: 65cf9d1 with v5 sb120 net
+- **Notes**: R=4 is too aggressive for our search framework — more null-move cutoffs are incorrect, especially in positions with zugzwang risk. Our R=3+depth/3 formula is well-calibrated. Previously tested NMP divisor changes (200→150, 200→170) which also failed.
+
 ### V5: LMP Depth 9 (IN PROGRESS)
 - **Change**: Extend LMP from `depth <= 8` to `depth <= 9`.
 - **Status**: 476 games, +11 Elo. Holding positive.
