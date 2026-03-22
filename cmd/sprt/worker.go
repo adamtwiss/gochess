@@ -39,10 +39,17 @@ func NewWorker(id, coordinatorURL, repoDir string, cores int) *Worker {
 		cutechess = p
 	}
 
+	// Resolve repoDir to absolute path at startup so NNUE paths
+	// remain valid even if cutechess changes the working directory.
+	absRepoDir, err := filepath.Abs(repoDir)
+	if err != nil {
+		absRepoDir = repoDir
+	}
+
 	return &Worker{
 		id:             id,
 		coordinatorURL: strings.TrimRight(coordinatorURL, "/"),
-		repoDir:        repoDir,
+		repoDir:        absRepoDir,
 		cores:          cores,
 		cacheDir:       cacheDir,
 		pollInterval:   10 * time.Second,
