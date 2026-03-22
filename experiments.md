@@ -2580,3 +2580,9 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Change**: Added 3 new correction tables: white non-pawn Zobrist, black non-pawn Zobrist, continuation (opponent's last move piece+to). Equal-weight blend of all 4 sources.
 - **Result**: **H0 at 485 games, -7.2 Elo.** Showed +20.9 at 114 games before fading.
 - **Notes**: The concept is proven (12+ engines use multi-source correction). The equal-weight blend likely dilutes the strong pawn correction signal. Retry with: (a) tuned asymmetric weights (Weiss uses different weights per source), (b) just non-pawn tables without continuation correction, (c) different table sizes. The high draw rate (68%) suggests the correction is working but overcorrecting in some positions.
+
+### V5: Eval Monotonicity Reduction (REJECTED)
+- **Change**: When eval has been consistently declining over 3 measurements (ply-4 > ply-2 > ply), reduce depth by 1. Novel idea: use eval trend, not just two-point comparison.
+- **Result**: **H0 at 411 games, -12.7 Elo.**
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Declining eval often means a tactical sequence where deeper search is needed, not less. The condition fires too broadly — needs a minimum decline threshold per step to filter natural oscillation. Retry with margin (e.g., each step must decline by 50+ cp).
