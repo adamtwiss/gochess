@@ -2596,6 +2596,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: Bad Noisy Margin 50 (MERGED)
+- **Change**: Tighten bad noisy futility margin from `depth*60` to `depth*50`.
+- **Result**: **H1 at 646 games, +16.7 Elo ±17.1, LOS 97.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 920ac92 (pre-QS-delta-280) with v5 sb120 net
+- **Notes**: Third consecutive tightening: 75→60 (+32.4), 60→50 (+16.7). The NNUE eval continues to benefit from aggressive bad capture pruning. Testing 45 next. Cumulative bad noisy gain: ~49 Elo from 75.
+
 ### V5: QS Delta Buffer 280 (MERGED)
 - **Change**: Widen QS delta pruning buffer from 240 to 280. Less aggressive delta pruning preserves more captures.
 - **Result**: **H1 at 1173 games, +11.0 Elo ±12.3, LOS 96.0%.** SPRT bounds: elo0=-5, elo1=15.
