@@ -2747,3 +2747,21 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 
 ### V5: Multi-Source Correction Weights v2 60/15/15/10 (REJECTED)
 - **Result**: **H0 at 954 games, -1.5 Elo.** Current 50/20/20/10 weights are near-optimal.
+
+### V5: Bad Noisy Depth 5 Retry (REJECTED)
+- **Change**: Extend bad noisy futility from depth<=4 to depth<=5. Retry with margin 50.
+- **Result**: **H0 at 317 games, -17.6 Elo.**
+- **Baseline**: 80c0637 with v5 sb120 net
+- **Notes**: Still negative even with tighter margin 50. Depth 4 confirmed optimal.
+
+### V5: NMP Divisor 170 Retry (REJECTED)
+- **Change**: NMP eval divisor 200→170. Retry after landscape shift. Was +2.7 at 3963 games pre-shift.
+- **Result**: **H0 at 331 games, -15.8 Elo.**
+- **Baseline**: 80c0637 with v5 sb120 net
+- **Notes**: Landscape shift made this worse. NMP divisor 200 is robust.
+
+### V5: SEE Quiet -25*d² (REJECTED)
+- **Change**: Tighter SEE quiet pruning: -20*d² → -25*d².
+- **Result**: **H0 at 270 games, -19.3 Elo.**
+- **Baseline**: d0bdf4f with v5 sb120 net
+- **Notes**: Both directions fail: -15*d² (-10) and -25*d² (-19). -20*d² confirmed optimal.
