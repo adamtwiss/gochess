@@ -225,7 +225,39 @@ Key principles:
 - **Never leave threads idle** — always have experiments queued. Small gains compound.
 - **Test one parameter at a time per experiment** — but run multiple independent experiments in parallel.
 - **Revisit failed experiments when conditions change** — a new NNUE net or new search feature can shift optimal parameters. Check `experiments.md` before re-testing.
-- **Self-play Elo ≈ 2-3x cross-engine Elo** for search changes. A +5 self-play gain is real and worth merging.
+
+### CRITICAL: Self-Play vs Cross-Engine Transfer (discovered 2026-03-22)
+
+**Self-play SPRT is actively misleading for pruning-class changes.** Extensive cross-engine ablation testing revealed that pruning tightening gains Elo in self-play while LOSING Elo against other engines. This is not a discount — it is anti-correlated.
+
+**Why:** Pruning tightening exploits shared eval blind spots. In self-play, both sides miss the same positions, so pruning them is "free." Against other engines with different evals, those pruned positions contain moves the opponent plays and we miss. The more aggressively we prune, the more we gain in self-play AND the more we lose cross-engine.
+
+**Empirical data (8×100 game gauntlets vs 8 rival engines, ±20 error bars):**
+
+| Change type | Example | Self-play | Cross-engine | Transfer |
+|------------|---------|-----------|-------------|----------|
+| Accuracy/information | multi-corr-hist | +28.6 | **+25** | ~1:1 |
+| Information/detection | TT noisy detection | +34.4 | **+46** | >1:1 |
+| NPS improvement | Finny tables | +165 | **+50** | ~0.3:1 |
+| Structural search | aspiration contraction | +48.9 | ~+20 | ~0.4:1 |
+| Pruning tightening | hist-prune 1500 | +14.7 | **-26** | **NEGATIVE** |
+| Pruning tightening | badnoisy 75→60 | +32.4 | **-18** | **NEGATIVE** |
+| Pruning tightening | opp-mat LMR + badnoisy | +77.3 | **-7** | **NEGATIVE** |
+| Pruning tightening | futility 100→80 | +33.6 | **-2** | **~ZERO** |
+
+**Rules for search changes:**
+
+1. **Accuracy improvements** (correction history, eval refinement, information gathering): Trust self-play SPRT. These transfer ~1:1 or better.
+2. **Structural changes** (aspiration windows, time management, move ordering): Trust self-play SPRT with ~2:1 discount.
+3. **NPS improvements** (SIMD, caching, code optimization): Trust self-play SPRT with ~3:1 discount.
+4. **Pruning tightening** (tighter margins, deeper gates, more aggressive reduction): **DO NOT trust self-play SPRT.** Must validate with cross-engine gauntlet (4-5 rival engines, 100+ games each) before merging. A positive self-play result for pruning should make you suspicious, not confident.
+
+**Practical workflow for pruning changes:**
+1. Self-play SPRT as first filter (kills -100 Elo disasters)
+2. If SPRT passes, run cross-engine gauntlet (4-5 closest rivals, 100 games each, ~30 min)
+3. Only merge if cross-engine delta is positive or clearly neutral
+
+**How to classify a change:** If the change makes the engine skip searching positions/moves it currently searches (tighter margins, deeper depth gates, more aggressive LMR/LMP/SEE thresholds), it is a pruning change. If it makes the engine evaluate or order moves differently without skipping them, it is an accuracy change.
 
 ## Maintenance Reminders
 
