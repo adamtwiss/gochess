@@ -122,13 +122,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "NNUE loaded from %s\n", *nnueFile)
 		}
 	} else {
-		// Use net.txt to find the expected net filename
+		// Try net.txt to find the expected net filename
 		net4, net5, loadedPath, err := chess.LoadNNUEFromNetTxt()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if net5 != nil {
+			// In UCI mode, this is a warning — the UCI host may set NNUEFile via setoption.
+			// For EPD/benchmark modes, this is fatal (they need the net immediately).
+			if *epdFile != "" || *benchmark {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  Engine will start without NNUE. Set NNUEFile via UCI option or run './chess fetch-net'\n")
+		} else if net5 != nil {
 			nnueNetV5 = net5
 			chess.GlobalNNUENetV5 = net5
 			fmt.Fprintf(os.Stderr, "NNUE v5 loaded from %s (fingerprint %s)\n", loadedPath, net5.Fingerprint())
