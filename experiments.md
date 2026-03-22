@@ -2596,6 +2596,18 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: SEE Cap Threshold 90 (REJECTED → RETRY CANDIDATE)
+- **Change**: Loosen SEE cap pruning from `-depth*80` back to `-depth*90`.
+- **Result**: **H0 at 2161 games, +1.6 Elo.** Dead flat.
+- **Baseline**: 920ac92 (pre-badnoisy-50/QS-delta-280) with v5 sb120 net
+- **Notes**: Running against old baseline. SEE cap 80 confirmed optimal — both 70 and 90 are flat vs 80. Bracket: 60 (H0, -52), 70 (running +4), **80 (H1, +25)**, 90 (H0, +1.6), 100 (old).
+
+### V5: ProbCut Margin 155 (REJECTED)
+- **Change**: Tighten ProbCut margin from `beta+170` to `beta+155`.
+- **Result**: **H0 at 338 games, -17.5 Elo.**
+- **Baseline**: eb6ac61 with v5 sb120 net
+- **Notes**: Previously tested 150 (-10 Elo). Both 150 and 155 lose. ProbCut margin 170 confirmed optimal across multiple attempts.
+
 ### V5: QS Delta Buffer 320 (REJECTED)
 - **Change**: Widen QS delta buffer from 280 to 320.
 - **Result**: **H0 at 1369 games, -0.3 Elo.** Dead flat.
