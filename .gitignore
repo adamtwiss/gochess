@@ -22,3 +22,4 @@ nohup.out
 tuner*.out
 /*.json
 .claude/scheduled_tasks.lock
+*.nnue
