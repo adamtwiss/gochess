@@ -20,6 +20,10 @@ func main() {
 		runFetchNet()
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "bench" {
+		runBench()
+		return
+	}
 
 	epdFile := flag.String("e", "", "EPD test suite file to run")
 	maxTimeMS := flag.Int("t", 5000, "max time per position in milliseconds")
@@ -652,4 +656,54 @@ func formatKNPSComparison(baseNodes uint64, baseMs float64, curNodes uint64, cur
 		formatKNPSNum(baseNodes, baseMs),
 		formatKNPSNum(curNodes, curMs),
 		sign, pctDelta)
+}
+
+func runBench() {
+	// Standard bench positions covering opening, middlegame, endgame, tactical, quiet
+	positions := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",                   // Starting position
+		"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",       // Kiwipete (tactical)
+		"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",                                   // Endgame (pawns + rooks)
+		"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",        // Italian Game
+		"rnbq1rk1/ppp2ppp/3b1n2/3pp3/3PP3/2N2N2/PPP1BPPP/R1BQ1RK1 w - - 0 7",         // Closed center
+		"r1bqkbnr/pp1ppppp/2n5/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",           // Sicilian
+		"2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1",                // WAC.001 (tactical)
+		"8/8/4kpp1/3p1b2/p6P/2B5/6P1/6K1 w - - 0 1",                                   // Endgame (minor pieces)
+	}
+
+	const benchDepth = 13
+
+	// Load NNUE net
+	_, netV5, _, err := chess.LoadNNUEFromNetTxt()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v (bench will use classical eval)\n", err)
+	}
+
+	tt := chess.NewTranspositionTable(16)
+	var totalNodes uint64
+	start := time.Now()
+
+	for _, fen := range positions {
+		var board chess.Board
+		board.SetFEN(fen)
+		if netV5 != nil {
+			board.AttachNNUEV5(netV5)
+		}
+
+		info := &chess.SearchInfo{
+			StartTime: time.Now(),
+			TT:        tt,
+		}
+		_, result := board.SearchWithInfo(benchDepth, info)
+		totalNodes += result.Nodes
+	}
+
+	elapsed := time.Since(start)
+	nps := uint64(0)
+	if elapsed.Seconds() > 0 {
+		nps = uint64(float64(totalNodes) / elapsed.Seconds())
+	}
+
+	fmt.Printf("Nodes searched: %d\n", totalNodes)
+	fmt.Printf("Nodes/second  : %d\n", nps)
 }
