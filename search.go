@@ -1494,7 +1494,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		isBadNoisy := false
 		if isCap && !inCheck && ply > 0 && depth <= 4 && move != ttMove &&
 			!move.IsPromotion() && bestScore > -MateScore+100 &&
-			staticEval > -Infinity && staticEval+depth*75 <= alpha {
+			staticEval > -Infinity && staticEval+depth*60 <= alpha {
 			isBadNoisy = !b.SEESign(move, 0)
 		}
 

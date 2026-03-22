@@ -2594,6 +2594,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: Bad Noisy Margin 60 (MERGED)
+- **Change**: Tighten bad noisy futility margin from `depth*75` to `depth*60`. Prunes more losing captures when eval is below alpha.
+- **Result**: **H1 at 258 games, +32.4 Elo ±26.3, LOS 99.2%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Tighter margin prunes losing captures earlier, saving nodes. Consistent with our SEE cap 80 win — the engine benefits from trusting the NNUE eval more and pruning bad captures aggressively. Try depth*50 next to bracket.
+
 ### V5: NMP Dampening (score+beta)/2 (REJECTED)
 - **Change**: Stronger NMP score dampening: `(score*2+beta)/3` → `(score+beta)/2`.
 - **Result**: **H0 at 513 games, -10.2 Elo.**
