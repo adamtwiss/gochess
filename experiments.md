@@ -2409,6 +2409,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Baseline**: 7ac7d81 with v5 sb120 net
 - **Notes**: Previously tested at depth 6 (-5.3). Both 5 and 6 lose Elo. Depth 4 confirmed optimal — captures at depth 5 are too tactical to prune based on SEE alone.
 
+### V5: SEE Capture Pruning Threshold 80 (MERGED)
+- **Change**: Tighten SEE capture pruning threshold from `-depth*100` to `-depth*80`. Prunes more losing captures.
+- **Result**: **H1 at 331 games, +25.2 Elo ±22.7, LOS 98.5%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 65cf9d1 with v5 sb120 net
+- **Notes**: The tighter threshold prunes captures that lose 80cp*depth of material instead of 100cp*depth. NNUE accuracy means these slightly-losing captures are rarely worth searching. Try -depth*60 next to bracket.
+
 ### V5: Futility Depth 9 (REJECTED)
 - **Change**: Extend futility pruning from `depth <= 8` to `depth <= 9`.
 - **Result**: **H0 at 355 games, -11.7 Elo.**

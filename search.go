@@ -1346,7 +1346,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// SEE capture pruning: at shallow depths, prune captures that lose material
 		if isCap && ply > 0 && !inCheck && depth <= 6 &&
 			move != ttMove && bestScore > -MateScore+100 &&
-			!b.SEESign(move, -depth*100) {
+			!b.SEESign(move, -depth*80) {
 			continue
 		}
 
