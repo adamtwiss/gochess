@@ -2596,6 +2596,12 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Baseline**: 920ac92 with v5 sb120 net
 - **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
 
+### V5: QS Delta Buffer 320 (REJECTED)
+- **Change**: Widen QS delta buffer from 280 to 320.
+- **Result**: **H0 at 1369 games, -0.3 Elo.** Dead flat.
+- **Baseline**: 920ac92 (pre-badnoisy-50) with v5 sb120 net
+- **Notes**: Bracket: 240 (old), **280 (H1, +11)**, 320 (H0). Peak at 280 — further widening doesn't help, the extra captures searched are too speculative.
+
 ### V5: Bad Noisy Margin 45 (REJECTED)
 - **Change**: Tighten bad noisy futility margin from `depth*50` to `depth*45`.
 - **Result**: **H0 at 600 games, -5.8 Elo.**
