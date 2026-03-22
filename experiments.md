@@ -2397,6 +2397,18 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: SEE Capture Pruning Depth 8 (REJECTED)
+- **Change**: Extend SEE capture pruning from `depth <= 6` to `depth <= 8`.
+- **Result**: **H0 at 696 games, -3.5 Elo.** Dead flat.
+- **Baseline**: 1cf3871 with v5 sb120 net
+- **Notes**: SEE capture pruning at depth 7-8 doesn't help — captures at those depths are already filtered by other mechanisms (LMR, capture history). Depth 6 confirmed optimal.
+
+### V5: ProbCut Depth Gate 4 (REJECTED)
+- **Change**: Lower ProbCut depth gate from `depth >= 5` to `depth >= 4`.
+- **Result**: **H0 at 468 games, -9.7 Elo.**
+- **Baseline**: 1cf3871 with v5 sb120 net
+- **Notes**: ProbCut at depth 4 fires too often with insufficient search depth (pcDepth = 0, basically QS). The shallow verification can't reliably confirm cutoffs. Depth 5 confirmed optimal.
+
 ### V5: Contempt 5 (REJECTED)
 - **Change**: Lower contempt from 10 to 5 (less draw avoidance).
 - **Result**: **H0 at 342 games, -14.2 Elo.**
