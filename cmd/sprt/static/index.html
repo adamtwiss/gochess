@@ -63,25 +63,6 @@
 <body>
 <h1>GoChess SPRT Dashboard</h1>
 
-<h2>Create Experiment</h2>
-<div class="form-container">
-  <div class="form-row">
-    <label>ID <input type="text" id="f-id" placeholder="lmr-c1.25"></label>
-    <label>Branch <input type="text" id="f-branch" placeholder="feature-branch"></label>
-    <label>Base Branch <input type="text" id="f-base" placeholder="main" value="main"></label>
-    <label>TC <input type="text" id="f-tc" placeholder="10+0.1" value="10+0.1"></label>
-  </div>
-  <div class="form-row">
-    <label>Elo0 <input type="number" id="f-elo0" value="0" step="1"></label>
-    <label>Elo1 <input type="number" id="f-elo1" value="10" step="1"></label>
-    <label>Hash MB <input type="number" id="f-hash" value="64"></label>
-    <label>Batch Size <input type="number" id="f-batch" value="50"></label>
-    <label>NNUE File <input type="text" id="f-nnue" placeholder="net.nnue"></label>
-  </div>
-  <button onclick="createExperiment()">Create</button>
-  <div id="form-error" class="error"></div>
-</div>
-
 <h2>Running</h2>
 <div id="running"></div>
 
@@ -204,5 +185,25 @@ async function deleteExp(id) {
 fetchExperiments();
 setInterval(fetchExperiments, 5000);
 </script>
+<h2>Create Experiment</h2>
+<div class="form-container">
+  <div class="form-row">
+    <label>ID <input type="text" id="f-id" placeholder="lmr-c1.25"></label>
+    <label>Branch <input type="text" id="f-branch" placeholder="feature-branch"></label>
+    <label>Base Branch <input type="text" id="f-base" placeholder="main" value="main"></label>
+    <label>TC <input type="text" id="f-tc" placeholder="10+0.1" value="10+0.1"></label>
+  </div>
+  <div class="form-row">
+    <label>Elo0 <input type="number" id="f-elo0" value="0" step="1"></label>
+    <label>Elo1 <input type="number" id="f-elo1" value="10" step="1"></label>
+    <label>Hash MB <input type="number" id="f-hash" value="64"></label>
+    <label>Batch Size <input type="number" id="f-batch" value="50"></label>
+    <label>NNUE File <input type="text" id="f-nnue" placeholder="net.nnue"></label>
+  </div>
+  <button onclick="createExperiment()">Create</button>
+  <div id="form-error" class="error"></div>
+</div>
+
+
 </body>
 </html>
