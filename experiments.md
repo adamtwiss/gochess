@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: IIR Depth Gate 5 (REJECTED)
+- **Change**: Lower IIR gate from `depth >= 6` to `depth >= 5`.
+- **Result**: **H0 at 357 games, -15.6 Elo.**
+- **Baseline**: 6e4d4a9 with v5 sb120 net
+- **Notes**: Bracket: 4 (H0, -3.2), 5 (H0, -15.6), 6 (current). IIR at depth 5 over-reduces — the positions at that depth benefit from having a TT move to guide search. Depth 6 confirmed optimal.
+
 ### V5: RFP Not-Improving Margin 110 (REJECTED)
 - **Change**: Widen RFP not-improving margin from `depth*100` to `depth*110`.
 - **Result**: **H0 at 908 games, -2.7 Elo.** Dead flat.
