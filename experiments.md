@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: Razoring Depth 3 (REJECTED)
+- **Change**: Extend razoring from `depth <= 2` to `depth <= 3`.
+- **Result**: **H0 at 1197 games, -0.9 Elo.** Dead flat.
+- **Baseline**: 6e4d4a9 with v5 sb120 net
+- **Notes**: Razoring at depth 3 doesn't help — depth 3 positions are complex enough that dropping to QS loses too much information. Depth 2 confirmed optimal.
+
 ### V5: Remove TT Score Dampening (REJECTED)
 - **Change**: Remove TT lower-bound score dampening `(3*score+beta)/4`. Test if still needed after aspiration/FH blending changes.
 - **Result**: **H0 at 153 games, -43.4 Elo.** Catastrophic.
