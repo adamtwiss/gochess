@@ -2581,6 +2581,18 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 - **Result**: **H0 at 485 games, -7.2 Elo.** Showed +20.9 at 114 games before fading.
 - **Notes**: The concept is proven (12+ engines use multi-source correction). The equal-weight blend likely dilutes the strong pawn correction signal. Retry with: (a) tuned asymmetric weights (Weiss uses different weights per source), (b) just non-pawn tables without continuation correction, (c) different table sizes. The high draw rate (68%) suggests the correction is working but overcorrecting in some positions.
 
+### V5: Progressive Alpha-Reduce (REJECTED)
+- **Change**: Scale alpha-reduce by `min(alphaRaisedCount, 2)` instead of flat -1. More alpha raises = more depth reduction.
+- **Result**: **H0 at 724 games, -5.3 Elo.** Showed +39 at 109 games, +16 at 350, then collapsed.
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Novel idea (no other engine does this). The progressive scaling over-reduces when multiple moves raise alpha — the 3rd+ moves still need some depth to verify they're truly worse. Flat -1 is the correct amount.
+
+### V5: Alpha-Reduce Non-PV Only (REJECTED)
+- **Change**: Gate alpha-reduce on `beta-alpha == 1` (non-PV nodes only). Protect PV accuracy.
+- **Result**: **H0 at 530 games, -8.5 Elo.**
+- **Baseline**: 920ac92 with v5 sb120 net
+- **Notes**: Alpha-reduce at PV nodes is actually beneficial — PV nodes with multiple alpha raises are wasting time on inferior continuations even at PV depth. The flat -1 everywhere is correct.
+
 ### V5: Eval Monotonicity Reduction (REJECTED)
 - **Change**: When eval has been consistently declining over 3 measurements (ply-4 > ply-2 > ply), reduce depth by 1. Novel idea: use eval trend, not just two-point comparison.
 - **Result**: **H0 at 411 games, -12.7 Elo.**
