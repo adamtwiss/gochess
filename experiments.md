@@ -2397,6 +2397,12 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: RFP Not-Improving Margin 110 (REJECTED)
+- **Change**: Widen RFP not-improving margin from `depth*100` to `depth*110`.
+- **Result**: **H0 at 908 games, -2.7 Elo.** Dead flat.
+- **Baseline**: 6e4d4a9 with v5 sb120 net
+- **Notes**: Not-improving margin 100 confirmed optimal. Bracket: 90 (H0, previous), 100 (current), 110 (H0).
+
 ### V5: QS Stand-Pat Blend Tighter (REJECTED)
 - **Change**: Less dampening on QS stand-pat fail-high: `(bestScore+beta)/2` → `(2*bestScore+beta)/3`.
 - **Result**: **H0 at 266 games, -17.0 Elo.**
