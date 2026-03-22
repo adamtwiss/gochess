@@ -2397,6 +2397,18 @@ Structured record of all search/eval tuning experiments. Each entry captures the
 - **Result**: **H0 at 492 games, -8.5 Elo.**
 - **Notes**: Bracket test. 100 reduces too often — positions with evalSum 100-150 still have tactical content worth searching. Bracket: 100 (H0), 150 (H1, +9.4), 200 (testing).
 
+### V5: History Pruning Threshold 1500 (MERGED)
+- **Change**: Tighten history pruning threshold from `-2000*depth` to `-1500*depth`. Prunes more quiet moves with bad history.
+- **Result**: **H1 at 687 games, +14.7 Elo ±15.7, LOS 96.6%.** SPRT bounds: elo0=-5, elo1=15.
+- **Baseline**: 15666ab with v5 sb120 net
+- **Notes**: More aggressive pruning of moves with negative history scores. The NNUE eval is accurate enough that moves with bad history can be safely pruned earlier. Try -1000*depth next to continue bracketing.
+
+### V5: LMR Capture C=1.60 (REJECTED)
+- **Change**: Tighten capture LMR from C=1.80 to C=1.60 (more reduction for late captures).
+- **Result**: **H0 at 226 games, -27.7 Elo.**
+- **Baseline**: 15666ab with v5 sb120 net
+- **Notes**: C=1.60 over-reduces captures — late captures are more tactical than late quiets and need their depth. C=1.80 confirmed optimal.
+
 ### V5: Razoring Depth 3 (REJECTED)
 - **Change**: Extend razoring from `depth <= 2` to `depth <= 3`.
 - **Result**: **H0 at 1197 games, -0.9 Elo.** Dead flat.

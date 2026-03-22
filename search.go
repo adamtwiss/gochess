@@ -1431,7 +1431,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			if contHistPtr2 != nil {
 				histPruneScore += int32(contHistPtr2[movedPiece][move.To()]) / 2
 			}
-			if histPruneScore < -2000*int32(depth) {
+			if histPruneScore < -1500*int32(depth) {
 				continue
 			}
 		}
