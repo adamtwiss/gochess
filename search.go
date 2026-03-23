@@ -1399,7 +1399,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// SEE capture pruning: at shallow depths, prune captures that lose material
 		if isCap && ply > 0 && !inCheck && depth <= 6 &&
 			move != ttMove && bestScore > -MateScore+100 &&
-			!b.SEESign(move, -depth*80) {
+			!b.SEESign(move, -depth*100) {
 			continue
 		}
 
@@ -1727,7 +1727,15 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 						cpt = 1 // pawn
 					}
 					captHistVal := info.CaptHistory[piece][move.To()][cpt]
-					reduction -= int(captHistVal / 5000)
+
+					// Positive capture history: reduce less
+					if captHistVal > 2000 {
+						reduction--
+					}
+					// Negative capture history: reduce more
+					if captHistVal < -2000 {
+						reduction++
+					}
 
 					if reduction < 0 {
 						reduction = 0
