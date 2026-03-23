@@ -259,6 +259,8 @@ Key principles:
 
 **How to classify a change:** If the change makes the engine skip searching positions/moves it currently searches (tighter margins, deeper depth gates, more aggressive LMR/LMP/SEE thresholds), it is a pruning change. If it makes the engine evaluate or order moves differently without skipping them, it is an accuracy change.
 
+For full analysis, data tables, and methodology: see `docs/pruning-cross-engine.md`.
+
 ## Maintenance Reminders
 
 - **Keep CLAUDE.md and README.md up to date** when changing search, eval, tuner, CLI, or architecture
