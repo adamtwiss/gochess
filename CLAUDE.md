@@ -263,3 +263,36 @@ Key principles:
 
 - **Keep CLAUDE.md and README.md up to date** when changing search, eval, tuner, CLI, or architecture
 - **New eval parameter**: Add to `initTunerParams()`, `computeTrace()`, `PrintParams()`. Update "What's tuned" lists. Delete `.tbin` cache
+
+## NNUE Model Naming Convention
+
+All model files follow this format:
+```
+net-v5-{width}{activation}-w{wdl}-e{epochs}s{snap}.nnue
+```
+
+Where:
+- **width**: `1024`, `1536`, `768pw` (768 pairwise)
+- **activation**: omit for CReLU (default), `s` for SCReLU
+- **w{wdl}**: WDL proportion as integer hundredths: `w0` (0.0), `w5` (0.05), `w10` (0.1), `w50` (0.5)
+- **e{epochs}**: total superbatches in the cosine LR schedule (determines LR curve)
+- **s{snap}**: snapshot checkpoint within that run
+
+### Examples
+```
+net-v5-1024-w0-e120s120.nnue      # 1024 CReLU, wdl=0.0, cosine/120, final checkpoint (production)
+net-v5-1024s-w0-e200s200.nnue     # 1024 SCReLU, wdl=0.0, cosine/200, final
+net-v5-1024-w5-e200s200.nnue      # 1024 CReLU, wdl=0.05, cosine/200, final
+net-v5-1536-w0-e800s400.nnue      # 1536 CReLU, wdl=0.0, cosine/800, snapshot at sb400
+net-v5-1536-w0-e800s800.nnue      # 1536 CReLU, wdl=0.0, cosine/800, final
+net-v5-1536-w5-e800s600.nnue      # 1536 CReLU, wdl=0.05, cosine/800, snap at 600
+net-v5-768pw-w0-e400s400.nnue     # 768 pairwise, wdl=0.0, cosine/400, final
+```
+
+### Key distinctions this prevents
+- `e800s400` vs `e400s400`: same SB count but **different LR** (800-run is at 50% LR, 400-run is fully decayed)
+- `w5` vs `w50`: unambiguous (0.05 vs 0.5)
+- `1024s` vs `1024`: SCReLU vs CReLU
+
+### Legacy names
+Old files use inconsistent naming (e.g. `net-v5-120sb-sb120.nnue`, `net-v5-1536-wdl00-sb400.nnue`). These should be renamed when practical. The production model `net-v5-120sb-sb120.nnue` keeps its name in GitHub releases for backward compatibility.
