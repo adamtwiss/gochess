@@ -25,6 +25,7 @@ type Worker struct {
 	openingsFile    string
 	pollInterval    time.Duration
 	cutechessPath   string
+	engineRegistry  map[string]string // name -> absolute path to rival engine binary
 }
 
 // NewWorker creates a worker instance.
@@ -54,7 +55,43 @@ func NewWorker(id, coordinatorURL, repoDir string, cores int) *Worker {
 		cacheDir:       cacheDir,
 		pollInterval:   10 * time.Second,
 		cutechessPath:  cutechess,
+		engineRegistry: make(map[string]string),
 	}
+}
+
+// LoadEngines reads a JSON engine registry file mapping engine names to binary paths.
+// Format: {"Texel": "/path/to/texel", "Ethereal": "/path/to/ethereal", ...}
+func (w *Worker) LoadEngines(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading engines file: %w", err)
+	}
+	var registry map[string]string
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return fmt.Errorf("parsing engines file: %w", err)
+	}
+	// Validate all paths exist and resolve to absolute
+	for name, binPath := range registry {
+		abs, err := filepath.Abs(binPath)
+		if err != nil {
+			return fmt.Errorf("engine %s: invalid path %q: %w", name, binPath, err)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return fmt.Errorf("engine %s: binary not found at %s", name, abs)
+		}
+		w.engineRegistry[name] = abs
+		log.Printf("registered engine: %s -> %s", name, abs)
+	}
+	return nil
+}
+
+// availableEngineNames returns the names of all registered rival engines.
+func (w *Worker) availableEngineNames() []string {
+	names := make([]string, 0, len(w.engineRegistry))
+	for name := range w.engineRegistry {
+		names = append(names, name)
+	}
+	return names
 }
 
 // Run starts the worker polling loop.
@@ -100,7 +137,11 @@ func (w *Worker) Run() {
 }
 
 func (w *Worker) claimWork() (*WorkClaim, error) {
-	body, _ := json.Marshal(ClaimRequest{WorkerID: w.id, Cores: w.cores})
+	body, _ := json.Marshal(ClaimRequest{
+		WorkerID:         w.id,
+		Cores:            w.cores,
+		AvailableEngines: w.availableEngineNames(),
+	})
 	resp, err := http.Post(w.coordinatorURL+"/api/work/claim", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -154,18 +195,21 @@ func (w *Worker) runBatch(claim *WorkClaim) BatchReport {
 		return report
 	}
 
-	// Build both binaries
+	// Build GoChess binary (for gauntlet, only need the variant; for SPRT, need both)
 	newBin, err := w.buildBranch(claim.Branch)
 	if err != nil {
 		report.Error = fmt.Sprintf("build %s failed: %v", claim.Branch, err)
 		log.Printf("error: %s", report.Error)
 		return report
 	}
-	baseBin, err := w.buildBranch(claim.BaseBranch)
-	if err != nil {
-		report.Error = fmt.Sprintf("build %s failed: %v", claim.BaseBranch, err)
-		log.Printf("error: %s", report.Error)
-		return report
+	var baseBin string
+	if claim.Mode != "gauntlet" {
+		baseBin, err = w.buildBranch(claim.BaseBranch)
+		if err != nil {
+			report.Error = fmt.Sprintf("build %s failed: %v", claim.BaseBranch, err)
+			log.Printf("error: %s", report.Error)
+			return report
+		}
 	}
 
 	// Ensure NNUE file exists (run fetch-net if needed)
@@ -191,7 +235,19 @@ func (w *Worker) runBatch(claim *WorkClaim) BatchReport {
 	}
 
 	// Build cutechess command
-	args := w.buildCutechessArgs(claim, newBin, baseBin, openingsFile)
+	var args []string
+	if claim.Mode == "gauntlet" {
+		opponentBin, ok := w.engineRegistry[claim.OpponentName]
+		if !ok {
+			report.Error = fmt.Sprintf("opponent engine %q not in registry", claim.OpponentName)
+			log.Printf("error: %s", report.Error)
+			return report
+		}
+		report.OpponentName = claim.OpponentName
+		args = w.buildGauntletCutechessArgs(claim, newBin, opponentBin, openingsFile)
+	} else {
+		args = w.buildCutechessArgs(claim, newBin, baseBin, openingsFile)
+	}
 	log.Printf("running: %s %s", w.cutechessPath, strings.Join(args, " "))
 
 	cmd := exec.Command(w.cutechessPath, args...)
@@ -403,6 +459,56 @@ func (w *Worker) buildCutechessArgs(claim *WorkClaim, newBin, baseBin, openingsF
 		"-concurrency", strconv.Itoa(concurrency),
 		"-openings", "file="+openingsFile, "format=epd", "order=random",
 		fmt.Sprintf("start=%d", claim.OpeningStart+1), // cutechess uses 1-based
+		"-draw", "movenumber=20", "movecount=10", "score=10",
+		"-resign", "movecount=3", "score=500", "twosided=true",
+		"-recover",
+	)
+
+	return args
+}
+
+// buildGauntletCutechessArgs constructs cutechess-cli arguments for gauntlet mode.
+// GoChess plays against a single rival engine per batch.
+func (w *Worker) buildGauntletCutechessArgs(claim *WorkClaim, gochessBin, opponentBin, openingsFile string) []string {
+	nnue := w.resolveNNUEPath(claim.NNUEFile)
+
+	// GoChess engine
+	goChessArgs := []string{"-engine", "name=GoChess", "cmd=" + gochessBin, "proto=uci",
+		"option.OwnBook=false", "option.MoveOverhead=100"}
+	if nnue != "" {
+		goChessArgs = append(goChessArgs, "option.UseNNUE=true", "option.NNUEFile="+nnue)
+	}
+
+	// Rival engine — minimal options (just hash via -each)
+	rivalArgs := []string{"-engine", "name=" + claim.OpponentName, "cmd=" + opponentBin, "proto=uci"}
+
+	args := []string{"-tournament", "gauntlet"}
+	args = append(args, goChessArgs...)
+	args = append(args, rivalArgs...)
+
+	// Shared options
+	args = append(args, "-each",
+		fmt.Sprintf("tc=0/%s", claim.TC),
+		fmt.Sprintf("option.Hash=%d", claim.HashMB),
+	)
+
+	for k, v := range claim.Options {
+		args = append(args, fmt.Sprintf("option.%s=%s", k, v))
+	}
+
+	// Use local core count for concurrency
+	concurrency := claim.Concurrency
+	if w.cores >= 2 {
+		concurrency = w.cores / 2
+		if concurrency < 1 {
+			concurrency = 1
+		}
+	}
+
+	args = append(args,
+		"-rounds", strconv.Itoa(claim.BatchSize),
+		"-concurrency", strconv.Itoa(concurrency),
+		"-openings", "file="+openingsFile, "format=epd", "order=random",
 		"-draw", "movenumber=20", "movecount=10", "score=10",
 		"-resign", "movecount=3", "score=500", "twosided=true",
 		"-recover",

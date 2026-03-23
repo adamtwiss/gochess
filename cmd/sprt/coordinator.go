@@ -12,11 +12,12 @@ import (
 	"time"
 )
 
-// Experiment represents a single SPRT test.
+// Experiment represents a single SPRT or gauntlet test.
 type Experiment struct {
 	ID          string            `json:"id"`
 	Branch      string            `json:"branch"`
 	BaseBranch  string            `json:"base_branch"`
+	Mode        string            `json:"mode,omitempty"` // "sprt" (default) or "gauntlet"
 	SPRT        SPRTConfig        `json:"sprt"`
 	TC          string            `json:"tc"`
 	HashMB      int               `json:"hash_mb"`
@@ -30,6 +31,15 @@ type Experiment struct {
 	NextOpening      int               `json:"next_opening"`
 	Batches          []BatchRecord     `json:"batches"`
 	ConsecutiveErrors int              `json:"consecutive_errors"`
+	// Gauntlet mode fields
+	Opponents        []string                `json:"opponents,omitempty"`         // rival engine names
+	GamesPerOpponent int                     `json:"games_per_opponent,omitempty"` // target games per opponent
+	OpponentResults  map[string]*SPRTResult  `json:"opponent_results,omitempty"`  // per-opponent W/D/L and Elo
+}
+
+// IsGauntlet returns true if this experiment is in gauntlet mode.
+func (e *Experiment) IsGauntlet() bool {
+	return e.Mode == "gauntlet"
 }
 
 // BatchRecord stores a completed batch report.
@@ -56,6 +66,7 @@ type WorkClaim struct {
 	ExperimentID string            `json:"experiment_id"`
 	Branch       string            `json:"branch"`
 	BaseBranch   string            `json:"base_branch"`
+	Mode         string            `json:"mode,omitempty"`          // "sprt" or "gauntlet"
 	TC           string            `json:"tc"`
 	HashMB       int               `json:"hash_mb"`
 	Concurrency  int               `json:"concurrency"`
@@ -65,6 +76,7 @@ type WorkClaim struct {
 	NNUEFile     string            `json:"nnue_file"`
 	BaseNNUEFile string            `json:"base_nnue_file,omitempty"`
 	Options      map[string]string `json:"options"`
+	OpponentName string            `json:"opponent_name,omitempty"` // gauntlet: which rival to play
 }
 
 // BatchReport is sent by a worker after completing a batch.
@@ -75,12 +87,14 @@ type BatchReport struct {
 	Draws        int    `json:"draws"`
 	Losses       int    `json:"losses"`
 	Error        string `json:"error,omitempty"`
+	OpponentName string `json:"opponent_name,omitempty"` // gauntlet: which rival was played
 }
 
 // ClaimRequest is sent by a worker to request work.
 type ClaimRequest struct {
-	WorkerID string `json:"worker_id"`
-	Cores    int    `json:"cores"`
+	WorkerID         string   `json:"worker_id"`
+	Cores            int      `json:"cores"`
+	AvailableEngines []string `json:"available_engines,omitempty"` // gauntlet: engines this worker has
 }
 
 // Coordinator manages experiments and distributes work.
@@ -175,20 +189,67 @@ const maxConsecutiveErrors = 3
 
 // activeExperiment returns a random running experiment for load balancing.
 // Skips experiments that have hit the consecutive error limit.
-func (c *Coordinator) activeExperiment() *Experiment {
-	var candidates []*Experiment
+// For SPRT mode, returns any running experiment.
+// For gauntlet mode, only returns experiments that have opponents the worker can test.
+func (c *Coordinator) activeExperiment(availableEngines []string) (*Experiment, string) {
+	var candidates []struct {
+		exp      *Experiment
+		opponent string // empty for SPRT, opponent name for gauntlet
+	}
 	for _, e := range c.experiments {
-		if e.Result.Status == "" || e.Result.Status == "running" {
-			if e.ConsecutiveErrors >= maxConsecutiveErrors {
-				continue // paused due to errors
+		if e.Result.Status != "" && e.Result.Status != "running" {
+			continue
+		}
+		if e.ConsecutiveErrors >= maxConsecutiveErrors {
+			continue
+		}
+		if e.IsGauntlet() {
+			// Find an opponent that needs more games and this worker can run
+			opp := c.pickGauntletOpponent(e, availableEngines)
+			if opp != "" {
+				candidates = append(candidates, struct {
+					exp      *Experiment
+					opponent string
+				}{e, opp})
 			}
-			candidates = append(candidates, e)
+		} else {
+			candidates = append(candidates, struct {
+				exp      *Experiment
+				opponent string
+			}{e, ""})
 		}
 	}
 	if len(candidates) == 0 {
-		return nil
+		return nil, ""
 	}
-	return candidates[time.Now().UnixNano()%int64(len(candidates))]
+	pick := candidates[time.Now().UnixNano()%int64(len(candidates))]
+	return pick.exp, pick.opponent
+}
+
+// pickGauntletOpponent finds the opponent with fewest games that the worker can run.
+func (c *Coordinator) pickGauntletOpponent(e *Experiment, availableEngines []string) string {
+	available := make(map[string]bool, len(availableEngines))
+	for _, name := range availableEngines {
+		available[name] = true
+	}
+
+	bestOpp := ""
+	bestRemaining := 0
+	for _, opp := range e.Opponents {
+		if !available[opp] {
+			continue
+		}
+		done := 0
+		if r, ok := e.OpponentResults[opp]; ok {
+			done = r.Wins + r.Draws + r.Losses
+		}
+		remaining := e.GamesPerOpponent - done
+		if remaining > 0 && (bestOpp == "" || remaining > bestRemaining) {
+			bestOpp = opp
+			bestRemaining = remaining
+		}
+	}
+	return bestOpp
 }
 
 // Handler methods
@@ -290,7 +351,7 @@ func (c *Coordinator) handleClaimWork(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	e := c.activeExperiment()
+	e, opponent := c.activeExperiment(req.AvailableEngines)
 	if e == nil {
 		w.WriteHeader(http.StatusNoContent) // no work available
 		return
@@ -300,6 +361,7 @@ func (c *Coordinator) handleClaimWork(w http.ResponseWriter, r *http.Request) {
 		ExperimentID: e.ID,
 		Branch:       e.Branch,
 		BaseBranch:   e.BaseBranch,
+		Mode:         e.Mode,
 		TC:           e.TC,
 		HashMB:       e.HashMB,
 		Concurrency:  e.Concurrency,
@@ -309,6 +371,7 @@ func (c *Coordinator) handleClaimWork(w http.ResponseWriter, r *http.Request) {
 		NNUEFile:     e.NNUEFile,
 		BaseNNUEFile: e.BaseNNUEFile,
 		Options:      e.Options,
+		OpponentName: opponent,
 	}
 
 	e.NextOpening += e.BatchSize
@@ -374,13 +437,56 @@ func (c *Coordinator) handleReportWork(w http.ResponseWriter, r *http.Request) {
 		e.Result.Wins += rep.Wins
 		e.Result.Draws += rep.Draws
 		e.Result.Losses += rep.Losses
-		UpdateSPRT(&e.Result, e.SPRT)
+
+		if e.IsGauntlet() {
+			// Update per-opponent results
+			if e.OpponentResults == nil {
+				e.OpponentResults = make(map[string]*SPRTResult)
+			}
+			opp := rep.OpponentName
+			if opp != "" {
+				if e.OpponentResults[opp] == nil {
+					e.OpponentResults[opp] = &SPRTResult{Status: "running"}
+				}
+				r := e.OpponentResults[opp]
+				r.Wins += rep.Wins
+				r.Draws += rep.Draws
+				r.Losses += rep.Losses
+				r.Elo, r.EloErr = EstimateElo(r.Wins, r.Draws, r.Losses)
+			}
+			// Aggregate Elo from combined W/D/L
+			e.Result.Elo, e.Result.EloErr = EstimateElo(e.Result.Wins, e.Result.Draws, e.Result.Losses)
+			// Check completion: all opponents at target
+			e.Result.Status = "running"
+			allDone := true
+			for _, oppName := range e.Opponents {
+				done := 0
+				if r, ok := e.OpponentResults[oppName]; ok {
+					done = r.Wins + r.Draws + r.Losses
+				}
+				if done < e.GamesPerOpponent {
+					allDone = false
+					break
+				}
+			}
+			if allDone {
+				e.Result.Status = "completed"
+			}
+		} else {
+			UpdateSPRT(&e.Result, e.SPRT)
+		}
 	}
 
 	total := e.Result.Wins + e.Result.Draws + e.Result.Losses
-	log.Printf("batch report: experiment=%s worker=%s +%d=%d -%d total=%d LLR=%.2f Elo=%.1f±%.1f [%s]",
-		rep.ExperimentID, rep.WorkerID, rep.Wins, rep.Draws, rep.Losses,
-		total, e.Result.LLR, e.Result.Elo, e.Result.EloErr, e.Result.Status)
+	if e.IsGauntlet() {
+		log.Printf("batch report: experiment=%s worker=%s vs=%s +%d=%d -%d total=%d Elo=%.1f±%.1f [%s]",
+			rep.ExperimentID, rep.WorkerID, rep.OpponentName, rep.Wins, rep.Draws, rep.Losses,
+			total, e.Result.Elo, e.Result.EloErr, e.Result.Status)
+	} else {
+		log.Printf("batch report: experiment=%s worker=%s +%d=%d -%d total=%d LLR=%.2f Elo=%.1f±%.1f [%s]",
+			rep.ExperimentID, rep.WorkerID, rep.Wins, rep.Draws, rep.Losses,
+			total, e.Result.LLR, e.Result.Elo, e.Result.EloErr, e.Result.Status)
+	}
 
 	c.saveState()
 

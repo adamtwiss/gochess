@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -53,6 +54,7 @@ func runWorker(args []string) {
 	repo := fs.String("repo", ".", "local repo path")
 	cores := fs.Int("cores", 4, "number of CPU cores for cutechess")
 	id := fs.String("id", "", "worker ID (default: hostname)")
+	engines := fs.String("engines", "", "JSON file mapping rival engine names to binary paths (for gauntlet mode)")
 	fs.Parse(args)
 
 	workerID := *id
@@ -62,6 +64,13 @@ func runWorker(args []string) {
 	}
 
 	w := NewWorker(workerID, *coordinator, *repo, *cores)
+
+	if *engines != "" {
+		if err := w.LoadEngines(*engines); err != nil {
+			log.Fatalf("failed to load engines: %v", err)
+		}
+	}
+
 	w.Run()
 }
 
@@ -71,6 +80,7 @@ func runCreate(args []string) {
 	id := fs.String("id", "", "experiment ID (required)")
 	branch := fs.String("branch", "", "branch to test (required)")
 	base := fs.String("base", "main", "base branch")
+	mode := fs.String("mode", "sprt", "experiment mode: sprt or gauntlet")
 	tc := fs.String("tc", "10+0.1", "time control")
 	hashMB := fs.Int("hash", 64, "hash table size in MB")
 	elo0 := fs.Float64("elo0", 0, "SPRT elo0 (null hypothesis)")
@@ -79,6 +89,8 @@ func runCreate(args []string) {
 	concurrency := fs.Int("concurrency", 1, "cutechess concurrency (threads per worker)")
 	nnue := fs.String("nnue", "", "NNUE file for new engine (relative to repo)")
 	baseNnue := fs.String("base-nnue", "", "NNUE file for base engine (if different from -nnue)")
+	opponents := fs.String("opponents", "", "comma-separated rival engine names (gauntlet mode)")
+	gamesPerOpp := fs.Int("games-per-opponent", 200, "target games per opponent (gauntlet mode)")
 	fs.Parse(args)
 
 	if *id == "" || *branch == "" {
@@ -91,10 +103,11 @@ func runCreate(args []string) {
 		"id":          *id,
 		"branch":      *branch,
 		"base_branch": *base,
+		"mode":        *mode,
 		"tc":          *tc,
 		"hash_mb":     *hashMB,
-		"batch_size":   *batchSize,
-		"concurrency":  *concurrency,
+		"batch_size":  *batchSize,
+		"concurrency": *concurrency,
 		"nnue_file":      *nnue,
 		"base_nnue_file": *baseNnue,
 		"sprt": map[string]interface{}{
@@ -103,6 +116,19 @@ func runCreate(args []string) {
 			"alpha": 0.05,
 			"beta":  0.05,
 		},
+	}
+
+	if *mode == "gauntlet" {
+		if *opponents == "" {
+			fmt.Fprintf(os.Stderr, "Error: -opponents required for gauntlet mode\n")
+			os.Exit(1)
+		}
+		oppList := strings.Split(*opponents, ",")
+		for i := range oppList {
+			oppList[i] = strings.TrimSpace(oppList[i])
+		}
+		exp["opponents"] = oppList
+		exp["games_per_opponent"] = *gamesPerOpp
 	}
 
 	body, _ := json.Marshal(exp)
@@ -124,6 +150,11 @@ func runCreate(args []string) {
 
 	var result Experiment
 	json.NewDecoder(resp.Body).Decode(&result)
-	fmt.Printf("Created experiment: %s (branch=%s, base=%s, tc=%s)\n",
-		result.ID, result.Branch, result.BaseBranch, result.TC)
+	if result.IsGauntlet() {
+		fmt.Printf("Created gauntlet: %s (branch=%s, opponents=%v, games-per-opp=%d)\n",
+			result.ID, result.Branch, result.Opponents, result.GamesPerOpponent)
+	} else {
+		fmt.Printf("Created SPRT: %s (branch=%s, base=%s, tc=%s)\n",
+			result.ID, result.Branch, result.BaseBranch, result.TC)
+	}
 }
