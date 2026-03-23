@@ -9,7 +9,7 @@ A chess engine written in Go, built entirely through collaboration with Claude a
 - Lazy SMP multi-threaded search (configurable thread count)
 - Lockless transposition table, null-move pruning, late move reductions, late move pruning
 - Tapered evaluation with piece-square tables, pawn structure, mobility, king safety
-- Optional NNUE evaluation (HalfKA architecture, SIMD-accelerated on x86-64 and ARM64)
+- NNUE evaluation (v5 shallow wide architecture with CReLU/SCReLU, SIMD-accelerated on x86-64 AVX2 and ARM64 NEON)
 - Texel tuner for automated evaluation parameter optimization via self-play (disk-streamed, constant memory)
 - Syzygy endgame tablebase support (3-4-5-6 piece, via bundled Fathom C library)
 - Polyglot opening book support (standard .bin format, compatible with any Polyglot book)
@@ -66,7 +66,7 @@ With no flags, the engine starts in UCI protocol mode:
 | `Hash` | 64 | Transposition table size in MB |
 | `Threads` | 1 | Number of search threads (Lazy SMP) |
 | `Ponder` | true | Enable pondering |
-| `UseNNUE` | true | Enable NNUE evaluation (auto-loads net from working directory) |
+| `UseNNUE` | true | Enable NNUE evaluation (auto-loads net referenced by net.txt) |
 | `NNUEFile` | | Path to NNUE network file (`.nnue`); overrides auto-detection |
 | `MoveOverhead` | 50 | Move overhead in milliseconds (accounts for communication delay) |
 | `OwnBook` | true | Use the engine's opening book |
@@ -166,7 +166,7 @@ The tuner optimizes ~1268 evaluation parameters (material values, piece-square t
 ./tuner selfplay -games 20000 -time 200 -concurrency 6 -classical   # Use classical eval
 ```
 
-Selfplay uses NNUE evaluation by default (auto-loads the net from the working directory). Use `-classical` to fall back to handcrafted eval, or `-nnue path/to/net.nnue` to specify a network file.
+Selfplay uses NNUE evaluation by default (auto-loads the net referenced by net.txt). Use `-classical` to fall back to handcrafted eval, or `-nnue path/to/net.nnue` to specify a network file.
 
 This plays self-play games using opening positions from `testdata/noob_3moves.epd` for diversity. Each game records positions with the search score and game result in binpack format (`.bin`). Games are adjudicated when eval exceeds ±1000cp for 5 consecutive moves. Positions are filtered to skip the first 8 plies, positions where the side to move is in check, and positions with mate scores.
 
