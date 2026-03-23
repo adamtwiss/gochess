@@ -1119,6 +1119,121 @@ func TestNNUEIncrementalRandomGames(t *testing.T) {
 	}
 }
 
+// TestNNUEV7SaveLoadRoundTrip tests v7 (with L1 hidden layer) save/load and forward pass.
+func TestNNUEV7SaveLoadRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+
+	H := 256 // small for testing (must be multiple of 256 for SIMD)
+	L1 := 16
+
+	net := &NNUENetV5{
+		HiddenSize: H,
+		L1Size:     L1,
+		UseSCReLU:  false,
+		UsePairwise: false,
+	}
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	net.InputBiases = make([]int16, H)
+	net.L1Weights = make([]int16, 2*H*L1)
+	net.L1Biases = make([]int16, L1)
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*L1)
+
+	// Fill with small random values
+	for i := range net.InputWeights {
+		net.InputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Weights {
+		net.L1Weights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Biases {
+		net.L1Biases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.OutputWeights {
+		net.OutputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutputBias[b] = int32(rng.Intn(2001) - 1000)
+	}
+
+	// Save
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-v7.nnue")
+	if err := SaveNNUEV5(path, net); err != nil {
+		t.Fatalf("SaveNNUEV5 failed: %v", err)
+	}
+
+	// Verify version
+	ver, err := DetectNNUEVersion(path)
+	if err != nil {
+		t.Fatalf("DetectNNUEVersion failed: %v", err)
+	}
+	if ver != 7 {
+		t.Fatalf("expected version 7, got %d", ver)
+	}
+
+	// Load
+	loaded, err := LoadNNUEV5(path)
+	if err != nil {
+		t.Fatalf("LoadNNUEV5 failed: %v", err)
+	}
+
+	// Verify fields
+	if loaded.HiddenSize != H {
+		t.Errorf("HiddenSize: got %d, want %d", loaded.HiddenSize, H)
+	}
+	if loaded.L1Size != L1 {
+		t.Errorf("L1Size: got %d, want %d", loaded.L1Size, L1)
+	}
+	if len(loaded.L1Weights) != len(net.L1Weights) {
+		t.Fatalf("L1Weights length: got %d, want %d", len(loaded.L1Weights), len(net.L1Weights))
+	}
+	for i := range net.L1Weights {
+		if net.L1Weights[i] != loaded.L1Weights[i] {
+			t.Errorf("L1Weights[%d] mismatch: %d vs %d", i, net.L1Weights[i], loaded.L1Weights[i])
+			break
+		}
+	}
+	for i := range net.L1Biases {
+		if net.L1Biases[i] != loaded.L1Biases[i] {
+			t.Errorf("L1Biases[%d] mismatch: %d vs %d", i, net.L1Biases[i], loaded.L1Biases[i])
+			break
+		}
+	}
+	for i := range net.OutputWeights {
+		if net.OutputWeights[i] != loaded.OutputWeights[i] {
+			t.Errorf("OutputWeights[%d] mismatch: %d vs %d", i, net.OutputWeights[i], loaded.OutputWeights[i])
+			break
+		}
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		if net.OutputBias[b] != loaded.OutputBias[b] {
+			t.Errorf("OutputBias[%d] mismatch: %d vs %d", b, net.OutputBias[b], loaded.OutputBias[b])
+		}
+	}
+
+	// Test forward pass produces non-zero output
+	var b Board
+	b.Reset()
+	b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+
+	acc := NNUEAccumulatorV5{
+		White: make([]int16, H),
+		Black: make([]int16, H),
+	}
+	loaded.RecomputeAccumulator(&b, &acc, White)
+	loaded.RecomputeAccumulator(&b, &acc, Black)
+
+	score := loaded.Forward(&acc, White, b.AllPieces.Count())
+	t.Logf("v7 startpos eval: %d cp", score)
+	// With random weights, the score should be non-trivial
+	if score == 0 {
+		t.Error("forward pass returned exactly 0 with random weights — likely a bug")
+	}
+}
+
 // TestNNUEV5SIMDvsGeneric validates that SIMD v5 forward pass matches the Go fallback
 // across multiple net architectures and positions.
 func TestNNUEV5SIMDvsGeneric(t *testing.T) {

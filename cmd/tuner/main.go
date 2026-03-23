@@ -875,13 +875,23 @@ func runCheckNet(args []string) {
 	var netV4 *chess.NNUENet
 	var netV5 *chess.NNUENetV5
 
-	if version == 5 || version == 6 {
+	if version == 5 || version == 6 || version == 7 {
 		netV5, err = chess.LoadNNUEV5(netPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading v5 net: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error loading v%d net: %v\n", version, err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "info string NNUE v5 fingerprint %s from %s\n", netV5.Fingerprint(), netPath)
+		archDesc := fmt.Sprintf("FT=%d", netV5.HiddenSize)
+		if netV5.L1Size > 0 {
+			archDesc += fmt.Sprintf(" L1=%d", netV5.L1Size)
+		}
+		if netV5.UseSCReLU {
+			archDesc += " SCReLU"
+		}
+		if netV5.UsePairwise {
+			archDesc += " pairwise"
+		}
+		fmt.Fprintf(os.Stderr, "info string NNUE v%d (%s) fingerprint %s from %s\n", version, archDesc, netV5.Fingerprint(), netPath)
 	} else {
 		netV4, err = chess.LoadNNUEAnyVersion(netPath)
 		if err != nil {
@@ -1153,6 +1163,7 @@ func runConvertBullet(args []string) {
 	v5 := fs.Bool("v5", false, "convert as v5 (shallow wide) instead of v4 (deep 256)")
 	screlu := fs.Bool("screlu", false, "mark net as SCReLU activation (v5 only)")
 	pairwise := fs.Bool("pairwise", false, "mark net as pairwise multiplication (v5 only)")
+	hidden := fs.Int("hidden", 0, "L1 hidden layer width (e.g. 16); 0 = no hidden layer (v5 only)")
 	fs.Parse(args)
 
 	if *input == "" {
@@ -1168,7 +1179,11 @@ func runConvertBullet(args []string) {
 	}
 
 	if *v5 {
-		convertBulletV5(data, *output, *screlu, *pairwise)
+		if *hidden > 0 {
+			convertBulletV7(data, *output, *screlu, *pairwise, *hidden)
+		} else {
+			convertBulletV5(data, *output, *screlu, *pairwise)
+		}
 		return
 	}
 
@@ -1368,5 +1383,112 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise
 
 	fi, _ := os.Stat(outputPath)
 	fmt.Printf("Saved %s (%d bytes, v5)\n", outputPath, fi.Size())
+	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
+}
+
+// convertBulletV7 converts a Bullet quantised.bin with a hidden layer to v7 .nnue format.
+// Bullet layout for 3-layer net: l0w, l0b, l1w, l1b, l2w, l2b, [footer]
+func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise bool, l1Size int) {
+	const (
+		inputSize = 12288
+		buckets   = 8
+	)
+
+	// Strip Bullet footer if present
+	dataLen := len(data)
+	if dataLen >= 32 && string(data[dataLen-32:dataLen-16]) == "bulletbulletbull" {
+		dataLen -= 32
+	}
+
+	// Infer FT hidden size from file size.
+	// Layout: l0w(inputSize*H*2) + l0b(H*2) + l1w(2*H*L1*2) + l1b(L1*2) + l2w(L1*buckets*2) + l2b(buckets*4)
+	l2bBytes := buckets * 4
+	l2wBytes := l1Size * buckets * 2
+	l1bBytes := l1Size * 2
+	fixedBytes := l2bBytes + l2wBytes + l1bBytes
+	// Remaining: H * (inputSize*2 + 2 + 2*L1*2)
+	bytesPerNeuron := inputSize*2 + 2 + 2*l1Size*2
+	hiddenSize := (dataLen - fixedBytes) / bytesPerNeuron
+
+	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b
+		2*hiddenSize*l1Size*2 + l1Size*2 + // l1w + l1b
+		l1Size*buckets*2 + buckets*4 // l2w + l2b
+	fmt.Printf("Input file: %d bytes, inferred FT size: %d, L1 size: %d, expected: %d bytes\n",
+		len(data), hiddenSize, l1Size, expectedSize)
+	if dataLen < expectedSize {
+		fmt.Fprintf(os.Stderr, "Error: file too small (got %d, need %d)\n", dataLen, expectedSize)
+		os.Exit(1)
+	}
+
+	net := &chess.NNUENetV5{}
+	net.HiddenSize = hiddenSize
+	net.L1Size = l1Size
+	net.UseSCReLU = useSCReLU
+	net.UsePairwise = usePairwise
+	net.InputWeights = make([]int16, inputSize*hiddenSize)
+	net.InputBiases = make([]int16, hiddenSize)
+	net.L1Weights = make([]int16, 2*hiddenSize*l1Size)
+	net.L1Biases = make([]int16, l1Size)
+	net.OutputWeights = make([]int16, buckets*l1Size)
+	offset := 0
+
+	// l0w: [inputSize][hiddenSize] i16
+	for i := 0; i < inputSize; i++ {
+		for j := 0; j < hiddenSize; j++ {
+			net.InputWeights[i*hiddenSize+j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+
+	// l0b: [hiddenSize] i16
+	for j := 0; j < hiddenSize; j++ {
+		net.InputBiases[j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+		offset += 2
+	}
+
+	// l1w: [2*hiddenSize][l1Size] i16 — stored row-major in Bullet
+	for i := 0; i < 2*hiddenSize; i++ {
+		for j := 0; j < l1Size; j++ {
+			net.L1Weights[i*l1Size+j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+
+	// l1b: [l1Size] i16
+	for j := 0; j < l1Size; j++ {
+		net.L1Biases[j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+		offset += 2
+	}
+
+	// l2w: [l1Size][buckets] i16 — transpose to [bucket][l1Size]
+	l2wRaw := make([][8]int16, l1Size)
+	for i := 0; i < l1Size; i++ {
+		for b := 0; b < buckets; b++ {
+			l2wRaw[i][b] = int16(binary.LittleEndian.Uint16(data[offset:]))
+			offset += 2
+		}
+	}
+	for b := 0; b < buckets; b++ {
+		for i := 0; i < l1Size; i++ {
+			net.OutputWeights[b*l1Size+i] = l2wRaw[i][b]
+		}
+	}
+
+	// l2b: [buckets] i32
+	for b := 0; b < buckets; b++ {
+		net.OutputBias[b] = int32(binary.LittleEndian.Uint32(data[offset:]))
+		offset += 4
+	}
+
+	fmt.Printf("Parsed %d bytes of %d\n", offset, len(data))
+
+	// Save in v7 .nnue format
+	if err := chess.SaveNNUEV5(outputPath, net); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving: %v\n", err)
+		os.Exit(1)
+	}
+
+	fi, _ := os.Stat(outputPath)
+	fmt.Printf("Saved %s (%d bytes, v7 FT=%d L1=%d)\n", outputPath, fi.Size(), hiddenSize, l1Size)
 	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
 }

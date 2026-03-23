@@ -92,7 +92,7 @@ func LoadNNUEFromNetTxt() (nnueNet *NNUENet, nnueNetV5 *NNUENetV5, loadedPath st
 			return nil, nil, "", fmt.Errorf("error reading %s: %w", path, verr)
 		}
 
-		if version == 5 || version == 6 {
+		if version == 5 || version == 6 || version == 7 {
 			netV5, lerr := LoadNNUEV5(path)
 			if lerr != nil {
 				return nil, nil, "", fmt.Errorf("error loading NNUE v5 from %s: %w", path, lerr)

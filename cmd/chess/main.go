@@ -108,7 +108,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
 			os.Exit(1)
 		}
-		if version == 5 || version == 6 {
+		if version == 5 || version == 6 || version == 7 {
 			nnueNetV5, err = chess.LoadNNUEV5(*nnueFile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error loading NNUE v5: %v\n", err)
