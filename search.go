@@ -1255,7 +1255,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// NNUE-tuned margins: tighter than classical since eval is more accurate.
 		// improving = true -> depth * 60 (trust rising eval, prune aggressively)
 		// improving = false -> depth * 100
-		if depth <= 8 && ply > 0 {
+		if depth <= 7 && ply > 0 {
 			margin := depth * 100
 			if improving {
 				margin = depth * 70
@@ -1399,7 +1399,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// SEE capture pruning: at shallow depths, prune captures that lose material
 		if isCap && ply > 0 && !inCheck && depth <= 6 &&
 			move != ttMove && bestScore > -MateScore+100 &&
-			!b.SEESign(move, -depth*100) {
+			!b.SEESign(move, -depth*80) {
 			continue
 		}
 
@@ -1548,7 +1548,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					}
 				}
 			}
-			if staticEval+50+lmrDepth*50 <= alpha {
+			if staticEval+60+lmrDepth*60 <= alpha {
 				b.UnmakeMove(move)
 				continue
 			}
