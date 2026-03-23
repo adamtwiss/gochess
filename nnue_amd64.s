@@ -1132,3 +1132,97 @@ v5pw_n_loop:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueV5L1MatMulN(acc *int16, wT *int16, hidden *int32, accLen int, l1 int)
+//
+// L1 hidden layer matmul for one perspective (called twice: stm + ntm).
+// Computes: hidden[i] += sum_j( clamp(acc[j], 0, 255) * wT[i*accLen + j] )
+// for i=0..l1-1, j=0..accLen-1.
+// accLen must be a multiple of 32. l1 can be any positive value.
+//
+// Uses transposed weight layout [l1][accLen] for sequential memory access.
+// For each L1 neuron: CReLU dot product of accumulator against weight row,
+// using VPMADDWD (pairs of int16 → int32 partial sums).
+//
+// Register allocation:
+//   Y0  = zero (CReLU floor)
+//   Y1  = 255 (CReLU ceiling)
+//   Y8, Y9 = int32 accumulators (2x unrolled)
+//   Y2, Y3 = loaded+clamped acc values
+//   Y4, Y5 = loaded weights
+//   Y6, Y7 = VPMADDWD results
+//   SI  = acc base pointer
+//   DI  = weight pointer (advances through rows)
+//   R8  = hidden pointer (advances per neuron)
+//   CX  = inner loop count (accLen / 32)
+//   DX  = outer loop count (l1)
+//   R9  = weight row stride in bytes (accLen * 2)
+// ============================================================================
+TEXT ·nnueV5L1MatMulN(SB), NOSPLIT, $0-40
+	MOVQ acc+0(FP), SI
+	MOVQ wT+8(FP), DI
+	MOVQ hidden+16(FP), R8
+	MOVQ accLen+24(FP), CX
+	MOVQ l1+32(FP), DX
+
+	// Weight row stride in bytes
+	MOVQ CX, R9
+	SHLQ $1, R9                         // R9 = accLen * 2
+
+	// Inner loop count
+	SHRQ $5, CX                         // CX = accLen / 32
+
+	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+
+l1mm_outer:
+	VPXOR Y8, Y8, Y8                    // accumulator 1
+	VPXOR Y9, Y9, Y9                    // accumulator 2
+	MOVQ SI, R10                        // R10 = acc cursor (reset per neuron)
+	MOVQ DI, R11                        // R11 = weight cursor
+	MOVQ CX, R12                        // R12 = inner loop counter
+
+l1mm_inner:
+	// First 16 elements
+	VMOVDQU (R10), Y2
+	VPMAXSW Y0, Y2, Y2                  // clamp floor
+	VPMINSW Y1, Y2, Y2                  // clamp ceiling
+	VMOVDQU (R11), Y4
+	VPMADDWD Y2, Y4, Y6                 // pairwise mul-add → 8 int32
+	VPADDD Y6, Y8, Y8
+
+	// Second 16 elements (2x unrolled)
+	VMOVDQU 32(R10), Y3
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3
+	VMOVDQU 32(R11), Y5
+	VPMADDWD Y3, Y5, Y7
+	VPADDD Y7, Y9, Y9
+
+	ADDQ $64, R10
+	ADDQ $64, R11
+	DECQ R12
+	JNZ l1mm_inner
+
+	// Horizontal sum: Y8 + Y9 → scalar
+	VPADDD Y9, Y8, Y8
+	VEXTRACTI128 $1, Y8, X6
+	VPADDD X6, X8, X8
+	VPSHUFD $0x4E, X8, X6
+	VPADDD X6, X8, X8
+	VPSHUFD $0x01, X8, X6
+	VPADDD X6, X8, X8
+	VMOVD X8, AX
+
+	// Accumulate into hidden[i]
+	ADDL (R8), AX
+	MOVL AX, (R8)
+
+	ADDQ $4, R8                          // next hidden slot
+	ADDQ R9, DI                          // next weight row
+	DECQ DX
+	JNZ l1mm_outer
+
+	VZEROUPPER
+	RET

@@ -1310,3 +1310,97 @@ v5pwdotn_loop:
 	MOVD R12, ret+32(FP)
 
 	RET
+
+// ============================================================================
+// nnueV5L1MatMulN(acc *int16, wT *int16, hidden *int32, accLen int, l1 int)
+//
+// L1 hidden layer matmul for one perspective (called twice: stm + ntm).
+// Computes: hidden[i] += sum_j( clamp(acc[j], 0, 255) * wT[i*accLen + j] )
+// for i=0..l1-1, j=0..accLen-1.
+// accLen must be a multiple of 16. l1 can be any positive value.
+//
+// Uses transposed weight layout [l1][accLen].
+// For each L1 neuron: CReLU dot product using SMULL/SMLAL2.
+//
+// Register allocation:
+//   R0  = acc base pointer
+//   R1  = weight pointer (advances through rows)
+//   R2  = hidden pointer (advances per neuron)
+//   R3  = inner loop count (accLen / 16)
+//   R4  = outer loop count (l1)
+//   R5  = weight row stride in bytes (accLen * 2)
+//   R6  = acc cursor (reset per neuron)
+//   R7  = weight cursor
+//   R8  = inner loop counter
+//   V0  = zero (CReLU floor)
+//   V1  = 255 (CReLU ceiling)
+//   V16, V17 = int32 accumulators
+// ============================================================================
+TEXT ·nnueV5L1MatMulN(SB), NOSPLIT, $0-40
+	MOVD acc+0(FP), R0
+	MOVD wT+8(FP), R1
+	MOVD hidden+16(FP), R2
+	MOVD accLen+24(FP), R3
+	MOVD l1+32(FP), R4
+
+	// Weight row stride in bytes
+	LSL $1, R3, R5                       // R5 = accLen * 2
+
+	// Inner loop count
+	LSR $4, R3, R3                       // R3 = accLen / 16
+
+	// Constants
+	VEOR V0.B16, V0.B16, V0.B16         // V0 = zero
+	MOVD $255, R9
+	WORD $0x4E020D21                     // DUP V1.8H, W9   (broadcast 255)
+
+l1mm_neon_outer:
+	VEOR V16.B16, V16.B16, V16.B16      // accumulator 1
+	VEOR V17.B16, V17.B16, V17.B16      // accumulator 2
+	MOVD R0, R6                          // R6 = acc cursor
+	MOVD R1, R7                          // R7 = weight cursor
+	MOVD R3, R8                          // R8 = inner loop counter
+
+l1mm_neon_inner:
+	// First 8 elements
+	VLD1 (R6), [V2.B16]                 // load acc[j:j+8]
+	WORD $0x4E606442                     // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42                     // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R7), [V3.B16]                 // load wT[i*accLen+j:+8]
+	WORD $0x0E63C044                     // SMULL V4.4S, V2.4H, V3.4H
+	WORD $0x4E638044                     // SMLAL2 V4.4S, V2.8H, V3.8H
+	WORD $0x4EA48610                     // ADD V16.4S, V16.4S, V4.4S
+	ADD $16, R6, R6
+	ADD $16, R7, R7
+
+	// Second 8 elements
+	VLD1 (R6), [V2.B16]
+	WORD $0x4E606442                     // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42                     // SMIN V2.8H, V2.8H, V1.8H
+	VLD1 (R7), [V3.B16]
+	WORD $0x0E63C044                     // SMULL V4.4S, V2.4H, V3.4H
+	WORD $0x4E638044                     // SMLAL2 V4.4S, V2.8H, V3.8H
+	WORD $0x4EA48631                     // ADD V17.4S, V17.4S, V4.4S
+	ADD $16, R6, R6
+	ADD $16, R7, R7
+
+	SUBS $1, R8, R8
+	BNE l1mm_neon_inner
+
+	// Horizontal sum: V16 + V17 → scalar
+	WORD $0x4EB18610                     // ADD V16.4S, V16.4S, V17.4S
+	WORD $0x4EB0BE10                     // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10                     // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C                     // FMOV W12, S16
+
+	// Accumulate into hidden[i]
+	MOVW (R2), R9
+	ADDW R12, R9, R9
+	MOVW R9, (R2)
+
+	ADD $4, R2, R2                       // next hidden slot
+	ADD R5, R1, R1                       // next weight row
+	SUBS $1, R4, R4
+	BNE l1mm_neon_outer
+
+	RET

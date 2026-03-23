@@ -51,8 +51,9 @@ type NNUENetV5 struct {
 	InputBiases  []int16
 
 	// Hidden layer (only when L1Size > 0)
-	L1Weights []int16 // [2*HiddenSize * L1Size]
-	L1Biases  []int16 // [L1Size]
+	L1Weights  []int16 // [2*HiddenSize * L1Size] — row-major [inputIdx][l1Idx]
+	L1WeightsT []int16 // [L1Size * 2*HiddenSize] — transposed for SIMD matmul
+	L1Biases   []int16 // [L1Size]
 
 	// Output layer: [bucket * outWidth] where outWidth = L1Size (if L1Size>0) or 2*HiddenSize
 	OutputWeights []int16
@@ -77,6 +78,32 @@ func (net *NNUENetV5) outputWeightRow(bucket int) []int16 {
 	outWidth := net.outputWidth()
 	off := bucket * outWidth
 	return net.OutputWeights[off : off+outWidth]
+}
+
+// prepareL1Weights transposes L1 weights for SIMD matmul.
+// Produces two separate transposed arrays for STM and NTM perspectives:
+//   L1WeightsT[0 .. L1*H-1]     = STM weights: L1WeightsT[i*H + j] = L1Weights[j*L1 + i]
+//   L1WeightsT[L1*H .. 2*L1*H-1] = NTM weights: L1WeightsT[L1*H + i*H + j] = L1Weights[(H+j)*L1 + i]
+func (net *NNUENetV5) prepareL1Weights() {
+	if net.L1Size == 0 {
+		return
+	}
+	H := net.HiddenSize
+	L1 := net.L1Size
+	net.L1WeightsT = make([]int16, 2*L1*H)
+	// STM half: input indices [0, H)
+	for j := 0; j < H; j++ {
+		for i := 0; i < L1; i++ {
+			net.L1WeightsT[i*H+j] = net.L1Weights[j*L1+i]
+		}
+	}
+	// NTM half: input indices [H, 2H)
+	ntmOff := L1 * H
+	for j := 0; j < H; j++ {
+		for i := 0; i < L1; i++ {
+			net.L1WeightsT[ntmOff+i*H+j] = net.L1Weights[(H+j)*L1+i]
+		}
+	}
 }
 
 // outputWidth returns the number of output weights per bucket.
@@ -483,44 +510,48 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 	H := net.HiddenSize
 	L1 := net.L1Size
 
-	// Step 1: CReLU clamp both accumulators into a concat buffer
-	concatLen := 2 * H
-	// Use stack allocation for small sizes, heap for large
-	concat := make([]int32, concatLen)
-	for i := 0; i < H; i++ {
-		v := int32(stmAcc[i])
-		if v < 0 {
-			v = 0
-		}
-		if v > nnueV5ClipMax {
-			v = nnueV5ClipMax
-		}
-		concat[i] = v
-	}
-	for i := 0; i < H; i++ {
-		v := int32(ntmAcc[i])
-		if v < 0 {
-			v = 0
-		}
-		if v > nnueV5ClipMax {
-			v = nnueV5ClipMax
-		}
-		concat[H+i] = v
-	}
+	var hidden [64]int32 // L1 <= 64 for any reasonable hidden layer
 
-	// Step 2: L1 matmul: hidden[i] = L1Biases[i] + sum_j(concat[j] * L1Weights[j*L1 + i])
-	hidden := make([]int32, L1)
-	for i := 0; i < L1; i++ {
-		hidden[i] = int32(net.L1Biases[i])
-	}
-	for j := 0; j < concatLen; j++ {
-		if concat[j] == 0 {
-			continue
-		}
-		cj := concat[j]
-		wOff := j * L1
+	if nnueUseSIMDV5 && net.L1WeightsT != nil {
+		// SIMD path: use transposed weights [L1 × 2H]
+		// Initialize hidden from biases (widened to int32)
 		for i := 0; i < L1; i++ {
-			hidden[i] += cj * int32(net.L1Weights[wOff+i])
+			hidden[i] = int32(net.L1Biases[i])
+		}
+		// STM perspective: first half of transposed weights
+		nnueV5L1MatMulN(&stmAcc[0], &net.L1WeightsT[0], &hidden[0], H, L1)
+		// NTM perspective: second half of transposed weights
+		nnueV5L1MatMulN(&ntmAcc[0], &net.L1WeightsT[L1*H], &hidden[0], H, L1)
+	} else {
+		// Scalar fallback: outer product with row-major weights [2H × L1]
+		for i := 0; i < L1; i++ {
+			hidden[i] = int32(net.L1Biases[i])
+		}
+		for j := 0; j < H; j++ {
+			v := int32(stmAcc[j])
+			if v <= 0 {
+				continue
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			wOff := j * L1
+			for i := 0; i < L1; i++ {
+				hidden[i] += v * int32(net.L1Weights[wOff+i])
+			}
+		}
+		for j := 0; j < H; j++ {
+			v := int32(ntmAcc[j])
+			if v <= 0 {
+				continue
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			wOff := (H + j) * L1
+			for i := 0; i < L1; i++ {
+				hidden[i] += v * int32(net.L1Weights[wOff+i])
+			}
 		}
 	}
 
@@ -787,6 +818,9 @@ func readNNUEV5Body(f io.Reader, net *NNUENetV5) (*NNUENetV5, error) {
 	if err := binary.Read(f, binary.LittleEndian, &net.OutputBias); err != nil {
 		return nil, fmt.Errorf("reading output bias: %w", err)
 	}
+
+	// Prepare transposed L1 weights for SIMD matmul
+	net.prepareL1Weights()
 
 	return net, nil
 }
