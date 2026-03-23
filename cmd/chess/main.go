@@ -659,6 +659,11 @@ func formatKNPSComparison(baseNodes uint64, baseMs float64, curNodes uint64, cur
 }
 
 func runBench() {
+	// Parse bench-specific flags
+	benchFlags := flag.NewFlagSet("bench", flag.ExitOnError)
+	nnueFile := benchFlags.String("nnue", "", "NNUE network file (overrides net.txt)")
+	benchFlags.Parse(os.Args[2:])
+
 	// Standard bench positions covering opening, middlegame, endgame, tactical, quiet
 	positions := []string{
 		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",                   // Starting position
@@ -674,9 +679,26 @@ func runBench() {
 	const benchDepth = 13
 
 	// Load NNUE net
-	_, netV5, _, err := chess.LoadNNUEFromNetTxt()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v (bench will use classical eval)\n", err)
+	var netV5 *chess.NNUENetV5
+	if *nnueFile != "" {
+		var err error
+		netV5, err = chess.LoadNNUEV5(*nnueFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading NNUE: %v\n", err)
+			os.Exit(1)
+		}
+		activation := "CReLU"
+		if netV5.UseSCReLU {
+			activation = "SCReLU"
+		}
+		fmt.Fprintf(os.Stderr, "NNUE v5 loaded: %s (%s, %d hidden, fingerprint %s)\n",
+			*nnueFile, activation, netV5.HiddenSize, netV5.Fingerprint())
+	} else {
+		_, nv5, _, err := chess.LoadNNUEFromNetTxt()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v (bench will use classical eval)\n", err)
+		}
+		netV5 = nv5
 	}
 
 	tt := chess.NewTranspositionTable(16)
