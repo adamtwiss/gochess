@@ -232,34 +232,39 @@ Key principles:
 
 **Why:** Pruning tightening exploits shared eval blind spots. In self-play, both sides miss the same positions, so pruning them is "free." Against other engines with different evals, those pruned positions contain moves the opponent plays and we miss. The more aggressively we prune, the more we gain in self-play AND the more we lose cross-engine.
 
-**Empirical data (8×100 game gauntlets vs 8 rival engines, ±20 error bars):**
+**Revised transfer model (2026-03-23, from combined Hercules + Atlas gauntlet data):**
 
-| Change type | Example | Self-play | Cross-engine | Transfer |
-|------------|---------|-----------|-------------|----------|
-| Accuracy/information | multi-corr-hist | +28.6 | **+25** | ~1:1 |
-| Information/detection | TT noisy detection | +34.4 | **+46** | >1:1 |
-| NPS improvement | Finny tables | +165 | **+50** | ~0.3:1 |
-| Structural search | aspiration contraction | +48.9 | ~+20 | ~0.4:1 |
-| Pruning tightening | hist-prune 1500 | +14.7 | **-26** | **NEGATIVE** |
-| Pruning tightening | badnoisy 75→60 | +32.4 | **-18** | **NEGATIVE** |
-| Pruning tightening | opp-mat LMR + badnoisy | +77.3 | **-7** | **NEGATIVE** |
-| Pruning tightening | futility 100→80 | +33.6 | **-2** | **~ZERO** |
+| Change type | Example | Self-play | Cross-engine | Mechanism |
+|------------|---------|-----------|-------------|-----------|
+| Accuracy/information | multi-corr-hist | +28.6 | **+25** | Eval-agnostic, both sides benefit |
+| Self-correcting reduction | LMR C=1.30 | +13.3 | **~+8** | Re-search prevents permanent blindspots |
+| Eval-agnostic reduction | hindsight 200 | +16.2 | **+10** | Quiet detection works regardless of opponent |
+| NPS improvement | Finny tables | +165 | **+50** | ~0.3:1 discount |
+| Structural search | aspiration contraction | +48.9 | **~+20** | ~0.4:1 discount |
+| Hard capture pruning | SEE cap 80 | +25.2 | **-10** | Captures are where engines diverge most |
+| Capture reduction overfit | cap LMR continuous | +10.6 | **-26** | Fine-grained self-play optimization = overfitting |
+| Pruning tightening | hist-prune, badnoisy | +14-32 | **-18 to -26** | Shared blindspots exploited |
+| Bad extensions | check ext (SEE) | -11 | **-30 to -39** | 3:1 amplification — wasted nodes on eval-biased positions |
+| Bad extensions | singular ext | -60 to -140 | **-41** | Verification search too costly |
+
+**Key principle:** Any search decision tuned to our eval's biases gets amplified cross-engine — whether pruning what we think is unimportant (positive self-play, negative cross-engine) or extending what we think is important (negative self-play, *even more* negative cross-engine). Only eval-agnostic changes transfer cleanly.
 
 **Rules for search changes:**
 
-1. **Accuracy improvements** (correction history, eval refinement, information gathering): Trust self-play SPRT. These transfer ~1:1 or better.
-2. **Structural changes** (aspiration windows, time management, move ordering): Trust self-play SPRT with ~2:1 discount.
-3. **NPS improvements** (SIMD, caching, code optimization): Trust self-play SPRT with ~3:1 discount.
-4. **Pruning tightening** (tighter margins, deeper gates, more aggressive reduction): **DO NOT trust self-play SPRT.** Must validate with cross-engine gauntlet (4-5 rival engines, 100+ games each) before merging. A positive self-play result for pruning should make you suspicious, not confident.
+1. **Accuracy/information improvements** (correction history, eval refinement, move ordering): Trust self-play SPRT. ~1:1 transfer.
+2. **Self-correcting reductions** (LMR with re-search): Trust self-play SPRT. Re-search mechanism prevents permanent blindspots.
+3. **Eval-agnostic reductions** (hindsight — both sides agree position is quiet): Trust self-play SPRT. ~1:1 transfer.
+4. **Structural changes** (aspiration windows, time management): Trust self-play SPRT with ~2:1 discount.
+5. **NPS improvements** (SIMD, caching): Trust self-play SPRT with ~3:1 discount.
+6. **Hard capture pruning/reduction** (SEE thresholds, capture LMR tuning): **DO NOT trust self-play.** Must validate with cross-engine gauntlet. Captures are the most opponent-dependent search decisions.
+7. **Extensions** (check ext, singular ext): **DO NOT trust self-play.** Extensions invest nodes based on eval judgment, which is amplified 3:1 against diverse opponents. Only recapture extensions (forced tactical resolution) are proven beneficial.
+8. **Eval scale changes** (SCReLU activation, quantization): **Must test cross-engine.** Different eval dynamic ranges interact with all search thresholds simultaneously. SCReLU needs ×0.80 scale correction to match CReLU-tuned thresholds.
 
-**Practical workflow for pruning changes:**
-1. Self-play SPRT as first filter (kills -100 Elo disasters)
-2. If SPRT passes, run cross-engine gauntlet (4-5 closest rivals, 100 games each, ~30 min)
-3. Only merge if cross-engine delta is positive or clearly neutral
-
-**How to classify a change:** If the change makes the engine skip searching positions/moves it currently searches (tighter margins, deeper depth gates, more aggressive LMR/LMP/SEE thresholds), it is a pruning change. If it makes the engine evaluate or order moves differently without skipping them, it is an accuracy change.
-
-For full analysis, data tables, and methodology: see `docs/pruning-cross-engine.md`.
+**Practical workflow:**
+1. Self-play SPRT as fast first filter (kills -50 Elo disasters in 10 min)
+2. Cross-engine gauntlet (3-5 rival engines, 200 games each) for anything that touches eval-dependent thresholds, extensions, or capture handling
+3. RR tournament (8+ engines, 200 games per pair) for major changes before production release
+4. Only merge if cross-engine delta is positive or clearly neutral
 
 ## Maintenance Reminders
 
