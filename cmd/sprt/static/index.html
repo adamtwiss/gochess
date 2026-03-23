@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GoChess SPRT Dashboard</title>
+<title>GoChess Testing Dashboard</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -56,12 +56,24 @@
   button.delete { background: #666; font-size: 0.8em; padding: 4px 10px; }
   button.delete:hover { background: #f44336; }
 
+  .card.completed { border-left-color: #9c27b0; }
+  .card-status.completed { background: #9c27b0; }
+
+  .opp-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 0.9em; }
+  .opp-table th { text-align: left; color: #aaa; font-size: 0.8em; text-transform: uppercase;
+                   padding: 4px 8px; border-bottom: 1px solid #333; }
+  .opp-table td { padding: 4px 8px; }
+  .opp-table tr:nth-child(even) { background: rgba(255,255,255,0.03); }
+  .progress-bar { background: #333; height: 8px; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .progress-fill { height: 100%; background: #9c27b0; transition: width 0.3s; }
+
   .empty { color: #666; font-style: italic; padding: 10px; }
   .error { color: #f44336; margin: 8px 0; }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
-<h1>GoChess SPRT Dashboard</h1>
+<h1>GoChess Testing Dashboard</h1>
 
 <h2>Running</h2>
 <div id="running"></div>
@@ -84,7 +96,7 @@ async function fetchExperiments() {
 
 function renderExperiments(exps) {
   const running = exps.filter(e => e.result.status === 'running' || e.result.status === '' || e.result.status === 'error');
-  const finished = exps.filter(e => e.result.status === 'accepted' || e.result.status === 'rejected');
+  const finished = exps.filter(e => e.result.status === 'accepted' || e.result.status === 'rejected' || e.result.status === 'completed');
 
   $('running').innerHTML = running.length ? running.map(renderCard).join('') :
     '<p class="empty">No running experiments</p>';
@@ -96,25 +108,48 @@ function renderCard(e) {
   const r = e.result;
   const total = r.wins + r.draws + r.losses;
   const status = r.status || 'running';
-
-  // LLR bar calculation
-  const lower = Math.log(e.sprt.beta / (1 - e.sprt.alpha));
-  const upper = Math.log((1 - e.sprt.beta) / e.sprt.alpha);
-  const range_ = upper - lower;
-  let llrPct = ((r.llr - lower) / range_) * 100;
-  llrPct = Math.max(0, Math.min(100, llrPct));
+  const isGauntlet = e.mode === 'gauntlet';
 
   const eloColor = r.elo > 0 ? '#4caf50' : r.elo < -3 ? '#f44336' : '#fff';
 
-  return `
-    <div class="card ${status}">
-      <div class="card-header">
-        <span class="card-title">${e.id}</span>
-        <div>
-          <span class="card-status ${status}">${status.toUpperCase()}</span>
-          ${status === 'running' ? `<button class="delete" onclick="deleteExp('${e.id}')">Cancel</button>` : ''}
-        </div>
-      </div>
+  let middleSection;
+  if (isGauntlet) {
+    // Per-opponent table
+    const opps = e.opponents || [];
+    const oppResults = e.opponent_results || {};
+    const targetTotal = opps.length * (e.games_per_opponent || 200);
+    const pct = targetTotal > 0 ? Math.min(100, (total / targetTotal) * 100) : 0;
+    let oppRows = opps.map(opp => {
+      const or_ = oppResults[opp] || {wins:0, draws:0, losses:0, elo:0, elo_err:0};
+      const oppTotal = or_.wins + or_.draws + or_.losses;
+      const oppEloColor = or_.elo > 0 ? '#4caf50' : or_.elo < -3 ? '#f44336' : '#fff';
+      return `<tr>
+        <td>${opp}</td>
+        <td>${oppTotal} / ${e.games_per_opponent || 200}</td>
+        <td>${or_.wins}/${or_.draws}/${or_.losses}</td>
+        <td style="color:${oppEloColor}">${or_.elo.toFixed(1)} ± ${or_.elo_err.toFixed(1)}</td>
+      </tr>`;
+    }).join('');
+    oppRows += `<tr style="border-top:1px solid #444;font-weight:bold">
+      <td>AGGREGATE</td><td>${total}</td>
+      <td>${r.wins}/${r.draws}/${r.losses}</td>
+      <td style="color:${eloColor}">${r.elo.toFixed(1)} ± ${r.elo_err.toFixed(1)}</td>
+    </tr>`;
+    middleSection = `
+      <table class="opp-table">
+        <tr><th>Opponent</th><th>Games</th><th>W/D/L</th><th>Elo</th></tr>
+        ${oppRows}
+      </table>
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct.toFixed(0)}%"></div></div>
+      <div class="meta" style="margin-top:0">${total} / ${targetTotal} games (${pct.toFixed(0)}%)</div>`;
+  } else {
+    // SPRT LLR bar
+    const lower = Math.log(e.sprt.beta / (1 - e.sprt.alpha));
+    const upper = Math.log((1 - e.sprt.beta) / e.sprt.alpha);
+    const range_ = upper - lower;
+    let llrPct = ((r.llr - lower) / range_) * 100;
+    llrPct = Math.max(0, Math.min(100, llrPct));
+    middleSection = `
       <div class="stats">
         <div class="stat"><div class="stat-label">Games</div><div class="stat-value">${total}</div></div>
         <div class="stat"><div class="stat-label">W/D/L</div><div class="stat-value">${r.wins}/${r.draws}/${r.losses}</div></div>
@@ -124,9 +159,21 @@ function renderCard(e) {
       <div class="llr-bar">
         <div class="llr-label">LLR: ${r.llr.toFixed(2)} [${lower.toFixed(2)}, ${upper.toFixed(2)}]</div>
         <div class="llr-fill" style="width:${llrPct}%;background:${llrPct > 50 ? '#4caf50' : '#f44336'}"></div>
+      </div>`;
+  }
+
+  return `
+    <div class="card ${status}">
+      <div class="card-header">
+        <span class="card-title">${e.id} ${isGauntlet ? '(gauntlet)' : ''}</span>
+        <div>
+          <span class="card-status ${status}">${status.toUpperCase()}</span>
+          ${status === 'running' ? `<button class="delete" onclick="deleteExp('${e.id}')">Cancel</button>` : ''}
+        </div>
       </div>
+      ${middleSection}
       <div class="meta">
-        Branch: ${e.branch} vs ${e.base_branch} · TC: ${e.tc} · Hash: ${e.hash_mb}MB
+        Branch: ${e.branch}${isGauntlet ? '' : ' vs ' + e.base_branch} · TC: ${e.tc} · Hash: ${e.hash_mb}MB
         ${e.nnue_file ? ' · NNUE: ' + e.nnue_file : ''}
         · Batches: ${(e.batches || []).length}
         · Created: ${new Date(e.created_at).toLocaleString()}
@@ -135,20 +182,31 @@ function renderCard(e) {
 }
 
 async function createExperiment() {
+  const mode = $('f-mode').value;
   const exp = {
     id: $('f-id').value,
     branch: $('f-branch').value,
-    base_branch: $('f-base').value || 'main',
+    mode: mode,
     tc: $('f-tc').value || '10+0.1',
     hash_mb: parseInt($('f-hash').value) || 64,
-    batch_size: parseInt($('f-batch').value) || 50,
     nnue_file: $('f-nnue').value || '',
-    sprt: {
+  };
+
+  if (mode === 'gauntlet') {
+    const opps = $('f-opponents').value;
+    if (!opps) { $('form-error').textContent = 'Opponents required for gauntlet'; return; }
+    exp.opponents = opps.split(',').map(s => s.trim());
+    exp.games_per_opponent = parseInt($('f-gpo').value) || 200;
+    exp.batch_size = parseInt($('f-batch-g').value) || 50;
+  } else {
+    exp.base_branch = $('f-base').value || 'main';
+    exp.batch_size = parseInt($('f-batch').value) || 50;
+    exp.sprt = {
       elo0: parseFloat($('f-elo0').value) || 0,
       elo1: parseFloat($('f-elo1').value) || 10,
       alpha: 0.05, beta: 0.05
-    }
-  };
+    };
+  }
 
   if (!exp.id || !exp.branch) {
     $('form-error').textContent = 'ID and Branch are required';
@@ -188,21 +246,38 @@ setInterval(fetchExperiments, 5000);
 <h2>Create Experiment</h2>
 <div class="form-container">
   <div class="form-row">
+    <label>Mode <select id="f-mode" onchange="toggleMode()">
+      <option value="sprt">SPRT</option>
+      <option value="gauntlet">Gauntlet</option>
+    </select></label>
     <label>ID <input type="text" id="f-id" placeholder="lmr-c1.25"></label>
     <label>Branch <input type="text" id="f-branch" placeholder="feature-branch"></label>
-    <label>Base Branch <input type="text" id="f-base" placeholder="main" value="main"></label>
     <label>TC <input type="text" id="f-tc" placeholder="10+0.1" value="10+0.1"></label>
+    <label>Hash MB <input type="number" id="f-hash" value="64"></label>
+    <label>NNUE File <input type="text" id="f-nnue" placeholder="net.nnue"></label>
   </div>
-  <div class="form-row">
+  <div class="form-row" id="sprt-fields">
+    <label>Base Branch <input type="text" id="f-base" placeholder="main" value="main"></label>
     <label>Elo0 <input type="number" id="f-elo0" value="0" step="1"></label>
     <label>Elo1 <input type="number" id="f-elo1" value="10" step="1"></label>
-    <label>Hash MB <input type="number" id="f-hash" value="64"></label>
     <label>Batch Size <input type="number" id="f-batch" value="50"></label>
-    <label>NNUE File <input type="text" id="f-nnue" placeholder="net.nnue"></label>
+  </div>
+  <div class="form-row hidden" id="gauntlet-fields">
+    <label>Opponents <input type="text" id="f-opponents" placeholder="Texel,Ethereal,Laser"></label>
+    <label>Games/Opponent <input type="number" id="f-gpo" value="200"></label>
+    <label>Batch Size <input type="number" id="f-batch-g" value="50"></label>
   </div>
   <button onclick="createExperiment()">Create</button>
   <div id="form-error" class="error"></div>
 </div>
+
+<script>
+function toggleMode() {
+  const mode = $('f-mode').value;
+  $('sprt-fields').className = mode === 'sprt' ? 'form-row' : 'form-row hidden';
+  $('gauntlet-fields').className = mode === 'gauntlet' ? 'form-row' : 'form-row hidden';
+}
+</script>
 
 
 </body>
