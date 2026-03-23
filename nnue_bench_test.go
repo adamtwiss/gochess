@@ -115,7 +115,77 @@ func BenchmarkForwardV5(b *testing.B) {
 	}
 }
 
-// loadTestV5Net loads the best available v5 net for benchmarking.
+// BenchmarkForwardV5SCReLU benchmarks the v5 SCReLU forward pass in isolation.
+func BenchmarkForwardV5SCReLU(b *testing.B) {
+	netV5 := loadTestV5SCReLUNet(b)
+
+	var board Board
+	board.Reset()
+	board.AttachNNUEV5(netV5)
+	board.NNUEAccV5.MaterializeV5(netV5, &board)
+	acc := board.NNUEAccV5.Current()
+	pieceCount := board.AllPieces.Count()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		netV5.Forward(acc, White, pieceCount)
+	}
+}
+
+// BenchmarkSearchNNUEV5SCReLU benchmarks a depth-8 search with v5 SCReLU NNUE.
+func BenchmarkSearchNNUEV5SCReLU(b *testing.B) {
+	netV5 := loadTestV5SCReLUNet(b)
+
+	oldUseNNUE := UseNNUE
+	UseNNUE = true
+	defer func() { UseNNUE = oldUseNNUE }()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var board Board
+		board.Reset()
+		board.AttachNNUEV5(netV5)
+		board.Search(8, 0)
+	}
+}
+
+// BenchmarkForwardV5SCReLUDotOnly benchmarks just the SCReLU dot product SIMD kernel.
+func BenchmarkForwardV5SCReLUDotOnly(b *testing.B) {
+	netV5 := loadTestV5SCReLUNet(b)
+
+	var board Board
+	board.Reset()
+	board.AttachNNUEV5(netV5)
+	board.NNUEAccV5.MaterializeV5(netV5, &board)
+	acc := board.NNUEAccV5.Current()
+	H := netV5.HiddenSize
+	outW := netV5.OutputWeights[:H] // first bucket weights
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nnueV5SCReLUDotN(&acc.White[0], &outW[0], H)
+	}
+}
+
+// BenchmarkForwardV5CReLUDotOnly benchmarks just the CReLU dot product SIMD kernel for comparison.
+func BenchmarkForwardV5CReLUDotOnly(b *testing.B) {
+	netV5 := loadTestV5Net(b)
+
+	var board Board
+	board.Reset()
+	board.AttachNNUEV5(netV5)
+	board.NNUEAccV5.MaterializeV5(netV5, &board)
+	acc := board.NNUEAccV5.Current()
+	H := netV5.HiddenSize
+	outW := netV5.OutputWeights[:H] // first bucket weights
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nnueV5CReLUDotN(&acc.White[0], &outW[0], H)
+	}
+}
+
+// loadTestV5Net loads the best available v5 CReLU net for benchmarking.
 func loadTestV5Net(b *testing.B) *NNUENetV5 {
 	b.Helper()
 	// Try common v5 net names
@@ -125,6 +195,25 @@ func loadTestV5Net(b *testing.B) *NNUENetV5 {
 			return net
 		}
 	}
-	b.Skip("no v5 net available")
+	b.Skip("no v5 CReLU net available")
+	return nil
+}
+
+// loadTestV5SCReLUNet loads a v5 SCReLU net for benchmarking.
+func loadTestV5SCReLUNet(b *testing.B) *NNUENetV5 {
+	b.Helper()
+	for _, name := range []string{
+		"net-v5-1024s-w0-e400s400.nnue",
+		"net-sf80.net",
+	} {
+		net, err := LoadNNUEV5(name)
+		if err == nil {
+			if !net.UseSCReLU {
+				continue
+			}
+			return net
+		}
+	}
+	b.Skip("no v5 SCReLU net available")
 	return nil
 }

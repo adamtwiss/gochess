@@ -920,66 +920,109 @@ v5dotn_loop:
 
 // ============================================================================
 // nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
-// Exact SCReLU dot product for any width (multiple of 16).
+// Optimized SCReLU dot product using VPMADDWD instead of VPMULLD.
 // Computes: sum = sum_i( clamp(acc[i], 0, 255)^2 * weights[i] ) for i=0..count-1
 // Returns int64 (caller divides by QA=255).
-// Uses int32 for x² and x²*w, then widens to int64 for accumulation to avoid overflow.
+//
+// Key optimization: decompose x^2 = x_sq_lo + x_sq_hi * 32768 where:
+//   x_sq_lo = x^2 & 0x7FFF (always positive int16, safe for signed VPMADDWD)
+//   x_sq_hi = x^2 >> 15    (0 or 1)
+// This replaces 4 slow VPMULLD per 16 elements with 1 VPMULLW + 2 VPMADDWD.
+// hi terms (max 65534/pair) safely accumulate in int32 throughout the loop.
+// 2x unrolled: processes 32 elements per iteration. count must be multiple of 32.
+//
+// Register allocation:
+//   Y0  = zero (floor), Y1 = 255 (ceiling), Y2 = 0x7FFF mask
+//   Y3-Y7 = temporaries (loaded data, x_sq, lo/hi terms)
+//   Y8-Y11 = int64 accumulators (lo terms)
+//   Y12-Y13 = int32 accumulators (hi terms)
+//   Y14-Y15 = temporaries for second group
 // ============================================================================
 TEXT ·nnueV5SCReLUDotN(SB), NOSPLIT, $0-32
 	MOVQ acc+0(FP), AX
 	MOVQ weights+8(FP), BX
 	MOVQ count+16(FP), CX
-	SHRQ $4, CX                         // count / 16 = iterations
+	SHRQ $5, CX                         // count / 32 = iterations
+
 	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
 	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
-	VPXOR Y8, Y8, Y8                    // int64 accumulator 0
-	VPXOR Y9, Y9, Y9                    // int64 accumulator 1
-	VPXOR Y10, Y10, Y10                 // int64 accumulator 2
-	VPXOR Y11, Y11, Y11                 // int64 accumulator 3
+
+	// Generate mask 0x7FFF: all 1s shifted right 1
+	VPCMPEQW Y2, Y2, Y2                 // all 1s (0xFFFF per word)
+	VPSRLW $1, Y2, Y2                   // 0x7FFF per word
+
+	// Int64 accumulators for lo terms
+	VPXOR Y8, Y8, Y8
+	VPXOR Y9, Y9, Y9
+	VPXOR Y10, Y10, Y10
+	VPXOR Y11, Y11, Y11
+	// Int32 accumulators for hi terms
+	VPXOR Y12, Y12, Y12
+	VPXOR Y13, Y13, Y13
 
 v5screlu_n_loop:
-	// Load 16 int16 acc values and clamp to [0, 255]
-	VMOVDQU (AX), Y2
-	VPMAXSW Y0, Y2, Y2                  // max(0, x)
-	VPMINSW Y1, Y2, Y2                  // min(255, x)
-	// Load 16 int16 weights
-	VMOVDQU (BX), Y3
+	// ======== First 16 elements ========
+	VMOVDQU (AX), Y3                    // acc[0..15]
+	VPMAXSW Y0, Y3, Y3                  // clamp lower
+	VPMINSW Y1, Y3, Y3                  // clamp upper
+	VPMULLW Y3, Y3, Y4                  // x_sq = x^2 (uint16, exact for x<=255)
+	VMOVDQU (BX), Y5                    // weights[0..15]
+	VPAND Y2, Y4, Y6                    // x_sq_lo = x_sq & 0x7FFF
+	VPSRLW $15, Y4, Y7                  // x_sq_hi = x_sq >> 15 (0 or 1)
+	VPMADDWD Y5, Y6, Y6                 // lo_pairs (int32)
+	VPMADDWD Y5, Y7, Y7                 // hi_pairs (int32)
+	VPADDD Y7, Y12, Y12                 // hi_acc += hi_pairs
 
-	// --- Low 8 elements ---
-	VPMOVSXWD X2, Y4                    // x[0..7] -> int32
-	VPMOVSXWD X3, Y5                    // w[0..7] -> int32
-	VPMULLD Y4, Y4, Y6                  // x^2 [0..7] (int32)
-	VPMULLD Y5, Y6, Y6                  // x^2 * w [0..7] (int32)
-	// Widen to int64 and accumulate
-	VPMOVSXDQ X6, Y7                    // low 4 -> int64
-	VPADDQ Y7, Y8, Y8
-	VEXTRACTI128 $1, Y6, X7
-	VPMOVSXDQ X7, Y7                    // high 4 -> int64
-	VPADDQ Y7, Y9, Y9
+	// Widen lo_pairs to int64 and accumulate
+	VPMOVSXDQ X6, Y4
+	VPADDQ Y4, Y8, Y8
+	VEXTRACTI128 $1, Y6, X4
+	VPMOVSXDQ X4, Y4
+	VPADDQ Y4, Y9, Y9
 
-	// --- High 8 elements ---
-	VEXTRACTI128 $1, Y2, X4
-	VPMOVSXWD X4, Y4                    // x[8..15] -> int32
-	VEXTRACTI128 $1, Y3, X5
-	VPMOVSXWD X5, Y5                    // w[8..15] -> int32
-	VPMULLD Y4, Y4, Y6                  // x^2 [8..15]
-	VPMULLD Y5, Y6, Y6                  // x^2 * w [8..15]
-	// Widen to int64 and accumulate
-	VPMOVSXDQ X6, Y7                    // low 4 -> int64
-	VPADDQ Y7, Y10, Y10
-	VEXTRACTI128 $1, Y6, X7
-	VPMOVSXDQ X7, Y7                    // high 4 -> int64
-	VPADDQ Y7, Y11, Y11
+	// ======== Second 16 elements ========
+	VMOVDQU 32(AX), Y3                  // acc[16..31]
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3
+	VPMULLW Y3, Y3, Y4                  // x_sq
+	VMOVDQU 32(BX), Y5                  // weights[16..31]
+	VPAND Y2, Y4, Y6                    // x_sq_lo
+	VPSRLW $15, Y4, Y7                  // x_sq_hi
+	VPMADDWD Y5, Y6, Y6                 // lo_pairs
+	VPMADDWD Y5, Y7, Y7                 // hi_pairs
+	VPADDD Y7, Y13, Y13                 // hi_acc2 += hi_pairs
 
-	ADDQ $32, AX
-	ADDQ $32, BX
+	// Widen lo_pairs to int64 and accumulate
+	VPMOVSXDQ X6, Y4
+	VPADDQ Y4, Y10, Y10
+	VEXTRACTI128 $1, Y6, X4
+	VPMOVSXDQ X4, Y4
+	VPADDQ Y4, Y11, Y11
+
+	ADDQ $64, AX
+	ADDQ $64, BX
 	DECQ CX
 	JNZ v5screlu_n_loop
 
-	// Horizontal sum: Y8+Y9+Y10+Y11 -> single int64
+	// === Epilogue: combine accumulators ===
+
+	// Phase 1: Reduce 4 int64 lo accumulators to 1
 	VPADDQ Y9, Y8, Y8
 	VPADDQ Y11, Y10, Y10
-	VPADDQ Y10, Y8, Y8                  // 4 x int64
+	VPADDQ Y10, Y8, Y8                  // Y8 = 4 x int64 (lo total)
+
+	// Phase 2: Reduce 2 int32 hi accumulators and add to lo
+	VPADDD Y13, Y12, Y12                // Y12 = 8 x int32 (hi total)
+	// Widen hi to int64, shift left by 15 (multiply by 32768), add to Y8
+	VPMOVSXDQ X12, Y4                   // low 4 int32 -> int64
+	VPSLLQ $15, Y4, Y4                  // * 32768
+	VPADDQ Y4, Y8, Y8
+	VEXTRACTI128 $1, Y12, X12
+	VPMOVSXDQ X12, Y4                   // high 4 int32 -> int64
+	VPSLLQ $15, Y4, Y4
+	VPADDQ Y4, Y8, Y8
+
+	// Phase 3: Horizontal sum of Y8 (4 x int64 -> 1 int64)
 	VEXTRACTI128 $1, Y8, X9
 	VPADDQ X9, X8, X8                   // 2 x int64
 	VPSHUFD $0x4E, X8, X9               // swap 64-bit halves
