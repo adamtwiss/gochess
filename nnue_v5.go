@@ -442,6 +442,14 @@ func (net *NNUENetV5) Forward(acc *NNUEAccumulatorV5, stm Color, pieceCount int)
 	// Final centipawns = output / 16320 * 400 = output * 400 / 16320
 	result := int(output) * nnueV5EvalScale / nnueV5BiasScale
 
+	// SCReLU eval scale correction: squared activation produces wider dynamic range
+	// than CReLU, making search thresholds (tuned for CReLU) effectively tighter.
+	// Bracketed cross-engine: 0.75 (+28) < 0.80 (+35) > 0.85 (+7). Peak at 0.80.
+	// TODO: apply this correction in the Bullet converter output weights instead.
+	if net.UseSCReLU {
+		result = result * 4 / 5
+	}
+
 	return result
 }
 

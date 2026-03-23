@@ -2833,3 +2833,140 @@ Experiments that showed small positive Elo (+2 to +6) but couldn't reach H1 with
 
 ### V5: Retry Razoring Depth 3 (heading H0)
 - **Status**: -16.2 Elo at 613 games, heading H0.
+
+## Cross-Engine Gauntlet Ablation (2026-03-23)
+
+Testing method: 600-game gauntlet vs Texel, Ethereal, Laser (200 per engine), 10+0.1s, Hash=64.
+Baseline comparison: HEAD was -2 ±24, pre-Titan was +14 ±23.
+
+### Revert LMR C=1.30 → C=1.50 (KEEP C=1.30)
+- **Change**: Undo LMR quiet constant from 1.30 back to 1.50.
+- **Result**: **-10 ±22** (600 games). Worse than HEAD by 8 Elo.
+- **Notes**: LMR reduction is self-correcting (re-search on fail high). More aggressive reduction saves nodes for important moves without creating permanent blindspots. Classification: safe reduction change, transfers well.
+
+### Revert SEE Cap 80 → 100 (REVERTED — merged)
+- **Change**: Undo SEE capture pruning from -depth*80 to -depth*100.
+- **Result**: **+8 ±22** (600 games). Better than HEAD by 10 Elo.
+- **Notes**: SEE cap 80 was +25 self-play but prunes captures that opponents exploit. Hard capture pruning creates permanent blindspots. Reverted in commit 7731b64.
+
+### Revert Cap LMR Continuous /5000 → Discrete ±2000 (REVERTED — merged)
+- **Change**: Replace continuous `reduction -= captHistVal/5000` with discrete thresholds (±2000 → ±1 reduction).
+- **Result**: **+24 ±23** (600 games). Better than HEAD by 26 Elo.
+- **Notes**: Biggest single finding. Continuous adjustment over-tunes to self-play tactical patterns. Discrete thresholds act as noise filters — only adjust for clearly good/bad captures, leave ambiguous middle alone. The original SPRT pass (+10.6) was a mirage; later retest was -1.6. Reverted in commit 7731b64.
+
+### Cleaned Baseline (Both Reverts Combined)
+- **Result**: **+19 ±22** (600 games). Better than HEAD by 21, better than pre-Titan by 5.
+- **Per-engine**: vs Ethereal -35 (was -98), vs Texel +4 (was -8), vs Laser +125 (was +96).
+- **Notes**: Both reverts combined successfully. The improvement is concentrated against Ethereal (strongest opponent), consistent with removing blindspots that strong engines exploit.
+
+### Singular Extensions on Cleaned Base (REJECTED cross-engine)
+- **Change**: Re-enable singular extensions (SingularExtEnabled=true, wire singularExtension into extension variable). Tested on cleaned base (both capture reverts applied).
+- **Result**: **-22 ±23** (600 games, Hercules). ~41 Elo worse than cleaned baseline.
+- **Notes**: SE remains broken in our engine regardless of testing method (self-play: -60 to -140, cross-engine: -41). The verification search at (depth-1)/2 costs too many nodes for insufficient extensions. May need fundamentally different approach (multi-cut, fractional extensions).
+
+### SEE-Filtered Check Extensions on Cleaned Base (REJECTED cross-engine)
+- **Change**: Extend checks that don't lose material (`givesCheck && SEE >= 0`). On cleaned base. Previous raw check ext was -11 self-play.
+- **Result**: Hercules: **-8 ±23** (600 games). Atlas: **-26 ±16** (1200 games). Delta vs baseline: **-30 to -39 Elo**.
+- **Per-engine (Atlas)**: vs Ethereal -68 (base -45), vs Texel -36 (base +5), vs Laser +25 (base +51).
+- **Notes**: SEE filter doesn't save check extensions. Harmful cross-engine on both machines. Check extensions were -11 in self-play but -30 to -39 cross-engine — a **3:1 amplification** of harm, not a discount. Extensions that invest nodes based on our eval's judgment of "important" positions waste nodes cross-engine when opponents handle those positions differently.
+
+### Extended Cleaned Baseline (Hercules, 1200 games)
+- **Result**: **+19 ±16** (1200 games). Consistent across two runs (+19, +19).
+- **Per-engine**: vs Ethereal -79, vs Texel -10, vs Laser +132.
+- **Notes**: Definitive Hercules reference point for all subsequent experiments.
+
+### Extended Cleaned Baseline (Atlas, 1200 games)
+- **Result**: **+4 ±16** (1200 games).
+- **Per-engine**: vs Ethereal -45, vs Texel +5, vs Laser +51.
+- **Notes**: Lower than Hercules (+19) due to slower per-thread speed on Atlas AMD hardware (effective TC difference). All Atlas experiments compared against this Atlas baseline.
+
+## Atlas Gauntlet Series (2026-03-23)
+
+Testing method: 1200-game gauntlet vs Texel, Ethereal, Laser (400 per engine), 10+0.1s, Hash=64, concurrency 16.
+All on cleaned baseline (commit 7731b64). Atlas AMD hardware.
+
+### No-Hindsight (Atlas, KEEP HINDSIGHT)
+- **Change**: Disable hindsight reduction (comment out `depth--` when `evalSum > 200`).
+- **Result**: **-6 ±17** (1200 games). Delta vs baseline: **-10**.
+- **Per-engine**: vs Ethereal -39, vs Texel -29, vs Laser +49.
+- **Notes**: Hindsight reduction is genuinely useful cross-engine, not a self-play artifact. When both sides' evals agree the position is quiet, reducing is safe regardless of opponent — it's an eval-agnostic signal. Confirmed: keep hindsight 200.
+
+### Loosen Futility 80+d*80 (Atlas, NEUTRAL)
+- **Change**: Widen futility margin from 60+d*60 to 80+d*80 (pre-Titan value).
+- **Result**: **+4 ±16** (1200 games). Delta vs baseline: **0**.
+- **Per-engine**: vs Ethereal -46, vs Texel +3, vs Laser +54.
+- **Notes**: Current 60+d*60 is well-calibrated. Neither tighter nor looser helps cross-engine. Confirmed optimal.
+
+### Loosen LMP 4+d² (Atlas, SLIGHTLY WORSE)
+- **Change**: LMP from 3+d² to 4+d² (one extra move before pruning).
+- **Result**: **-3 ±16** (1200 games). Delta vs baseline: **-7**.
+- **Per-engine**: vs Ethereal -72 (base -45), vs Texel +10 (base +5), vs Laser +53 (base +51).
+- **Notes**: Loosening LMP hurts mainly vs Ethereal (-27 delta). Extra late moves searched are mostly noise that costs time vs strong opponents. Current 3+d² confirmed. Pattern: Ethereal is the most sensitive opponent to our search quality changes.
+
+### NMP Verify 12 (Atlas, BORDERLINE POSITIVE)
+- **Change**: Restore NMP verification at depth≥12 (from depth≥14). More verification = fewer NMP blindspots.
+- **Result**: **+9 ±16** (1200 games). Delta vs baseline: **+5**.
+- **Per-engine**: vs Ethereal -51, vs Texel -3, vs Laser +82.
+- **Notes**: Mild positive from restoring more NMP verification. Depth 14 change was +28 self-play (less verification = more aggressive) but the extra blindspots may hurt cross-engine. Borderline — +5 ±16 needs more games to confirm. Consider retesting or parking.
+
+## NNUE Model Cross-Engine Tests (2026-03-23)
+
+Testing method: 600-game gauntlet vs Texel, Ethereal, Laser, 10+0.1s, Hash=64, Hercules.
+All using cleaned search binary (commit 7731b64).
+
+### SCReLU 1024 sb400 (net-v5-1024s-w0-e400s400.nnue)
+- **Config**: 1024 SCReLU, wdl=0.0, cosine/400, final snapshot. GPU2 4070 training.
+- **Result**: **+10 ±22** (600 games). Implied delta vs CReLU production (+19): **-9**.
+- **Per-engine**: vs Ethereal -53, vs Texel -8, vs Laser +108.
+- **Notes**: SCReLU slightly behind CReLU but within error bars. check-net showed 15-20% larger piece-loss values (wider dynamic range from squared activation). Led to eval scale experiments below.
+
+## Eval Scale Experiments (2026-03-23)
+
+**Key discovery**: SCReLU's squared activation produces evals with wider dynamic range than CReLU. Our search thresholds (futility, RFP, NMP margins) were tuned for CReLU scale via self-play. The mismatch makes thresholds effectively tighter with SCReLU, causing over-pruning.
+
+Testing method: 600-game gauntlet vs Texel, Ethereal, Laser, 10+0.1s, Hercules.
+Scale applied as `result = result * N / M` after quantization in ForwardV5().
+
+### SCReLU ×0.80 Scale
+- **Result**: **+35 ±23** (600 games). Delta vs unscaled SCReLU (+10): **+25**. Delta vs CReLU baseline (+19): **+16**.
+- **Per-engine**: vs Ethereal -30, vs Texel +44, vs Laser +158.
+- **Notes**: Massive improvement from simply compressing eval range. Confirms the eval scale mismatch theory. SCReLU with correct scaling is **stronger than CReLU**.
+
+### CReLU ×0.80 Scale (control experiment)
+- **Result**: **+24 ±22** (600 games). Delta vs unscaled CReLU (+19): **+5**.
+- **Per-engine**: vs Ethereal -30, vs Texel +17, vs Laser +136.
+- **Notes**: Small gain for CReLU (within error bars overall), but large per-engine shifts: Ethereal improved from -79 to -30. The 0.80 multiplier acts as a global pruning de-tune. CReLU doesn't need it as much as SCReLU — the benefit is primarily SCReLU-specific.
+
+### SCReLU ×0.75 Scale (IN PROGRESS)
+- **Status**: +15 ±42 at 180 games. Trending below ×0.80 (+35).
+- **Notes**: 0.75 may be too much compression — losing eval resolution.
+
+### Bracket Summary (so far)
+| Scale | SCReLU Elo | CReLU Elo |
+|-------|-----------|-----------|
+| 1.00 | +10 ±22 | +19 ±16 |
+| 0.85 | pending | — |
+| 0.80 | **+35 ±23** | +24 ±22 |
+| 0.75 | ~+15 (early) | — |
+
+### Key Insights from Eval Scale Experiments
+
+1. **SCReLU is stronger than CReLU** when eval scale is corrected. +35 vs +19 = ~16 Elo advantage.
+2. **The scale mismatch was hiding SCReLU's strength**. Every previous SCReLU test was confounded by the wider dynamic range hitting self-play-tuned thresholds harder.
+3. **CReLU gains modestly from 0.80** (+5 overall), suggesting our search thresholds are slightly too aggressive generally, but not dramatically so.
+4. **The proper fix** is adjusting the Bullet converter's output quantization for SCReLU, not a runtime multiplier. The scale factor should be applied once at conversion time.
+5. **Extensions failed because they're eval-biased** — they invest nodes where our eval says "important", which gets amplified 3:1 against opponents with different evals. Eval-agnostic changes (LMR re-search, hindsight) transfer well.
+
+## Revised Cross-Engine Transfer Model (2026-03-23)
+
+Updated from today's combined Hercules + Atlas data:
+
+| Change type | Self-play | Cross-engine | Mechanism |
+|------------|-----------|-------------|-----------|
+| Accuracy/information | +X | ~+X | Eval-agnostic, both sides benefit |
+| Self-correcting reduction (LMR) | +X | ~+X | Re-search prevents permanent blindspots |
+| Eval-agnostic reduction (hindsight) | +X | ~+X | Quiet detection works regardless of opponent |
+| Bad extensions (check, singular) | -X | **-3X** | Node waste amplified by opponent diversity |
+| Hard capture pruning | +X | **-X** | Captures are where engines diverge most |
+| Capture reduction over-tuning | +X | **-2X** | Fine-grained self-play optimization = overfitting |
+| Eval scale mismatch | invisible | **-25** | Thresholds too tight for net's dynamic range |
