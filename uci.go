@@ -65,7 +65,6 @@ func NewUCIEngineWithIO(in io.Reader, out io.Writer) *UCIEngine {
 
 // Run enters the UCI command loop, reading and dispatching commands until "quit".
 func (e *UCIEngine) Run() {
-	defer e.cmdStop()
 	for e.input.Scan() {
 		line := strings.TrimSpace(e.input.Text())
 		if line == "" {
@@ -96,6 +95,9 @@ func (e *UCIEngine) Run() {
 			e.cmdDebug()
 		}
 	}
+	// EOF on stdin: wait for any running search to finish (don't abort it).
+	// This allows piped input like: printf "uci\nposition ...\ngo depth 10\n" | ./chess
+	e.searchWg.Wait()
 }
 
 func (e *UCIEngine) send(format string, args ...interface{}) {
