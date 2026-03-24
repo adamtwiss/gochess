@@ -1168,6 +1168,7 @@ func runConvertBullet(args []string) {
 	pairwise := fs.Bool("pairwise", false, "mark net as pairwise multiplication (v5 only)")
 	hidden := fs.Int("hidden", 0, "L1 hidden layer width (e.g. 16); 0 = no hidden layer (v5 only)")
 	l2width := fs.Int("hidden2", 0, "L2 hidden layer width (e.g. 32); requires -hidden (v5 only)")
+	int8l1 := fs.Bool("int8l1", false, "L1 weights are int8 at QA=64 (vs default int16 at QA=255)")
 	fs.Parse(args)
 
 	if *input == "" {
@@ -1184,7 +1185,7 @@ func runConvertBullet(args []string) {
 
 	if *v5 {
 		if *hidden > 0 {
-			convertBulletV7(data, *output, *screlu, *pairwise, *hidden, *l2width)
+			convertBulletV7(data, *output, *screlu, *pairwise, *hidden, *l2width, *int8l1)
 		} else {
 			convertBulletV5(data, *output, *screlu, *pairwise)
 		}
@@ -1393,7 +1394,7 @@ func convertBulletV5(data []byte, outputPath string, useSCReLU bool, usePairwise
 // convertBulletV7 converts a Bullet quantised.bin with hidden layers to v7 .nnue format.
 // Bullet layout: l0w, l0b, l1w, l1b, [l2w, l2b,] outw, outb, [footer]
 // l2Size=0 means no L2 layer (3-layer net), l2Size>0 means 4-layer net.
-func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise bool, l1Size int, l2Size int) {
+func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise bool, l1Size int, l2Size int, int8L1 bool) {
 	const (
 		inputSize = 12288
 		buckets   = 8
@@ -1413,6 +1414,10 @@ func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise
 	outWBytes := outInputWidth * buckets * 2
 	outBBytes := buckets * 4
 
+	l1wBytesPerWeight := 2 // int16
+	if int8L1 {
+		l1wBytesPerWeight = 1 // int8
+	}
 	l1bBytes := l1Size * 2
 	var l2Bytes int
 	if l2Size > 0 {
@@ -1420,15 +1425,18 @@ func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise
 	}
 
 	fixedBytes := l1bBytes + l2Bytes + outWBytes + outBBytes
-	bytesPerNeuron := inputSize*2 + 2 + 2*l1Size*2
+	bytesPerNeuron := inputSize*2 + 2 + 2*l1Size*l1wBytesPerWeight
 	hiddenSize := (dataLen - fixedBytes) / bytesPerNeuron
 
 	expectedSize := inputSize*hiddenSize*2 + hiddenSize*2 + // l0w + l0b
-		2*hiddenSize*l1Size*2 + l1Size*2 + // l1w + l1b
+		2*hiddenSize*l1Size*l1wBytesPerWeight + l1Size*2 + // l1w + l1b
 		l2Bytes + // l2w + l2b (0 if no L2)
 		outInputWidth*buckets*2 + buckets*4 // outw + outb
 
 	archDesc := fmt.Sprintf("FT=%d L1=%d", hiddenSize, l1Size)
+	if int8L1 {
+		archDesc += "(i8)"
+	}
 	if l2Size > 0 {
 		archDesc += fmt.Sprintf(" L2=%d", l2Size)
 	}
@@ -1444,6 +1452,11 @@ func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise
 	net.L2Size = l2Size
 	net.UseSCReLU = useSCReLU
 	net.UsePairwise = usePairwise
+	if int8L1 {
+		net.L1Scale = 64
+	} else {
+		net.L1Scale = 255
+	}
 	net.InputWeights = make([]int16, inputSize*hiddenSize)
 	net.InputBiases = make([]int16, hiddenSize)
 	net.L1Weights = make([]int16, 2*hiddenSize*l1Size)
@@ -1469,11 +1482,20 @@ func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise
 		offset += 2
 	}
 
-	// l1w: [2*hiddenSize][l1Size] i16
-	for i := 0; i < 2*hiddenSize; i++ {
-		for j := 0; j < l1Size; j++ {
-			net.L1Weights[i*l1Size+j] = int16(binary.LittleEndian.Uint16(data[offset:]))
-			offset += 2
+	// l1w: [2*hiddenSize][l1Size] — int8 or int16 depending on int8L1
+	if int8L1 {
+		for i := 0; i < 2*hiddenSize; i++ {
+			for j := 0; j < l1Size; j++ {
+				net.L1Weights[i*l1Size+j] = int16(int8(data[offset]))
+				offset++
+			}
+		}
+	} else {
+		for i := 0; i < 2*hiddenSize; i++ {
+			for j := 0; j < l1Size; j++ {
+				net.L1Weights[i*l1Size+j] = int16(binary.LittleEndian.Uint16(data[offset:]))
+				offset += 2
+			}
 		}
 	}
 
