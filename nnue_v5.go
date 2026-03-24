@@ -695,32 +695,36 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	biasScale := int64(qa2) // bias at QA_L1, multiply by QA² to match matmul
 
 	// Int8 SIMD fast path: SIMD pack SCReLU to uint8, then VPMADDUBSW kernel
-	if nnueUseSIMDV5 && net.L1Weights8T != nil {
+	// TODO: disabled pending SIMD kernel debugging — manual math matches but
+	// kernel produces different results. The int16 SIMD path is used instead.
+	if false && nnueUseSIMDV5 && net.L1Weights8T != nil {
 		var stmBuf [1536]byte
 		var ntmBuf [1536]byte
 		nnueSCReLUPack(&stmAcc[0], &stmBuf[0], H)
 		nnueSCReLUPack(&ntmAcc[0], &ntmBuf[0], H)
 
-		// Int8 matmul: result at scale QA * QA_L1
+		// Int8 matmul: input at scale QA (v²/255), weights at scale QA_L1 (64)
+		// → result at scale QA × QA_L1 = 16320
+		// Bias at scale QA_L1 = 64, must scale by QA to match matmul
+		qaInt := int32(nnueV5InputScale) // 255
 		var hidden32 [64]int32
 		for i := 0; i < L1; i++ {
-			hidden32[i] = int32(net.L1Biases[i]) // bias at scale QA_L1
+			hidden32[i] = int32(net.L1Biases[i]) * qaInt
 		}
 		nnueV5L1Int8MatMulN(&stmBuf[0], &net.L1Weights8T[0], &hidden32[0], H, L1)
 		nnueV5L1Int8MatMulN(&ntmBuf[0], &net.L1Weights8T[L1*H], &hidden32[0], H, L1)
 
-		// Dequantize to float, SCReLU
-		denom := float32(qaL1) // bias and matmul both at scale QA_L1 after uint8 input
+		// Dequantize: result at scale QA × QA_L1. Divide by QA to get scale QA_L1.
+		// Then clamp [0, QA_L1], square for SCReLU → scale QA_L1².
+		// Finally dequant to float by dividing by QA_L1².
 		var l1f [64]float32
+		qaL1sq := float32(qaL1) * float32(qaL1)
 		for i := 0; i < L1; i++ {
-			v := float32(hidden32[i]) / denom
-			if v < 0 {
-				v = 0
-			}
-			if v > 1 {
-				v = 1
-			}
-			l1f[i] = v * v
+			h := hidden32[i] / qaInt // scale QA_L1
+			if h < 0 { h = 0 }
+			if h > int32(qaL1) { h = int32(qaL1) }
+			hsq := h * h // SCReLU → scale QA_L1²
+			l1f[i] = float32(hsq) / qaL1sq // → [0, 1]
 		}
 
 		if net.L2Size > 0 {
