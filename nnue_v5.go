@@ -60,6 +60,13 @@ type NNUENetV5 struct {
 	L2Weights []int16 // [L1Size * L2Size]
 	L2Biases  []int16 // [L2Size]
 
+	// Float32 versions of L2 and output weights (dequantized at load time).
+	// Used for hidden layer forward pass — eliminates integer truncation errors.
+	L2WeightsF []float32 // [L1Size * L2Size] — L2Weights / QA
+	L2BiasesF  []float32 // [L2Size] — L2Biases / QA
+	OutWeightsF []float32 // [buckets * outWidth] — OutputWeights / QB
+	OutBiasF    [NNUEOutputBuckets]float32 // OutputBias / (QA * QB)
+
 	// Output layer: [bucket * outWidth] where outWidth = L2Size or L1Size or 2*HiddenSize
 	OutputWeights []int16
 	OutputBias    [NNUEOutputBuckets]int32
@@ -109,6 +116,43 @@ func (net *NNUENetV5) prepareL1Weights() {
 			net.L1WeightsT[ntmOff+i*H+j] = net.L1Weights[(H+j)*L1+i]
 		}
 	}
+}
+
+// prepareFloatWeights dequantizes L2 and output weights to float32 for the hidden layer forward pass.
+func (net *NNUENetV5) prepareFloatWeights() {
+	if net.L1Size == 0 {
+		return
+	}
+	qa := float32(nnueV5InputScale)
+	qb := float32(nnueV5OutputScale)
+	qab := qa * qb
+
+	outW := net.outputWidth()
+
+	// Output weights: int16 at scale QB → float
+	net.OutWeightsF = make([]float32, len(net.OutputWeights))
+	for i, w := range net.OutputWeights {
+		net.OutWeightsF[i] = float32(w) / qb
+	}
+	// Output biases: int32 at scale QA*QB → float
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutBiasF[b] = float32(net.OutputBias[b]) / qab
+	}
+
+	if net.L2Size > 0 {
+		// L2 weights: int16 at scale QA → float
+		net.L2WeightsF = make([]float32, len(net.L2Weights))
+		for i, w := range net.L2Weights {
+			net.L2WeightsF[i] = float32(w) / qa
+		}
+		// L2 biases: int16 at scale QA → float
+		net.L2BiasesF = make([]float32, len(net.L2Biases))
+		for i, b := range net.L2Biases {
+			net.L2BiasesF[i] = float32(b) / qa
+		}
+	}
+
+	_ = outW
 }
 
 // outputWidth returns the number of output weights per bucket.
@@ -578,13 +622,21 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 		return net.forwardL2CReLU(hidden[:L1], bucket)
 	}
 
-	// Output dot product: hidden at scale QA, weights at scale QB → scale QA*QB
+	// Output dot in float (if prepared) or int fallback
+	if net.OutWeightsF != nil {
+		qa := float32(nnueV5InputScale)
+		outWF := net.OutWeightsF[bucket*L1 : bucket*L1+L1]
+		outputF := net.OutBiasF[bucket]
+		for i := 0; i < L1; i++ {
+			outputF += float32(hidden[i]) / qa * outWF[i]
+		}
+		return int(outputF * nnueV5EvalScale)
+	}
 	outW := net.outputWeightRow(bucket)
 	output := int64(net.OutputBias[bucket])
 	for i := 0; i < L1; i++ {
 		output += int64(hidden[i]) * int64(outW[i])
 	}
-
 	return int(output) * nnueV5EvalScale / nnueV5BiasScale
 }
 
@@ -690,107 +742,120 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 		return net.forwardL2SCReLU(hidden[:L1], bucket, qa2)
 	}
 
-	// Output dot product: hidden at scale QA², weights at scale QB → scale QA²·QB
+	// Output dot in float (if prepared) or int fallback
+	if net.OutWeightsF != nil {
+		qa2f := float32(qa2)
+		outWF := net.OutWeightsF[bucket*L1 : bucket*L1+L1]
+		outputF := net.OutBiasF[bucket]
+		for i := 0; i < L1; i++ {
+			outputF += float32(hidden[i]) / qa2f * outWF[i]
+		}
+		return int(outputF * nnueV5EvalScale)
+	}
 	outW := net.outputWeightRow(bucket)
 	output := int64(net.OutputBias[bucket])
-	output *= int64(nnueV5InputScale) // scale bias to QA²·QB
+	output *= int64(nnueV5InputScale)
 	for i := 0; i < L1; i++ {
 		output += int64(hidden[i]) * int64(outW[i])
 	}
-
-	result := int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
-
-	return result
+	return int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
 }
 
-// forwardL2CReLU computes L2 matmul and output for CReLU nets.
+// forwardL2CReLU computes L2→output in float32 for CReLU nets.
 // l1out contains L1 values at scale QA after CReLU clamp.
 func (net *NNUENetV5) forwardL2CReLU(l1out []int32, bucket int) int {
 	L1 := net.L1Size
 	L2 := net.L2Size
+	qa := float32(nnueV5InputScale)
 
-	// L2 matmul: h2[k] = L2Biases[k] + sum_i(l1out[i] * L2Weights[i*L2+k])
-	// l1out at scale QA, L2Weights at scale QA → product at scale QA²
-	var h2 [64]int32
+	// Dequantize L1 output to float: l1out is at scale QA, divide by QA → [0, 1]
+	var l1f [64]float32
+	for i := 0; i < L1; i++ {
+		l1f[i] = float32(l1out[i]) / qa
+	}
+
+	// L2 matmul in float: h2[k] = bias[k] + sum_i(l1f[i] * w[i*L2+k])
+	var h2 [64]float32
 	for k := 0; k < L2; k++ {
-		h2[k] = int32(net.L2Biases[k])
+		h2[k] = net.L2BiasesF[k]
 	}
 	for i := 0; i < L1; i++ {
-		v := l1out[i]
-		if v == 0 {
+		if l1f[i] == 0 {
 			continue
 		}
 		wOff := i * L2
 		for k := 0; k < L2; k++ {
-			h2[k] += v * int32(net.L2Weights[wOff+k])
+			h2[k] += l1f[i] * net.L2WeightsF[wOff+k]
 		}
 	}
 
-	// Divide by QA, CReLU clamp → scale QA
+	// CReLU: clamp [0, 1]
 	for k := 0; k < L2; k++ {
-		h2[k] /= nnueV5InputScale
 		if h2[k] < 0 {
 			h2[k] = 0
 		}
-		if h2[k] > nnueV5ClipMax {
-			h2[k] = nnueV5ClipMax
+		if h2[k] > 1 {
+			h2[k] = 1
 		}
 	}
 
-	// Output dot: h2 at scale QA, output weights at scale QB → scale QA*QB
-	outW := net.outputWeightRow(bucket)
-	output := int64(net.OutputBias[bucket])
+	// Output dot in float
+	outW := net.OutWeightsF[bucket*L2 : bucket*L2+L2]
+	output := net.OutBiasF[bucket]
 	for k := 0; k < L2; k++ {
-		output += int64(h2[k]) * int64(outW[k])
+		output += h2[k] * outW[k]
 	}
 
-	return int(output) * nnueV5EvalScale / nnueV5BiasScale
+	return int(output * nnueV5EvalScale)
 }
 
-// forwardL2SCReLU computes L2 matmul and output for SCReLU nets.
+// forwardL2SCReLU computes L2→output in float32 for SCReLU nets.
 // l1out contains L1 values at scale QA² after SCReLU (v² where v in [0, QA]).
 func (net *NNUENetV5) forwardL2SCReLU(l1out []int32, bucket int, qa2 int32) int {
 	L1 := net.L1Size
 	L2 := net.L2Size
+	qa2f := float32(qa2)
 
-	// L2 matmul: l1out at scale QA², L2Weights at scale QA → product at scale QA³
-	// Bias at scale QA → scale up by QA² to match
-	var h2 [64]int32
+	// Dequantize L1 SCReLU output to float: l1out is at scale QA², divide by QA² → [0, 1]
+	var l1f [64]float32
+	for i := 0; i < L1; i++ {
+		l1f[i] = float32(l1out[i]) / qa2f
+	}
+
+	// L2 matmul in float: h2[k] = bias[k] + sum_i(l1f[i] * w[i*L2+k])
+	var h2 [64]float32
 	for k := 0; k < L2; k++ {
-		h2[k] = int32(net.L2Biases[k]) * qa2
+		h2[k] = net.L2BiasesF[k]
 	}
 	for i := 0; i < L1; i++ {
-		v := l1out[i]
-		if v == 0 {
+		if l1f[i] == 0 {
 			continue
 		}
 		wOff := i * L2
 		for k := 0; k < L2; k++ {
-			h2[k] += v * int32(net.L2Weights[wOff+k])
+			h2[k] += l1f[i] * net.L2WeightsF[wOff+k]
 		}
 	}
 
-	// Divide by QA² → scale QA, SCReLU: clamp [0, QA], square → scale QA²
+	// SCReLU: clamp [0, 1] then square
 	for k := 0; k < L2; k++ {
-		h2[k] /= qa2
 		if h2[k] < 0 {
 			h2[k] = 0
 		}
-		if h2[k] > nnueV5ClipMax {
-			h2[k] = nnueV5ClipMax
+		if h2[k] > 1 {
+			h2[k] = 1
 		}
-		h2[k] = h2[k] * h2[k] // SCReLU → scale QA²
+		h2[k] = h2[k] * h2[k]
 	}
 
-	// Output dot: h2 at scale QA², output weights at scale QB → scale QA²·QB
-	outW := net.outputWeightRow(bucket)
-	output := int64(net.OutputBias[bucket]) // bias at scale QA·QB
-	output *= int64(nnueV5InputScale)       // scale to QA²·QB
+	// Output dot in float
+	outW := net.OutWeightsF[bucket*L2 : bucket*L2+L2]
+	output := net.OutBiasF[bucket]
 	for k := 0; k < L2; k++ {
-		output += int64(h2[k]) * int64(outW[k])
+		output += h2[k] * outW[k]
 	}
 
-	return int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
+	return int(output * nnueV5EvalScale)
 }
 
 // Fingerprint returns a checksum string for the v5 network.
@@ -1092,6 +1157,9 @@ func readNNUEV5Body(f io.Reader, net *NNUENetV5) (*NNUENetV5, error) {
 
 	// Prepare transposed L1 weights for SIMD matmul
 	net.prepareL1Weights()
+
+	// Prepare float32 weights for hidden layer forward pass
+	net.prepareFloatWeights()
 
 	return net, nil
 }
