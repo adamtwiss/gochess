@@ -120,11 +120,6 @@ func nnueAccCopySubSubAddN(dst *int16, src *int16, oldW *int16, newW *int16, cap
 //go:noescape
 func nnueV5CReLUDot1024(acc *int16, weights *int16) int32
 
-// nnueV5SCReLUDot1024 computes approximate SCReLU dot product for v5 output layer.
-//
-//go:noescape
-func nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
-
 // nnueV5CReLUDotN computes CReLU dot product for any width (multiple of 16).
 //
 //go:noescape

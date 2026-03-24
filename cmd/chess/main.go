@@ -62,6 +62,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: chess [options]\n       chess fetch-net\n\nWith no flags, starts in UCI protocol mode.\n\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nSubcommands:\n")
+		fmt.Fprintf(os.Stderr, "  bench [-nnue <file>]                           # node count / NPS benchmark\n")
 		fmt.Fprintf(os.Stderr, "  fetch-net                                      # download NNUE net from net.txt URL\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  chess                                              # UCI mode\n")

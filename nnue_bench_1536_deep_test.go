@@ -3,10 +3,7 @@ package chess
 import "testing"
 
 func BenchmarkSearchNNUEV5_1536_d9(b *testing.B) {
-	net, err := LoadNNUEV5("net-v5-1536-wdl00-sb200.nnue")
-	if err != nil {
-		b.Skipf("no 1536 net: %v", err)
-	}
+	net := loadTest1536Net(b)
 	oldUseNNUE := UseNNUE
 	UseNNUE = true
 	defer func() { UseNNUE = oldUseNNUE }()

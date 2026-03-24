@@ -1045,60 +1045,6 @@ v5crelu1024_loop:
 	RET
 
 // ============================================================================
-// nnueV5SCReLUDot1024(acc *int16, weights *int16) int32
-//
-// Approximate SCReLU: sum = sum_i( (clamp(acc[i], 0, 255)^2 >> 8) * weights[i] )
-// for i=0..1023. Uses MUL for squaring, USHR for >>8, SMULL/SMLAL2 with weights.
-// ============================================================================
-TEXT ·nnueV5SCReLUDot1024(SB), NOSPLIT, $0-24
-	MOVD acc+0(FP), R0
-	MOVD weights+8(FP), R1
-
-	VEOR V0.B16, V0.B16, V0.B16  // V0 = zero
-	MOVD $255, R3
-	WORD $0x4E020C61              // DUP V1.8H, W3
-	VEOR V16.B16, V16.B16, V16.B16  // int32 accumulator 1
-	VEOR V17.B16, V17.B16, V17.B16  // int32 accumulator 2
-
-	MOVD $64, R2
-
-v5screlu1024_loop:
-	// First 8 elements
-	VLD1 (R0), [V2.B16]
-	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
-	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
-	WORD $0x4E629C43              // MUL V3.8H, V2.8H, V2.8H  (square)
-	WORD $0x6F180463              // USHR V3.8H, V3.8H, #8     (>> 8)
-	VLD1 (R1), [V5.B16]          // weights
-	WORD $0x0E65C064              // SMULL V4.4S, V3.4H, V5.4H
-	WORD $0x4E658064              // SMLAL2 V4.4S, V3.8H, V5.8H
-	WORD $0x4EA48610              // ADD V16.4S, V16.4S, V4.4S
-	ADD $16, R0, R0
-	ADD $16, R1, R1
-	// Second 8 elements
-	VLD1 (R0), [V2.B16]
-	WORD $0x4E606442              // SMAX V2.8H, V2.8H, V0.8H
-	WORD $0x4E616C42              // SMIN V2.8H, V2.8H, V1.8H
-	WORD $0x4E629C43              // MUL V3.8H, V2.8H, V2.8H
-	WORD $0x6F180463              // USHR V3.8H, V3.8H, #8
-	VLD1 (R1), [V5.B16]
-	WORD $0x0E65C064              // SMULL V4.4S, V3.4H, V5.4H
-	WORD $0x4E658064              // SMLAL2 V4.4S, V3.8H, V5.8H
-	WORD $0x4EA48631              // ADD V17.4S, V17.4S, V4.4S
-	ADD $16, R0, R0
-	ADD $16, R1, R1
-	SUBS $1, R2, R2
-	BNE v5screlu1024_loop
-
-	WORD $0x4EB18610              // ADD V16.4S, V16.4S, V17.4S
-	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
-	WORD $0x4EB0BE10              // ADDP V16.4S, V16.4S, V16.4S
-	WORD $0x1E26020C              // FMOV W12, S16
-	MOVW R12, ret+16(FP)
-
-	RET
-
-// ============================================================================
 // nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32
 //
 // Generic width CReLU dot product. count must be a multiple of 16.

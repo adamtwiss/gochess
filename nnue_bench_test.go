@@ -204,7 +204,6 @@ func loadTestV5SCReLUNet(b *testing.B) *NNUENetV5 {
 	b.Helper()
 	for _, name := range []string{
 		"net-v5-1024s-w0-e400s400.nnue",
-		"net-sf80.net",
 	} {
 		net, err := LoadNNUEV5(name)
 		if err == nil {
