@@ -694,40 +694,12 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	// This approach works for both int16 (QA_L1=255) and int8 (QA_L1=64) L1 weights.
 	biasScale := int64(qa2) // bias at QA_L1, multiply by QA² to match matmul
 
-	// Int8 SIMD fast path: pack SCReLU to uint8, use VPMADDUBSW kernel
+	// Int8 SIMD fast path: SIMD pack SCReLU to uint8, then VPMADDUBSW kernel
 	if nnueUseSIMDV5 && net.L1Weights8T != nil {
 		var stmBuf [1536]byte
 		var ntmBuf [1536]byte
-		for j := 0; j < H; j++ {
-			v := int32(stmAcc[j])
-			if v <= 0 {
-				stmBuf[j] = 0
-				continue
-			}
-			if v > nnueV5ClipMax {
-				v = nnueV5ClipMax
-			}
-			s := v * v / nnueV5InputScale // SCReLU: v²/QA → [0, 255]
-			if s > 255 {
-				s = 255
-			}
-			stmBuf[j] = byte(s)
-		}
-		for j := 0; j < H; j++ {
-			v := int32(ntmAcc[j])
-			if v <= 0 {
-				ntmBuf[j] = 0
-				continue
-			}
-			if v > nnueV5ClipMax {
-				v = nnueV5ClipMax
-			}
-			s := v * v / nnueV5InputScale
-			if s > 255 {
-				s = 255
-			}
-			ntmBuf[j] = byte(s)
-		}
+		nnueSCReLUPack(&stmAcc[0], &stmBuf[0], H)
+		nnueSCReLUPack(&ntmAcc[0], &ntmBuf[0], H)
 
 		// Int8 matmul: result at scale QA * QA_L1
 		var hidden32 [64]int32

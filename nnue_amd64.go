@@ -154,6 +154,13 @@ func nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count
 //go:noescape
 func nnueV5L1MatMulN(acc *int16, wT *int16, hidden *int32, accLen int, l1 int)
 
+// nnueSCReLUPack packs int16 accumulator values to uint8 with SCReLU activation:
+//   dst[i] = clamp(src[i], 0, 255)² / 255
+// count must be a multiple of 32.
+//
+//go:noescape
+func nnueSCReLUPack(src *int16, dst *byte, count int)
+
 // nnueV5L1Int8MatMulN computes the L1 hidden layer matmul using int8 weights:
 //
 //	hidden[i] += sum_j( acc8[j] * wT8[i*accLen + j] )

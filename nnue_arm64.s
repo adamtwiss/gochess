@@ -1352,6 +1352,66 @@ l1mm_neon_inner:
 	RET
 
 // ============================================================================
+// nnueSCReLUPack(src *int16, dst *byte, count int)
+// Packs int16 to uint8 with SCReLU: dst[i] = clamp(src[i],0,255)²/255
+// count must be a multiple of 16. Processes 8 elements at a time.
+// ============================================================================
+TEXT ·nnueSCReLUPack(SB), NOSPLIT, $0-24
+	MOVD src+0(FP), R0
+	MOVD dst+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $3, R2, R2                       // count / 8
+
+	VEOR V0.B16, V0.B16, V0.B16         // zero
+	MOVD $255, R3
+	WORD $0x4E020C61                     // DUP V1.8H, W3 (broadcast 255)
+
+screlu_pack_neon_loop:
+	// Load 8 int16 values
+	VLD1 (R0), [V2.B16]
+
+	// Clamp [0, 255]
+	WORD $0x4E606442                     // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42                     // SMIN V2.8H, V2.8H, V1.8H
+
+	// Square: v*v → need to widen to avoid overflow
+	// v is in [0,255] as int16, v*v max=65025 fits uint16
+	WORD $0x4E620042                     // MUL V2.8H, V2.8H, V2.8H (v²)
+
+	// Divide by 255: approximate as (v² + 128) >> 8 + (v² >> 16)
+	// Actually simpler: use UMULL to widen, then take high half
+	// Or: since we have v² as uint16 and need v²/255 as uint8,
+	// use: (v² * 257) >> 16 via UMULL + high half extraction
+	// But NEON doesn't have PMULHUW directly. Use UMULL for 4 at a time.
+
+	// Low 4: widen v²[0:3] to uint32, multiply by 257, take bits [16:23]
+	WORD $0x2F20A043                     // USHLL V3.4S, V2.4H, #0 (v²[0:3] → uint32)
+	MOVD $257, R4
+	WORD $0x4E040C84                     // DUP V4.4S, W4 (broadcast 257)
+	WORD $0x4EA49C63                     // MUL V3.4S, V3.4S, V4.4S (v² * 257)
+	WORD $0x4F300463                     // USHR V3.4S, V3.4S, #16 (>> 16)
+
+	// High 4: same for v²[4:7]
+	WORD $0x6F20A045                     // USHLL2 V5.4S, V2.8H, #0
+	WORD $0x4EA49CA5                     // MUL V5.4S, V5.4S, V4.4S
+	WORD $0x4F3004A5                     // USHR V5.4S, V5.4S, #16
+
+	// Narrow back: uint32 → uint16 → uint8
+	WORD $0x0E612863                     // XTN V3.4H, V3.4S
+	WORD $0x4E6128A3                     // XTN2 V3.8H, V5.4S
+	WORD $0x0E212863                     // XTN V3.8B, V3.8H
+
+	// Store 8 uint8 values
+	WORD $0x0D008023                     // ST1 {V3.8B}, [R1]
+
+	ADD $16, R0, R0                      // 8 × int16 = 16 bytes
+	ADD $8, R1, R1                       // 8 × uint8 = 8 bytes
+	SUBS $1, R2, R2
+	BNE screlu_pack_neon_loop
+
+	RET
+
+// ============================================================================
 // nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 int)
 //
 // Int8 L1 matmul using NEON. Processes 16 bytes at a time.

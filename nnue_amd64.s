@@ -25,6 +25,57 @@ DATA nnue_ones_16<>+16(SB)/8, $0x0001000100010001
 DATA nnue_ones_16<>+24(SB)/8, $0x0001000100010001
 GLOBL nnue_ones_16<>(SB), NOPTR+RODATA, $32
 
+// 16 x uint16(257) for SCReLU v²/255 approximation: VPMULHUW(v², 257) ≈ v²/255
+DATA nnue_257_16<>+0(SB)/8, $0x0101010101010101
+DATA nnue_257_16<>+8(SB)/8, $0x0101010101010101
+DATA nnue_257_16<>+16(SB)/8, $0x0101010101010101
+DATA nnue_257_16<>+24(SB)/8, $0x0101010101010101
+GLOBL nnue_257_16<>(SB), NOPTR+RODATA, $32
+
+// ============================================================================
+// nnueSCReLUPack(src *int16, dst *byte, count int)
+// Packs int16 accumulator to uint8 with SCReLU: dst[i] = clamp(src[i],0,255)²/255
+// count must be a multiple of 32. Processes 32 elements per iteration.
+// ============================================================================
+TEXT ·nnueSCReLUPack(SB), NOSPLIT, $0-24
+	MOVQ src+0(FP), AX
+	MOVQ dst+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $5, CX                         // count / 32
+
+	VPXOR Y0, Y0, Y0                    // zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // 255 (ceiling)
+	VMOVDQU nnue_257_16<>(SB), Y6       // 257 for /255 approximation
+
+screlu_pack_loop:
+	// First 16 int16 values
+	VMOVDQU (AX), Y2
+	VPMAXSW Y0, Y2, Y2                  // clamp floor
+	VPMINSW Y1, Y2, Y2                  // clamp ceiling [0, 255]
+	VPMULLW Y2, Y2, Y3                  // v² (uint16, max 65025)
+	VPMULHUW Y6, Y3, Y3                 // v² * 257 >> 16 ≈ v²/255 [0, 255]
+
+	// Second 16 int16 values
+	VMOVDQU 32(AX), Y4
+	VPMAXSW Y0, Y4, Y4
+	VPMINSW Y1, Y4, Y4
+	VPMULLW Y4, Y4, Y5
+	VPMULHUW Y6, Y5, Y5
+
+	// Pack two 16×uint16 → 32×uint8
+	VPACKUSWB Y5, Y3, Y7
+	// VPACKUSWB interleaves lanes: need to fix with VPERMQ
+	VPERMQ $0xD8, Y7, Y7               // de-interleave: 0,2,1,3 → 0,1,2,3
+	VMOVDQU Y7, (BX)
+
+	ADDQ $64, AX                        // 32 × int16 = 64 bytes
+	ADDQ $32, BX                        // 32 × uint8 = 32 bytes
+	DECQ CX
+	JNZ screlu_pack_loop
+
+	VZEROUPPER
+	RET
+
 // ============================================================================
 // nnueCReLU256(src *int16, dst *int16)
 // Clamps 256 int16 values to [0, 127].
