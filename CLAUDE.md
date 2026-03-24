@@ -280,14 +280,14 @@ Model files follow one of two formats depending on architecture:
 net-v5-{width}{activation}-w{wdl}-e{epochs}s{snap}.nnue
 ```
 
-**v7 (FT→L1→output, with hidden layer):**
+**v7 (FT→hidden→output, with hidden layers):**
 ```
-net-v7-{ftWidth}h{l1Width}{activation}-w{wdl}-e{epochs}s{snap}.nnue
+net-v7-{ftWidth}h{layers}{activation}-w{wdl}-e{epochs}s{snap}.nnue
 ```
 
 Where:
 - **ftWidth**: accumulator width: `1024`, `1536`, `768pw` (768 pairwise)
-- **h{l1Width}**: hidden layer width (v7 only): `h16`, `h32`, `h64`
+- **h{layers}**: hidden layer stack (v7 only): `h16` (single L1=16), `h16x32` (L1=16, L2=32)
 - **activation**: omit for CReLU (default), `s` for SCReLU
 - **w{wdl}**: WDL proportion as integer hundredths: `w0` (0.0), `w5` (0.05), `w10` (0.1), `w50` (0.5)
 - **e{epochs}**: total superbatches in the cosine LR schedule (determines LR curve)
@@ -302,8 +302,10 @@ net-v5-1536-w0-e800s400.nnue      # 1536 CReLU, wdl=0.0, cosine/800, snapshot at
 net-v5-1536-w0-e800s800.nnue      # 1536 CReLU, wdl=0.0, cosine/800, final
 net-v5-1536-w5-e800s600.nnue      # 1536 CReLU, wdl=0.05, cosine/800, snap at 600
 net-v5-768pw-w0-e400s400.nnue     # 768 pairwise, wdl=0.0, cosine/400, final
-net-v7-1024h16-w0-e100s100.nnue   # 1024 FT, 16 hidden, CReLU, cosine/100, final
-net-v7-1024h32s-w5-e200s200.nnue  # 1024 FT, 32 hidden, SCReLU, wdl=0.05, final
+net-v7-1024h16-w0-e100s100.nnue      # 1024 FT, L1=16, CReLU, cosine/100, final
+net-v7-1024h16s-w0-e800s800.nnue    # 1024 FT, L1=16, SCReLU, cosine/800, final
+net-v7-1024h16x32s-w0-e800s800.nnue # 1024 FT, L1=16→L2=32, SCReLU, cosine/800, final
+net-v7-1024h16x32s-w5-e200s200.nnue # 1024 FT, L1=16→L2=32, SCReLU, wdl=0.05, final
 ```
 
 ### Key distinctions this prevents
@@ -311,6 +313,7 @@ net-v7-1024h32s-w5-e200s200.nnue  # 1024 FT, 32 hidden, SCReLU, wdl=0.05, final
 - `w5` vs `w50`: unambiguous (0.05 vs 0.5)
 - `1024s` vs `1024`: SCReLU vs CReLU
 - `v5` vs `v7`: direct output vs hidden layer architecture
+- `h16` vs `h16x32`: single hidden layer vs two hidden layers
 
 ### Legacy names
 Old files use inconsistent naming (e.g. `net-v5-120sb-sb120.nnue`, `net-v5-1536-wdl00-sb400.nnue`). These should be renamed when practical. The production model `net-v5-120sb-sb120.nnue` keeps its name in GitHub releases for backward compatibility.
