@@ -22,23 +22,13 @@ go build -o tuner ./cmd/tuner   # Build Texel tuner binary
 ./chess -benchmark -t 200 -compare base.json            # Compare against saved baseline
 ./chess -buildbook -pgn testdata/2600.pgn -bookout book.bin  # Build Polyglot opening book
 
-./tuner selfplay -games 20000 -time 200 -concurrency 6                       # Generate training data (.bin)
-./tuner selfplay -games 20000 -time 200 -concurrency 6 -syzygy /path/to/tb  # With Syzygy tablebases
-./tuner tune -data training.bin -epochs 500 -lr 1.0                          # Tune eval parameters
-./tuner tune -data training.bin -epochs 500 -lr 1.0 -lambda 0.5             # Tune with blended loss (default lambda=0)
-./tuner nnue-train -data training.bin -epochs 100 -lr 0.01 -output net.nnue  # Train NNUE
-./tuner nnue-train -data a.bin,b.bin -epochs 100 -lr 0.01                    # Train from multiple files
-./tuner nnue-train -data training.bin -resume net-v1.nnue -epochs 100 -output net-v2.nnue # Resume
-cat a.bin b.bin > combined.bin                                               # Concatenate .bin files
-
-./tuner convert-binpack -input data.binpack -output data.bin                  # Convert SF .binpack to .bin
-./tuner convert-binpack -input data.binpack                                   # Output defaults to data.bin
-./tuner rescore -data training.bin -depth 10 -concurrency 8 -hash 512        # Rescore .bin in-place
-./tuner rescore -data training.bin -depth 8 -concurrency 4 -syzygy /path/to/tb  # Rescore with Syzygy
-./tuner shuffle -data training.bin                                            # Shuffle .bin in-place
 ./tuner check-net -net net.nnue                                              # NNUE health check
 ./tuner compare-nets -net1 a.nnue -net2 b.nnue                              # Compare two networks
-./tuner convert-net -input old.nnue -output new.nnue                         # Convert net versions
+./tuner convert-bullet -v5 -input quantised.bin -output net.nnue             # Convert Bullet → v5
+./tuner convert-bullet -v5 -input quantised.bin -output net.nnue -screlu     # Convert Bullet → v5 SCReLU
+./tuner convert-bullet -v5 -input quantised.bin -output net.nnue -hidden 16 -hidden2 32 -screlu  # v7 with L1+L2
+
+# Legacy trainer (selfplay, tune, nnue-train) — see docs/legacy_trainer.md
 
 ./chess -nnue net.nnue                                   # UCI with specific NNUE net
 ./chess -syzygy /path/to/tablebases                      # UCI with Syzygy tablebases
@@ -141,20 +131,31 @@ Negamax with alpha-beta, iterative deepening, PVS, aspiration windows. Features:
 All threads share only the TT (lockless via XOR-verified packed atomics). Board, SearchInfo, pawn table, and NNUE accumulator stack are per-thread.
 
 ### NNUE
-Two architectures supported, selected by network file version:
+Three architecture generations, selected by network file version:
 
-- **v4 (HalfKA deep)**: 12288 → 2×256 → 32 → 32 → 8. Two hidden layers with int8 quantized layer 1 (VPMADDUBSW/SMULL+SADALP for doubled throughput). 16 king buckets × 12 piece types × 64 squares = 12288 inputs. 8 material-based output buckets.
-- **v5 (Bullet shallow wide)**: (12288 → N)×2 → 1×8. Single hidden layer, dynamic width (1024/1536/any, auto-detected from file). Supports CReLU and SCReLU activations, optional pairwise multiplication (halves effective width). Quantization: QA=255, QB=64. Designed for Bullet GPU trainer.
+- **v4 (HalfKA deep)**: 12288 → 2×256 → 32 → 32 → 8. Legacy, not actively used.
+- **v5/v6 (Bullet direct output)**: (12288 → N)×2 → 1×8. Dynamic width (1024/1536). CReLU or SCReLU (v6 adds flags byte). Quantization: QA=255, QB=64. Production net is v5 1024 CReLU.
+- **v7 (Bullet with hidden layers)**: (12288 → N)×2 → L1 → [L2 →] 1×8. Adds explicit hidden layers between accumulator and output. Header stores FTSize, L1Size, L2Size. Target architecture: 1024 → 16 → 32 → 1×8 SCReLU (matching top engines).
 
-Both share: lazy accumulator (MakeMove stores deltas, Materialize() applies on demand), incremental updates skip kings. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64). Width-generic SIMD kernels (`nnueAccAddN`, `nnueAccSubN`, `nnueAccSubAddN`, `nnueAccCopySubAddN`, `nnueAccCopySubSubAddN`) process the full hidden width in a single call, avoiding per-256-chunk function call overhead.
+All share: lazy accumulator (MakeMove stores deltas, Materialize() applies on demand), incremental updates skip kings. SIMD: AVX2 (x86-64, runtime detected) and NEON (ARM64). Width-generic SIMD kernels for accumulator updates and forward pass.
 
 Finny table: per-perspective `[NNUEKingBuckets][mirror]` cache of accumulated weights and piece bitboards. On king bucket changes, `RefreshAccumulator` diffs cached vs current piece bitboards and applies only changed features (~5 delta ops vs ~30 full recompute ops). Invalidated on SetFEN/Reset. Deep-copied for Lazy SMP threads.
 
-### Training Data Formats
-- **Binpack** (`.bin`): Fixed-size 32-byte records, no file header. Stores packed board position (occupancy bitmap + piece nibbles), score (int16), result (uint8). Files can be concatenated with `cat`. Features extracted at training time. Block-shuffled reader (64KB = 2048 records/block) for efficient I/O.
+### NNUE Training (Bullet GPU)
+
+We train on **Bullet** (Rust, CUDA) using T80 binpack data (~12B positions across 6 files). Training produces `quantised.bin` which is converted to `.nnue` via `./tuner convert-bullet`.
+
+Key findings:
+- **CReLU kills hidden layer neurons** during long training (dying ReLU). At e800-s400, 15/16 L1 neurons were dead. SCReLU prevents this — all 16 survived e800.
+- **SCReLU scale chain**: SCReLU squares accumulator values (scale QA²). The full v² must be preserved through the L1 matmul — dividing by QA before the matmul loses too much precision. Correct chain: bias×QA² + sum(v²×w), then /QA² after matmul.
+- **Hidden→output activation is linear** in Bullet (no SCReLU on the final layer before output buckets). The `l2.forward(hidden)` call in Bullet has no `.screlu()`.
+- **L1 quantisation**: int16 at QA=255. L2 quantisation: int16 at QA=255. Output weights: int16 at QB=64. Output bias: int32 at QA×QB.
+- **v5 architecture is saturated**: 1024 CReLU, 1024 SCReLU, 1536 CReLU, 1536 SCReLU all within ~20 Elo of each other cross-engine. Hidden layers are needed to break through.
+- **Float inference for small layers**: Viridithas/top engines use float for the 16→32 layers. Worth considering if quantization precision becomes an issue.
 
 ### Texel Tuner
-~1268 parameters optimized via Adam. Training data: `.bin` binpack from selfplay, preprocessed to `.tbin` binary cache, disk-streamed. `computeTrace()` mirrors `Evaluate()` recording sparse coefficients. Frozen params: material (coupling), tempo, trade bonuses. PST values are pre-scaled (effective = raw * scale/100).
+
+See `docs/legacy_trainer.md` for the Go CPU tuner (selfplay, parameter optimization). Still used for Texel tuning of eval parameters.
 
 ### Syzygy Tablebases
 Via bundled Fathom (CGO). Root: DTZ probe before search. Interior nodes: WDL probe (requires HalfmoveClock==0). Fathom's `ProbeRoot` is NOT thread-safe (main thread only); `tb_probe_wdl` IS thread-safe.
@@ -168,14 +169,12 @@ Via bundled Fathom (CGO). Root: DTZ probe before search. Interior nodes: WDL pro
 - TT mate scores are ply-adjusted: stored as `mate + ply`, retrieved as `mate - ply`
 - TT `Probe`/`Store` are lockless via packed atomics — do not add non-atomic fields to `ttSlot`
 - Lazy SMP: `Stopped` and `Deadline` accessed atomically. New shared state must use atomics or be per-thread
-- Tuner traces must mirror `Evaluate()` exactly. When modifying eval, update `computeTrace()` to match
-- `.tbin` cache must be rebuilt (delete the `.tbin` file) when `computeTrace()` or param catalog changes
-- `.bin` files have no header — file size must be a multiple of 32. Features are extracted from packed positions at training time, so binpack data survives feature set changes
-- `StreamTraining`/`StreamValidation` callbacks must not retain `[]TunerTrace` batch references (reused)
 - NNUE accumulator stack must stay in sync with undo stack (push on MakeMove, pop on UnmakeMove, null moves skip)
 - NNUE `putPiece`/`removePiece`/`movePiece` hooks read king bitboards — call when kings are on the board
 - NNUE incremental updates skip kings; king moves trigger `RecomputeAccumulator`. Castling moves king first, then rook
-- NNUE v5 hidden size is auto-detected from file — do not hardcode dimensions
+- NNUE v5/v6 hidden size is auto-detected from file size; v7 stores dimensions in header
+- NNUE v7 SCReLU: do NOT divide by QA before L1 matmul — keep v² at scale QA² through the matmul for precision
+- NNUE v7 hidden→output: Bullet uses linear (no activation) before output. Do NOT apply SCReLU at L1→output or L2→output boundary
 - Syzygy `tbchess.inc` is `#include`d by `tbprobe.c` — must NOT be compiled separately
 - Syzygy WDL probes require `HalfmoveClock == 0`; DTZ probes accept any value
 - **cutechess-cli**: Each flag and value must be separate `arg=` params (`arg=-nnue arg=/path/to/net.nnue`). Use `proto=uci`. Use absolute paths
@@ -269,7 +268,7 @@ Key principles:
 ## Maintenance Reminders
 
 - **Keep CLAUDE.md and README.md up to date** when changing search, eval, tuner, CLI, or architecture
-- **New eval parameter**: Add to `initTunerParams()`, `computeTrace()`, `PrintParams()`. Update "What's tuned" lists. Delete `.tbin` cache
+- **New eval parameter**: see `docs/legacy_trainer.md` for tuner update checklist
 
 ## NNUE Model Naming Convention
 
