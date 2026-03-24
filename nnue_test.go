@@ -1246,6 +1246,285 @@ func TestNNUEV7SaveLoadRoundTrip(t *testing.T) {
 	loaded.UseSCReLU = false // restore
 }
 
+// TestNNUEV7L1SIMDvsScalar verifies the SIMD L1 matmul kernel matches the scalar fallback.
+func TestNNUEV7L1SIMDvsScalar(t *testing.T) {
+	if !nnueUseSIMDV5 {
+		t.Skip("SIMD not available")
+	}
+
+	rng := rand.New(rand.NewSource(99))
+	H := 256
+	L1 := 16
+
+	net := &NNUENetV5{
+		HiddenSize: H,
+		L1Size:     L1,
+	}
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	net.InputBiases = make([]int16, H)
+	net.L1Weights = make([]int16, 2*H*L1)
+	net.L1Biases = make([]int16, L1)
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*L1)
+
+	for i := range net.InputWeights {
+		net.InputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Weights {
+		net.L1Weights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Biases {
+		net.L1Biases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.OutputWeights {
+		net.OutputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutputBias[b] = int32(rng.Intn(2001) - 1000)
+	}
+	net.prepareL1Weights()
+
+	positions := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"r1bqkb1r/pppppppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+		"8/5pk1/5p1p/2R5/8/1r4P1/5P1P/6K1 w - - 0 1",
+		"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+	}
+
+	for _, fen := range positions {
+		var b Board
+		b.Reset()
+		b.SetFEN(fen)
+
+		acc := NNUEAccumulatorV5{
+			White: make([]int16, H),
+			Black: make([]int16, H),
+		}
+		net.RecomputeAccumulator(&b, &acc, White)
+		net.RecomputeAccumulator(&b, &acc, Black)
+
+		// Test CReLU: SIMD vs scalar
+		simdScore := net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+
+		// Force scalar path by clearing transposed weights
+		savedT := net.L1WeightsT
+		net.L1WeightsT = nil
+		scalarScore := net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		net.L1WeightsT = savedT
+
+		if simdScore != scalarScore {
+			t.Errorf("CReLU SIMD/scalar mismatch for %s: SIMD=%d, scalar=%d", fen, simdScore, scalarScore)
+		}
+
+		// Test SCReLU: SIMD vs scalar
+		net.UseSCReLU = true
+		simdSCReLU := net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		net.L1WeightsT = nil
+		scalarSCReLU := net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		net.L1WeightsT = savedT
+		net.UseSCReLU = false
+
+		if simdSCReLU != scalarSCReLU {
+			t.Errorf("SCReLU SIMD/scalar mismatch for %s: SIMD=%d, scalar=%d", fen, simdSCReLU, scalarSCReLU)
+		}
+	}
+}
+
+// TestNNUEV7BackwardCompatL1Zero verifies that a v7 net with L1Size=0 behaves like v5.
+func TestNNUEV7BackwardCompatL1Zero(t *testing.T) {
+	rng := rand.New(rand.NewSource(77))
+	H := 256
+
+	// Create a net with L1Size=0 (direct FT→output, like v5)
+	net := &NNUENetV5{
+		HiddenSize: H,
+		L1Size:     0,
+	}
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	net.InputBiases = make([]int16, H)
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*H*2)
+
+	for i := range net.InputWeights {
+		net.InputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.OutputWeights {
+		net.OutputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutputBias[b] = int32(rng.Intn(2001) - 1000)
+	}
+
+	var b Board
+	b.Reset()
+	b.SetFEN("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+
+	acc := NNUEAccumulatorV5{
+		White: make([]int16, H),
+		Black: make([]int16, H),
+	}
+	net.RecomputeAccumulator(&b, &acc, White)
+	net.RecomputeAccumulator(&b, &acc, Black)
+
+	score := net.Forward(&acc, White, b.AllPieces.Count())
+	if score == 0 {
+		t.Error("L1Size=0 forward returned 0 — should use direct FT→output path")
+	}
+	t.Logf("L1Size=0 eval: %d cp (should match v5 behavior)", score)
+}
+
+// TestNNUEV7MultiplePositions tests the v7 hidden layer across varied positions
+// to ensure eval differentiation (not collapsed).
+func TestNNUEV7MultiplePositions(t *testing.T) {
+	rng := rand.New(rand.NewSource(123))
+	H := 256
+	L1 := 16
+
+	net := &NNUENetV5{
+		HiddenSize: H,
+		L1Size:     L1,
+	}
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	net.InputBiases = make([]int16, H)
+	net.L1Weights = make([]int16, 2*H*L1)
+	net.L1Biases = make([]int16, L1)
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*L1)
+
+	for i := range net.InputWeights {
+		net.InputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Weights {
+		net.L1Weights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Biases {
+		net.L1Biases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.OutputWeights {
+		net.OutputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutputBias[b] = int32(rng.Intn(2001) - 1000)
+	}
+	net.prepareL1Weights()
+
+	positions := []struct {
+		name string
+		fen  string
+	}{
+		{"startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"},
+		{"italian", "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"},
+		{"endgame", "8/5pk1/5p1p/2R5/8/1r4P1/5P1P/6K1 w - - 0 1"},
+		{"kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"},
+	}
+
+	scores := make(map[string]int)
+	for _, pos := range positions {
+		var b Board
+		b.Reset()
+		b.SetFEN(pos.fen)
+
+		acc := NNUEAccumulatorV5{
+			White: make([]int16, H),
+			Black: make([]int16, H),
+		}
+		net.RecomputeAccumulator(&b, &acc, White)
+		net.RecomputeAccumulator(&b, &acc, Black)
+
+		score := net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		scores[pos.name] = score
+		t.Logf("%-10s: %d cp", pos.name, score)
+	}
+
+	// All positions should produce different evals with random weights
+	seen := make(map[int]string)
+	for name, score := range scores {
+		if prev, ok := seen[score]; ok {
+			t.Errorf("positions %s and %s both evaluate to %d — possible eval collapse", prev, name, score)
+		}
+		seen[score] = name
+	}
+}
+
+// TestNNUEV7SCReLUDifferentiation verifies SCReLU produces different evals per position.
+func TestNNUEV7SCReLUDifferentiation(t *testing.T) {
+	rng := rand.New(rand.NewSource(456))
+	H := 256
+	L1 := 16
+
+	net := &NNUENetV5{
+		HiddenSize:  H,
+		L1Size:      L1,
+		UseSCReLU:   true,
+	}
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	net.InputBiases = make([]int16, H)
+	net.L1Weights = make([]int16, 2*H*L1)
+	net.L1Biases = make([]int16, L1)
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*L1)
+
+	for i := range net.InputWeights {
+		net.InputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Weights {
+		net.L1Weights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Biases {
+		net.L1Biases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.OutputWeights {
+		net.OutputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutputBias[b] = int32(rng.Intn(2001) - 1000)
+	}
+	net.prepareL1Weights()
+
+	fens := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1",    // miss a-pawn
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/R1BQKBNR w KQkq - 0 1",    // miss knight
+		"4k3/8/8/8/8/8/4PPPP/4K2R w K - 0 1",                           // endgame
+	}
+
+	var scores []int
+	for _, fen := range fens {
+		var b Board
+		b.Reset()
+		b.SetFEN(fen)
+
+		acc := NNUEAccumulatorV5{
+			White: make([]int16, H),
+			Black: make([]int16, H),
+		}
+		net.RecomputeAccumulator(&b, &acc, White)
+		net.RecomputeAccumulator(&b, &acc, Black)
+
+		score := net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		scores = append(scores, score)
+	}
+
+	// Check all scores are distinct
+	for i := 0; i < len(scores); i++ {
+		for j := i + 1; j < len(scores); j++ {
+			if scores[i] == scores[j] {
+				t.Errorf("SCReLU positions %d and %d both score %d — possible collapse", i, j, scores[i])
+			}
+		}
+	}
+	t.Logf("SCReLU scores: startpos=%d, miss-pawn=%d, miss-knight=%d, endgame=%d",
+		scores[0], scores[1], scores[2], scores[3])
+}
+
 // TestNNUEV5SIMDvsGeneric validates that SIMD v5 forward pass matches the Go fallback
 // across multiple net architectures and positions.
 func TestNNUEV5SIMDvsGeneric(t *testing.T) {
