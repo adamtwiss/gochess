@@ -1186,6 +1186,89 @@ l1mm_inner:
 	RET
 
 // ============================================================================
+// nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 int)
+//
+// Int8 L1 matmul: hidden[i] += sum_j( acc8[j] * wT8[i*accLen + j] )
+// Uses VPMADDUBSW (u8 × i8 → i16 pairwise) then VPMADDWD with ones to
+// widen to int32. Processes 32 elements per iteration = 2x throughput
+// over the int16 VPMADDWD kernel.
+// accLen must be a multiple of 32. l1 can be any positive value.
+//
+// Register allocation:
+//   Y0 = ones (16 x int16(1)) for VPMADDWD widening
+//   Y8, Y9 = int32 accumulators (2x unrolled)
+//   Y2-Y5 = loaded data, Y6-Y7 = VPMADDUBSW/VPMADDWD results
+// ============================================================================
+TEXT ·nnueV5L1Int8MatMulN(SB), NOSPLIT, $0-40
+	MOVQ acc8+0(FP), SI
+	MOVQ wT8+8(FP), DI
+	MOVQ hidden+16(FP), R8
+	MOVQ accLen+24(FP), CX
+	MOVQ l1+32(FP), DX
+
+	// Weight row stride in bytes (1 byte per int8)
+	MOVQ CX, R9                         // R9 = accLen (stride in bytes)
+
+	// Inner loop count: accLen / 32
+	SHRQ $5, CX
+
+	// Load ones constant for VPMADDWD widening
+	VMOVDQU nnue_ones_16<>(SB), Y0      // Y0 = [1,1,1,...,1] (16 x int16)
+
+l1i8_outer:
+	VPXOR Y8, Y8, Y8                    // accumulator 1
+	VPXOR Y9, Y9, Y9                    // accumulator 2
+	MOVQ SI, R10                        // R10 = acc cursor
+	MOVQ DI, R11                        // R11 = weight cursor
+	MOVQ CX, R12                        // R12 = inner loop counter
+
+l1i8_inner:
+	// Load 32 uint8 acc values and 32 int8 weights
+	VMOVDQU (R10), Y2                   // 32 x uint8
+	VMOVDQU (R11), Y3                   // 32 x int8
+
+	// VPMADDUBSW: u8 × i8 → i16 pairwise sums (16 results)
+	VPMADDUBSW Y3, Y2, Y4
+
+	// VPMADDWD with ones: i16 → i32 (8 results)
+	VPMADDWD Y0, Y4, Y6
+	VPADDD Y6, Y8, Y8
+
+	// Second 32 elements (2x unrolled)
+	VMOVDQU 32(R10), Y2
+	VMOVDQU 32(R11), Y3
+	VPMADDUBSW Y3, Y2, Y5
+	VPMADDWD Y0, Y5, Y7
+	VPADDD Y7, Y9, Y9
+
+	ADDQ $64, R10
+	ADDQ $64, R11
+	DECQ R12
+	JNZ l1i8_inner
+
+	// Horizontal sum: Y8 + Y9 → scalar
+	VPADDD Y9, Y8, Y8
+	VEXTRACTI128 $1, Y8, X6
+	VPADDD X6, X8, X8
+	VPSHUFD $0x4E, X8, X6
+	VPADDD X6, X8, X8
+	VPSHUFD $0x01, X8, X6
+	VPADDD X6, X8, X8
+	VMOVD X8, AX
+
+	// Accumulate into hidden[i]
+	ADDL (R8), AX
+	MOVL AX, (R8)
+
+	ADDQ $4, R8                          // next hidden slot
+	ADDQ R9, DI                          // next weight row
+	DECQ DX
+	JNZ l1i8_outer
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
 // nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)
 //
 // SCReLU L1 matmul: hidden[i] += sum_j( clamp(acc[j], 0, 255)² * wT[i*accLen+j] )

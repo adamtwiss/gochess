@@ -1352,6 +1352,77 @@ l1mm_neon_inner:
 	RET
 
 // ============================================================================
+// nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 int)
+//
+// Int8 L1 matmul using NEON. Processes 16 bytes at a time.
+// Widens u8→i16, i8→i16, multiplies i16, accumulates i32.
+// accLen must be a multiple of 16.
+// ============================================================================
+TEXT ·nnueV5L1Int8MatMulN(SB), NOSPLIT, $0-40
+	MOVD acc8+0(FP), R0
+	MOVD wT8+8(FP), R1
+	MOVD hidden+16(FP), R2
+	MOVD accLen+24(FP), R3
+	MOVD l1+32(FP), R4
+
+	// Weight row stride = accLen bytes
+	MOVD R3, R5
+
+	// Inner loop count: accLen / 16
+	LSR $4, R3, R3
+
+l1i8_neon_outer:
+	VEOR V16.B16, V16.B16, V16.B16      // int32 accumulator
+	VEOR V17.B16, V17.B16, V17.B16
+	MOVD R0, R6                          // acc cursor
+	MOVD R1, R7                          // weight cursor
+	MOVD R3, R8                          // inner loop counter
+
+l1i8_neon_inner:
+	// Load 16 uint8 acc values and 16 int8 weights
+	VLD1 (R6), [V2.B16]                 // 16 x uint8
+	VLD1 (R7), [V3.B16]                 // 16 x int8
+
+	// Widen u8 → i16 (unsigned), i8 → i16 (signed)
+	WORD $0x2F08A444                     // USHLL V4.8H, V2.8B, #0 (low 8 u8 → u16)
+	WORD $0x0F08A465                     // SSHLL V5.8H, V3.8B, #0 (low 8 i8 → i16)
+
+	// Multiply i16 × i16, accumulate to i32
+	WORD $0x0E65C086                     // SMULL V6.4S, V4.4H, V5.4H
+	WORD $0x4E658086                     // SMLAL2 V6.4S, V4.8H, V5.8H
+	WORD $0x4EA68610                     // ADD V16.4S, V16.4S, V6.4S
+
+	// High 8 elements
+	WORD $0x6F08A444                     // USHLL2 V4.8H, V2.16B, #0 (high 8 u8 → u16)
+	WORD $0x4F08A465                     // SSHLL2 V5.8H, V3.16B, #0 (high 8 i8 → i16)
+	WORD $0x0E65C086                     // SMULL V6.4S, V4.4H, V5.4H
+	WORD $0x4E658086                     // SMLAL2 V6.4S, V4.8H, V5.8H
+	WORD $0x4EA68631                     // ADD V17.4S, V17.4S, V6.4S
+
+	ADD $16, R6, R6
+	ADD $16, R7, R7
+	SUBS $1, R8, R8
+	BNE l1i8_neon_inner
+
+	// Horizontal sum
+	WORD $0x4EB18610                     // ADD V16.4S, V16.4S, V17.4S
+	WORD $0x4EB0BE10                     // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10                     // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C                     // FMOV W12, S16
+
+	// Accumulate into hidden[i]
+	MOVW (R2), R9
+	ADDW R12, R9, R9
+	MOVW R9, (R2)
+
+	ADD $4, R2, R2
+	ADD R5, R1, R1
+	SUBS $1, R4, R4
+	BNE l1i8_neon_outer
+
+	RET
+
+// ============================================================================
 // nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)
 //
 // SCReLU L1 matmul: hidden[i] += sum_j( clamp(acc[j], 0, 255)² * wT[i*accLen+j] )

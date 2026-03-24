@@ -51,10 +51,11 @@ type NNUENetV5 struct {
 	InputBiases  []int16
 
 	// Hidden layer 1 (only when L1Size > 0)
-	L1Weights  []int16 // [2*HiddenSize * L1Size] — row-major [inputIdx][l1Idx]
-	L1WeightsT []int16 // [L1Size * 2*HiddenSize] — transposed for SIMD matmul
-	L1Biases   []int16 // [L1Size]
-	L1Scale    int     // quantization scale for L1 weights (QA=255 for int16, 64 for int8)
+	L1Weights   []int16 // [2*HiddenSize * L1Size] — row-major [inputIdx][l1Idx]
+	L1WeightsT  []int16 // [L1Size * 2*HiddenSize] — transposed for SIMD matmul
+	L1Weights8T []int8  // [L1Size * 2*HiddenSize] — transposed int8 for VPMADDUBSW kernel
+	L1Biases    []int16 // [L1Size]
+	L1Scale     int     // quantization scale for L1 weights (QA=255 for int16, 64 for int8)
 
 	// Hidden layer 2 (only when L2Size > 0, requires L1Size > 0)
 	L2Size    int
@@ -115,6 +116,21 @@ func (net *NNUENetV5) prepareL1Weights() {
 	for j := 0; j < H; j++ {
 		for i := 0; i < L1; i++ {
 			net.L1WeightsT[ntmOff+i*H+j] = net.L1Weights[(H+j)*L1+i]
+		}
+	}
+
+	// Int8 transposed weights for VPMADDUBSW kernel (when L1 fits int8)
+	if net.L1Scale != 0 && net.L1Scale <= 127 {
+		net.L1Weights8T = make([]int8, 2*L1*H)
+		for i := range net.L1WeightsT {
+			w := net.L1WeightsT[i]
+			if w > 127 {
+				w = 127
+			}
+			if w < -128 {
+				w = -128
+			}
+			net.L1Weights8T[i] = int8(w)
 		}
 	}
 }
@@ -679,6 +695,77 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	matmulScale := int64(qa2) * int64(qaL1) // QA² · QA_L1
 	biasScale := int64(qa2)                  // bias at QA_L1, multiply by QA² to match matmul
 
+	// Int8 SIMD fast path: pack SCReLU to uint8, use VPMADDUBSW kernel
+	if nnueUseSIMDV5 && net.L1Weights8T != nil {
+		var stmBuf [1536]byte
+		var ntmBuf [1536]byte
+		for j := 0; j < H; j++ {
+			v := int32(stmAcc[j])
+			if v <= 0 {
+				stmBuf[j] = 0
+				continue
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			s := v * v / nnueV5InputScale // SCReLU: v²/QA → [0, 255]
+			if s > 255 {
+				s = 255
+			}
+			stmBuf[j] = byte(s)
+		}
+		for j := 0; j < H; j++ {
+			v := int32(ntmAcc[j])
+			if v <= 0 {
+				ntmBuf[j] = 0
+				continue
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			s := v * v / nnueV5InputScale
+			if s > 255 {
+				s = 255
+			}
+			ntmBuf[j] = byte(s)
+		}
+
+		// Int8 matmul: result at scale QA * QA_L1
+		var hidden32 [64]int32
+		for i := 0; i < L1; i++ {
+			hidden32[i] = int32(net.L1Biases[i]) // bias at scale QA_L1
+		}
+		nnueV5L1Int8MatMulN(&stmBuf[0], &net.L1Weights8T[0], &hidden32[0], H, L1)
+		nnueV5L1Int8MatMulN(&ntmBuf[0], &net.L1Weights8T[L1*H], &hidden32[0], H, L1)
+
+		// Dequantize to float, SCReLU
+		denom := float32(qaL1) // bias and matmul both at scale QA_L1 after uint8 input
+		var l1f [64]float32
+		for i := 0; i < L1; i++ {
+			v := float32(hidden32[i]) / denom
+			if v < 0 {
+				v = 0
+			}
+			if v > 1 {
+				v = 1
+			}
+			l1f[i] = v * v
+		}
+
+		if net.L2Size > 0 {
+			return net.forwardL2SCReLUFloat(l1f[:L1], bucket)
+		}
+		if net.OutWeightsF != nil {
+			outWF := net.OutWeightsF[bucket*L1 : bucket*L1+L1]
+			outputF := net.OutBiasF[bucket]
+			for i := 0; i < L1; i++ {
+				outputF += l1f[i] * outWF[i]
+			}
+			return int(outputF * nnueV5EvalScale)
+		}
+	}
+
+	// Full-precision path (int16 L1 weights or no SIMD)
 	var hidden64 [64]int64
 	for i := 0; i < L1; i++ {
 		hidden64[i] = int64(net.L1Biases[i]) * biasScale
