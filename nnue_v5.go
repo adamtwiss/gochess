@@ -640,16 +640,16 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 		}
 	}
 
-	// Divide by QA, then SCReLU on hidden: clamp, square, /QA → [0, QA]
+	// Divide by QA, then CReLU clamp on hidden (Bullet's l2 is linear — no activation
+	// after hidden layer, just clamp for quantization safety)
 	for i := 0; i < L1; i++ {
-		h := hidden[i] / nnueV5InputScale
-		if h < 0 {
-			h = 0
+		hidden[i] /= nnueV5InputScale
+		if hidden[i] < 0 {
+			hidden[i] = 0
 		}
-		if h > nnueV5ClipMax {
-			h = nnueV5ClipMax
+		if hidden[i] > nnueV5ClipMax {
+			hidden[i] = nnueV5ClipMax
 		}
-		hidden[i] = h * h / nnueV5InputScale
 	}
 
 	// Output dot product: hidden at scale QA, weights at scale QB → scale QA*QB
@@ -660,9 +660,6 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	}
 
 	result := int(output) * nnueV5EvalScale / nnueV5BiasScale
-
-	// SCReLU eval scale correction
-	result = result * 4 / 5
 
 	return result
 }
