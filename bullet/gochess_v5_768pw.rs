@@ -44,11 +44,13 @@ fn main() {
     ];
 
     // === CONFIGURATION ===
-    // UPDATE dataset_paths to actual paths on GPU server
-    let dataset_paths = &[
-        "/workspace/data/test80-2024-01.min-v2.v6.binpack",
-        "/workspace/data/test80-2024-02.min-v2.v6.binpack",
-        "/workspace/data/test80-2024-03.min-v2.v6.binpack",
+    let data_files: Vec<&str> = vec![
+        "/workspace/data/test80-2024-01-jan-2tb7p.min-v2.v6.binpack",
+        "/workspace/data/test80-2024-02-feb-2tb7p.min-v2.v6.binpack",
+        "/workspace/data/test80-2024-03-mar-2tb7p.min-v2.v6.binpack",
+        "/workspace/data/test80-2024-04-apr-2tb7p.min-v2.v6.binpack",
+        "/workspace/data/test80-2024-05-may-2tb7p.min-v2.v6.binpack",
+        "/workspace/data/test80-2024-06-jun-2tb7p.min-v2.v6.binpack",
     ];
     let superbatches = 200;
     let initial_lr = 0.001;
@@ -102,7 +104,7 @@ fn main() {
         batch_queue_size: 512,
     };
 
-    let dataloader = SfBinpackLoader::new(dataset_paths[0], 256, 16, |entry| {
+    let dataloader = SfBinpackLoader::new_concat_multiple(&data_files, 256, 16, |entry| {
         entry.score.unsigned_abs() < 10000
     });
 
