@@ -794,13 +794,40 @@ func (net *NNUENetV5) forwardL2SCReLU(l1out []int32, bucket int, qa2 int32) int 
 }
 
 // Fingerprint returns a checksum string for the v5 network.
+// Hashes a sample of weights from each layer for a unique identifier.
 func (net *NNUENetV5) Fingerprint() string {
 	var h uint64
-	row := net.inputWeightRow(0)
-	for i := 0; i < len(row); i++ {
-		h = h*31 + uint64(uint16(row[i]))
+	// Sample input weights: first, middle, and last rows
+	for _, idx := range []int{0, len(net.InputWeights) / 2, len(net.InputWeights) - net.HiddenSize} {
+		for i := 0; i < net.HiddenSize && idx+i < len(net.InputWeights); i++ {
+			h = h*31 + uint64(uint16(net.InputWeights[idx+i]))
+		}
 	}
-	h = h*31 + uint64(uint32(net.OutputBias[0]))
+	// Input biases
+	for _, b := range net.InputBiases {
+		h = h*31 + uint64(uint16(b))
+	}
+	// L1 weights (if present)
+	for _, w := range net.L1Weights {
+		h = h*31 + uint64(uint16(w))
+	}
+	for _, b := range net.L1Biases {
+		h = h*31 + uint64(uint16(b))
+	}
+	// L2 weights (if present)
+	for _, w := range net.L2Weights {
+		h = h*31 + uint64(uint16(w))
+	}
+	for _, b := range net.L2Biases {
+		h = h*31 + uint64(uint16(b))
+	}
+	// Output weights + biases
+	for _, w := range net.OutputWeights {
+		h = h*31 + uint64(uint16(w))
+	}
+	for _, b := range net.OutputBias {
+		h = h*31 + uint64(uint32(b))
+	}
 	return fmt.Sprintf("%016x", h)
 }
 
