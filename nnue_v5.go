@@ -692,8 +692,7 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	// Matmul result scale: QA² · QA_L1. Divide by (QA · QA_L1) to get scale QA.
 	// Then dequantize to float [0, 1] by dividing by QA.
 	// This approach works for both int16 (QA_L1=255) and int8 (QA_L1=64) L1 weights.
-	matmulScale := int64(qa2) * int64(qaL1) // QA² · QA_L1
-	biasScale := int64(qa2)                  // bias at QA_L1, multiply by QA² to match matmul
+	biasScale := int64(qa2) // bias at QA_L1, multiply by QA² to match matmul
 
 	// Int8 SIMD fast path: pack SCReLU to uint8, use VPMADDUBSW kernel
 	if nnueUseSIMDV5 && net.L1Weights8T != nil {
@@ -805,40 +804,44 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 		}
 	}
 
-	// Dequantize to float, SCReLU (clamp [0,1], square), then L2/output in float.
-	// hidden64 is at scale QA² · QA_L1. Divide by that to get float [~0, ~1].
-	matmulScaleF := float32(matmulScale)
-	var l1f [64]float32
+	// Divide by QA² to get hidden at scale QA_L1, then SCReLU: clamp [0, QA_L1], square
+	qa2_64 := int64(qa2)
+	clipL1 := int32(qaL1)
 	for i := 0; i < L1; i++ {
-		v := float32(hidden64[i]) / matmulScaleF
-		if v < 0 {
-			v = 0
+		h := int32(hidden64[i] / qa2_64)
+		if h < 0 {
+			h = 0
 		}
-		if v > 1 {
-			v = 1
+		if h > clipL1 {
+			h = clipL1
 		}
-		l1f[i] = v * v // SCReLU
+		hidden[i] = h * h // SCReLU → scale QA_L1²
 	}
 
-	// L2 or output in float
+	// L2 or output — use float path for precision
 	if net.L2Size > 0 {
+		qaL1sq := float32(qaL1) * float32(qaL1)
+		var l1f [64]float32
+		for i := 0; i < L1; i++ {
+			l1f[i] = float32(hidden[i]) / qaL1sq
+		}
 		return net.forwardL2SCReLUFloat(l1f[:L1], bucket)
 	}
-	// No L2: direct output dot in float (with int fallback for test nets)
 	if net.OutWeightsF != nil {
+		qaL1sq := float32(qaL1) * float32(qaL1)
 		outWF := net.OutWeightsF[bucket*L1 : bucket*L1+L1]
 		outputF := net.OutBiasF[bucket]
 		for i := 0; i < L1; i++ {
-			outputF += l1f[i] * outWF[i]
+			outputF += float32(hidden[i]) / qaL1sq * outWF[i]
 		}
 		return int(outputF * nnueV5EvalScale)
 	}
-	// Int fallback: convert l1f back to int scale
+	// Int fallback for test nets
 	outW := net.outputWeightRow(bucket)
 	output := int64(net.OutputBias[bucket])
 	output *= int64(qaL1)
 	for i := 0; i < L1; i++ {
-		output += int64(l1f[i]*float32(qaL1)*float32(qaL1)) * int64(outW[i])
+		output += int64(hidden[i]) * int64(outW[i])
 	}
 	return int(output) * nnueV5EvalScale / (int(qaL1) * int(qaL1) * nnueV5OutputScale)
 }
