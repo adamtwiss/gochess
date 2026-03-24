@@ -695,9 +695,7 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	biasScale := int64(qa2) // bias at QA_L1, multiply by QA² to match matmul
 
 	// Int8 SIMD fast path: SIMD pack SCReLU to uint8, then VPMADDUBSW kernel
-	// TODO: disabled pending SIMD kernel debugging — manual math matches but
-	// kernel produces different results. The int16 SIMD path is used instead.
-	if false && nnueUseSIMDV5 && net.L1Weights8T != nil {
+	if nnueUseSIMDV5 && net.L1Weights8T != nil {
 		var stmBuf [1536]byte
 		var ntmBuf [1536]byte
 		nnueSCReLUPack(&stmAcc[0], &stmBuf[0], H)

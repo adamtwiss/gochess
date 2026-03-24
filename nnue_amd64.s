@@ -1260,8 +1260,8 @@ TEXT ·nnueV5L1Int8MatMulN(SB), NOSPLIT, $0-40
 	// Weight row stride in bytes (1 byte per int8)
 	MOVQ CX, R9                         // R9 = accLen (stride in bytes)
 
-	// Inner loop count: accLen / 32
-	SHRQ $5, CX
+	// Inner loop count: accLen / 64 (2x unrolled, 32 elements per group)
+	SHRQ $6, CX
 
 	// Load ones constant for VPMADDWD widening
 	VMOVDQU nnue_ones_16<>(SB), Y0      // Y0 = [1,1,1,...,1] (16 x int16)
