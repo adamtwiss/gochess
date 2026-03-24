@@ -1391,8 +1391,6 @@ l1screlu_neon_outer:
 
 l1screlu_neon_inner:
 	// Load 4 acc values as int16, widen to int32
-	WORD $0x0F10A4C2                     // SSHLL V2.4S, V_loaded.4H, #0 — but need to load first
-	// Actually: load 8 bytes (4 x int16), then widen
 	MOVD (R6), R10
 	WORD $0x4E080D42                     // DUP V2.2D, X10 (load 8 bytes into V2)
 	WORD $0x0F10A442                     // SSHLL V2.4S, V2.4H, #0 (widen int16 → int32)

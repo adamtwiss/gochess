@@ -692,8 +692,18 @@ func runBench() {
 		if netV5.UseSCReLU {
 			activation = "SCReLU"
 		}
-		fmt.Fprintf(os.Stderr, "NNUE v5 loaded: %s (%s, %d hidden, fingerprint %s)\n",
-			*nnueFile, activation, netV5.HiddenSize, netV5.Fingerprint())
+		arch := "v5"
+		if netV5.L1Size > 0 {
+			arch = "v7"
+		}
+		fmt.Fprintf(os.Stderr, "NNUE %s loaded: %s (%s, %d hidden", arch, *nnueFile, activation, netV5.HiddenSize)
+		if netV5.L1Size > 0 {
+			fmt.Fprintf(os.Stderr, ", L1=%d", netV5.L1Size)
+		}
+		if netV5.L2Size > 0 {
+			fmt.Fprintf(os.Stderr, ", L2=%d", netV5.L2Size)
+		}
+		fmt.Fprintf(os.Stderr, ", fingerprint %s)\n", netV5.Fingerprint())
 	} else {
 		_, nv5, _, err := chess.LoadNNUEFromNetTxt()
 		if err != nil {

@@ -636,49 +636,52 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 			hidden[i] = h * h // SCReLU square → scale QA²
 		}
 	} else {
-		// Scalar fallback
+		// Scalar fallback — must use int64 to avoid overflow.
+		// Per-neuron sum can reach 65025 * 32767 * 2*H ≈ 8.5B for H=1024.
+		var hidden64scalar [64]int64
+		qa2_64 := int64(qa2)
 		for i := 0; i < L1; i++ {
-			hidden[i] = int32(net.L1Biases[i]) * qa2
+			hidden64scalar[i] = int64(net.L1Biases[i]) * qa2_64
 		}
 		for j := 0; j < H; j++ {
-			v := int32(stmAcc[j])
+			v := int64(stmAcc[j])
 			if v <= 0 {
 				continue
 			}
-			if v > nnueV5ClipMax {
-				v = nnueV5ClipMax
+			if v > int64(nnueV5ClipMax) {
+				v = int64(nnueV5ClipMax)
 			}
 			vsq := v * v
 			wOff := j * L1
 			for i := 0; i < L1; i++ {
-				hidden[i] += vsq * int32(net.L1Weights[wOff+i])
+				hidden64scalar[i] += vsq * int64(net.L1Weights[wOff+i])
 			}
 		}
 		for j := 0; j < H; j++ {
-			v := int32(ntmAcc[j])
+			v := int64(ntmAcc[j])
 			if v <= 0 {
 				continue
 			}
-			if v > nnueV5ClipMax {
-				v = nnueV5ClipMax
+			if v > int64(nnueV5ClipMax) {
+				v = int64(nnueV5ClipMax)
 			}
 			vsq := v * v
 			wOff := (H + j) * L1
 			for i := 0; i < L1; i++ {
-				hidden[i] += vsq * int32(net.L1Weights[wOff+i])
+				hidden64scalar[i] += vsq * int64(net.L1Weights[wOff+i])
 			}
 		}
 
 		// Divide by QA², SCReLU clamp+square
 		for i := 0; i < L1; i++ {
-			hidden[i] /= qa2
-			if hidden[i] < 0 {
-				hidden[i] = 0
+			h := int32(hidden64scalar[i] / qa2_64)
+			if h < 0 {
+				h = 0
 			}
-			if hidden[i] > nnueV5ClipMax {
-				hidden[i] = nnueV5ClipMax
+			if h > nnueV5ClipMax {
+				h = nnueV5ClipMax
 			}
-			hidden[i] = hidden[i] * hidden[i]
+			hidden[i] = h * h
 		}
 	}
 
@@ -830,7 +833,7 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 		return fmt.Errorf("writing version: %w", err)
 	}
 
-	if version == 7 {
+	if version == nnueVersionV7 {
 		var flags uint8
 		if net.UseSCReLU {
 			flags |= 1
@@ -960,7 +963,7 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 		net.UseSCReLU = flags&1 != 0
 		net.UsePairwise = flags&2 != 0
 		headerSize = 9 // magic + version + flags
-	} else if version == 7 {
+	} else if version == nnueVersionV7 {
 		var flags uint8
 		var ftSize, l1Size, l2Size uint16
 		if err := binary.Read(f, binary.LittleEndian, &flags); err != nil {
@@ -980,6 +983,12 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 		net.HiddenSize = int(ftSize)
 		net.L1Size = int(l1Size)
 		net.L2Size = int(l2Size)
+		if net.L1Size > 64 {
+			return nil, fmt.Errorf("v7: L1Size %d exceeds maximum supported size of 64", net.L1Size)
+		}
+		if net.L2Size > 64 {
+			return nil, fmt.Errorf("v7: L2Size %d exceeds maximum supported size of 64", net.L2Size)
+		}
 		headerSize = 15 // magic(4) + version(4) + flags(1) + ftSize(2) + l1Size(2) + l2Size(2)
 
 		if nnueUseSIMD && net.HiddenSize%256 != 0 {
