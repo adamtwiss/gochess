@@ -50,12 +50,17 @@ type NNUENetV5 struct {
 	InputWeights []int16
 	InputBiases  []int16
 
-	// Hidden layer (only when L1Size > 0)
+	// Hidden layer 1 (only when L1Size > 0)
 	L1Weights  []int16 // [2*HiddenSize * L1Size] — row-major [inputIdx][l1Idx]
 	L1WeightsT []int16 // [L1Size * 2*HiddenSize] — transposed for SIMD matmul
 	L1Biases   []int16 // [L1Size]
 
-	// Output layer: [bucket * outWidth] where outWidth = L1Size (if L1Size>0) or 2*HiddenSize
+	// Hidden layer 2 (only when L2Size > 0, requires L1Size > 0)
+	L2Size    int
+	L2Weights []int16 // [L1Size * L2Size]
+	L2Biases  []int16 // [L2Size]
+
+	// Output layer: [bucket * outWidth] where outWidth = L2Size or L1Size or 2*HiddenSize
 	OutputWeights []int16
 	OutputBias    [NNUEOutputBuckets]int32
 
@@ -108,6 +113,9 @@ func (net *NNUENetV5) prepareL1Weights() {
 
 // outputWidth returns the number of output weights per bucket.
 func (net *NNUENetV5) outputWidth() int {
+	if net.L2Size > 0 {
+		return net.L2Size
+	}
 	if net.L1Size > 0 {
 		return net.L1Size
 	}
@@ -565,6 +573,11 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 		}
 	}
 
+	// L2 layer (if present): hidden[L1] → hidden2[L2]
+	if net.L2Size > 0 {
+		return net.forwardL2CReLU(hidden[:L1], bucket)
+	}
+
 	// Output dot product: hidden at scale QA, weights at scale QB → scale QA*QB
 	outW := net.outputWeightRow(bucket)
 	output := int64(net.OutputBias[bucket])
@@ -637,8 +650,6 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	}
 
 	// Divide by QA² to get hidden at scale QA, then SCReLU: clamp [0, QA], square
-	// The screlu on hidden produces values at scale QA², which pairs with
-	// output weights at scale QB to give QA²·QB.
 	for i := 0; i < L1; i++ {
 		hidden[i] /= qa2
 		if hidden[i] < 0 {
@@ -648,6 +659,11 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 			hidden[i] = nnueV5ClipMax
 		}
 		hidden[i] = hidden[i] * hidden[i] // SCReLU square → scale QA²
+	}
+
+	// L2 layer (if present)
+	if net.L2Size > 0 {
+		return net.forwardL2SCReLU(hidden[:L1], bucket, qa2)
 	}
 
 	// Output dot product: hidden at scale QA², weights at scale QB → scale QA²·QB
@@ -663,6 +679,96 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 	result := int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
 
 	return result
+}
+
+// forwardL2CReLU computes L2 matmul and output for CReLU nets.
+// l1out contains L1 values at scale QA after CReLU clamp.
+func (net *NNUENetV5) forwardL2CReLU(l1out []int32, bucket int) int {
+	L1 := net.L1Size
+	L2 := net.L2Size
+
+	// L2 matmul: h2[k] = L2Biases[k] + sum_i(l1out[i] * L2Weights[i*L2+k])
+	// l1out at scale QA, L2Weights at scale QA → product at scale QA²
+	var h2 [64]int32
+	for k := 0; k < L2; k++ {
+		h2[k] = int32(net.L2Biases[k])
+	}
+	for i := 0; i < L1; i++ {
+		v := l1out[i]
+		if v == 0 {
+			continue
+		}
+		wOff := i * L2
+		for k := 0; k < L2; k++ {
+			h2[k] += v * int32(net.L2Weights[wOff+k])
+		}
+	}
+
+	// Divide by QA, CReLU clamp → scale QA
+	for k := 0; k < L2; k++ {
+		h2[k] /= nnueV5InputScale
+		if h2[k] < 0 {
+			h2[k] = 0
+		}
+		if h2[k] > nnueV5ClipMax {
+			h2[k] = nnueV5ClipMax
+		}
+	}
+
+	// Output dot: h2 at scale QA, output weights at scale QB → scale QA*QB
+	outW := net.outputWeightRow(bucket)
+	output := int64(net.OutputBias[bucket])
+	for k := 0; k < L2; k++ {
+		output += int64(h2[k]) * int64(outW[k])
+	}
+
+	return int(output) * nnueV5EvalScale / nnueV5BiasScale
+}
+
+// forwardL2SCReLU computes L2 matmul and output for SCReLU nets.
+// l1out contains L1 values at scale QA² after SCReLU (v² where v in [0, QA]).
+func (net *NNUENetV5) forwardL2SCReLU(l1out []int32, bucket int, qa2 int32) int {
+	L1 := net.L1Size
+	L2 := net.L2Size
+
+	// L2 matmul: l1out at scale QA², L2Weights at scale QA → product at scale QA³
+	// Bias at scale QA → scale up by QA² to match
+	var h2 [64]int32
+	for k := 0; k < L2; k++ {
+		h2[k] = int32(net.L2Biases[k]) * qa2
+	}
+	for i := 0; i < L1; i++ {
+		v := l1out[i]
+		if v == 0 {
+			continue
+		}
+		wOff := i * L2
+		for k := 0; k < L2; k++ {
+			h2[k] += v * int32(net.L2Weights[wOff+k])
+		}
+	}
+
+	// Divide by QA² → scale QA, SCReLU: clamp [0, QA], square → scale QA²
+	for k := 0; k < L2; k++ {
+		h2[k] /= qa2
+		if h2[k] < 0 {
+			h2[k] = 0
+		}
+		if h2[k] > nnueV5ClipMax {
+			h2[k] = nnueV5ClipMax
+		}
+		h2[k] = h2[k] * h2[k] // SCReLU → scale QA²
+	}
+
+	// Output dot: h2 at scale QA², output weights at scale QB → scale QA²·QB
+	outW := net.outputWeightRow(bucket)
+	output := int64(net.OutputBias[bucket]) // bias at scale QA·QB
+	output *= int64(nnueV5InputScale)       // scale to QA²·QB
+	for k := 0; k < L2; k++ {
+		output += int64(h2[k]) * int64(outW[k])
+	}
+
+	return int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
 }
 
 // Fingerprint returns a checksum string for the v5 network.
@@ -718,11 +824,15 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 		}
 		ftSize := uint16(net.HiddenSize)
 		l1Size := uint16(net.L1Size)
+		l2Size := uint16(net.L2Size)
 		if err := binary.Write(w, binary.LittleEndian, ftSize); err != nil {
 			return fmt.Errorf("writing ftSize: %w", err)
 		}
 		if err := binary.Write(w, binary.LittleEndian, l1Size); err != nil {
 			return fmt.Errorf("writing l1Size: %w", err)
+		}
+		if err := binary.Write(w, binary.LittleEndian, l2Size); err != nil {
+			return fmt.Errorf("writing l2Size: %w", err)
 		}
 	} else if version == 6 {
 		var flags uint8
@@ -743,13 +853,21 @@ func writeNNUEV5(w io.Writer, net *NNUENetV5) error {
 	if err := binary.Write(w, binary.LittleEndian, net.InputBiases); err != nil {
 		return fmt.Errorf("writing input biases: %w", err)
 	}
-	// L1 layer (v7 only)
+	// Hidden layers (v7 only)
 	if net.L1Size > 0 {
 		if err := binary.Write(w, binary.LittleEndian, net.L1Weights); err != nil {
 			return fmt.Errorf("writing L1 weights: %w", err)
 		}
 		if err := binary.Write(w, binary.LittleEndian, net.L1Biases); err != nil {
 			return fmt.Errorf("writing L1 biases: %w", err)
+		}
+	}
+	if net.L2Size > 0 {
+		if err := binary.Write(w, binary.LittleEndian, net.L2Weights); err != nil {
+			return fmt.Errorf("writing L2 weights: %w", err)
+		}
+		if err := binary.Write(w, binary.LittleEndian, net.L2Biases); err != nil {
+			return fmt.Errorf("writing L2 biases: %w", err)
 		}
 	}
 	if err := binary.Write(w, binary.LittleEndian, net.OutputWeights); err != nil {
@@ -825,7 +943,7 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 		headerSize = 9 // magic + version + flags
 	} else if version == 7 {
 		var flags uint8
-		var ftSize, l1Size uint16
+		var ftSize, l1Size, l2Size uint16
 		if err := binary.Read(f, binary.LittleEndian, &flags); err != nil {
 			return nil, fmt.Errorf("reading flags: %w", err)
 		}
@@ -835,11 +953,15 @@ func LoadNNUEV5(path string) (*NNUENetV5, error) {
 		if err := binary.Read(f, binary.LittleEndian, &l1Size); err != nil {
 			return nil, fmt.Errorf("reading l1Size: %w", err)
 		}
+		if err := binary.Read(f, binary.LittleEndian, &l2Size); err != nil {
+			return nil, fmt.Errorf("reading l2Size: %w", err)
+		}
 		net.UseSCReLU = flags&1 != 0
 		net.UsePairwise = flags&2 != 0
 		net.HiddenSize = int(ftSize)
 		net.L1Size = int(l1Size)
-		headerSize = 13 // magic(4) + version(4) + flags(1) + ftSize(2) + l1Size(2)
+		net.L2Size = int(l2Size)
+		headerSize = 15 // magic(4) + version(4) + flags(1) + ftSize(2) + l1Size(2) + l2Size(2)
 
 		if nnueUseSIMD && net.HiddenSize%256 != 0 {
 			return nil, fmt.Errorf("v7: hidden size %d is not a multiple of 256 (required for SIMD accumulator ops)", net.HiddenSize)
@@ -886,6 +1008,18 @@ func readNNUEV5Body(f io.Reader, net *NNUENetV5) (*NNUENetV5, error) {
 		net.L1Biases = make([]int16, net.L1Size)
 		if err := binary.Read(f, binary.LittleEndian, net.L1Biases); err != nil {
 			return nil, fmt.Errorf("reading L1 biases: %w", err)
+		}
+	}
+
+	// L2 hidden layer (v7 with L2Size > 0)
+	if net.L2Size > 0 {
+		net.L2Weights = make([]int16, net.L1Size*net.L2Size)
+		if err := binary.Read(f, binary.LittleEndian, net.L2Weights); err != nil {
+			return nil, fmt.Errorf("reading L2 weights: %w", err)
+		}
+		net.L2Biases = make([]int16, net.L2Size)
+		if err := binary.Read(f, binary.LittleEndian, net.L2Biases); err != nil {
+			return nil, fmt.Errorf("reading L2 biases: %w", err)
 		}
 	}
 

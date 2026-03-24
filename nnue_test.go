@@ -1525,6 +1525,117 @@ func TestNNUEV7SCReLUDifferentiation(t *testing.T) {
 		scores[0], scores[1], scores[2], scores[3])
 }
 
+// TestNNUEV7L2SaveLoadAndForward tests v7 with L1+L2 hidden layers.
+func TestNNUEV7L2SaveLoadAndForward(t *testing.T) {
+	rng := rand.New(rand.NewSource(789))
+
+	H := 256
+	L1 := 16
+	L2 := 32
+
+	net := &NNUENetV5{
+		HiddenSize: H,
+		L1Size:     L1,
+		L2Size:     L2,
+		UseSCReLU:  true,
+	}
+	net.InputWeights = make([]int16, NNUEInputSize*H)
+	net.InputBiases = make([]int16, H)
+	net.L1Weights = make([]int16, 2*H*L1)
+	net.L1Biases = make([]int16, L1)
+	net.L2Weights = make([]int16, L1*L2)
+	net.L2Biases = make([]int16, L2)
+	net.OutputWeights = make([]int16, NNUEOutputBuckets*L2)
+
+	for i := range net.InputWeights {
+		net.InputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.InputBiases {
+		net.InputBiases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Weights {
+		net.L1Weights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L1Biases {
+		net.L1Biases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L2Weights {
+		net.L2Weights[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.L2Biases {
+		net.L2Biases[i] = int16(rng.Intn(201) - 100)
+	}
+	for i := range net.OutputWeights {
+		net.OutputWeights[i] = int16(rng.Intn(201) - 100)
+	}
+	for b := 0; b < NNUEOutputBuckets; b++ {
+		net.OutputBias[b] = int32(rng.Intn(2001) - 1000)
+	}
+
+	// Save and reload
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-v7-l2.nnue")
+	if err := SaveNNUEV5(path, net); err != nil {
+		t.Fatalf("SaveNNUEV5 failed: %v", err)
+	}
+
+	ver, _ := DetectNNUEVersion(path)
+	if ver != 7 {
+		t.Fatalf("expected version 7, got %d", ver)
+	}
+
+	loaded, err := LoadNNUEV5(path)
+	if err != nil {
+		t.Fatalf("LoadNNUEV5 failed: %v", err)
+	}
+
+	if loaded.L1Size != L1 {
+		t.Errorf("L1Size: got %d, want %d", loaded.L1Size, L1)
+	}
+	if loaded.L2Size != L2 {
+		t.Errorf("L2Size: got %d, want %d", loaded.L2Size, L2)
+	}
+	if len(loaded.L2Weights) != L1*L2 {
+		t.Fatalf("L2Weights length: got %d, want %d", len(loaded.L2Weights), L1*L2)
+	}
+	for i := range net.L2Weights {
+		if net.L2Weights[i] != loaded.L2Weights[i] {
+			t.Errorf("L2Weights[%d] mismatch: %d vs %d", i, net.L2Weights[i], loaded.L2Weights[i])
+			break
+		}
+	}
+
+	// Forward pass should produce non-zero, differentiated evals
+	fens := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"rnbqkbnr/pppppppp/8/8/8/8/1PPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"4k3/8/8/8/8/8/4PPPP/4K2R w K - 0 1",
+	}
+	var scores []int
+	for _, fen := range fens {
+		var b Board
+		b.Reset()
+		b.SetFEN(fen)
+		acc := NNUEAccumulatorV5{
+			White: make([]int16, H),
+			Black: make([]int16, H),
+		}
+		loaded.RecomputeAccumulator(&b, &acc, White)
+		loaded.RecomputeAccumulator(&b, &acc, Black)
+		score := loaded.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+		scores = append(scores, score)
+	}
+	t.Logf("L2 scores: startpos=%d, miss-pawn=%d, endgame=%d", scores[0], scores[1], scores[2])
+
+	for i := 0; i < len(scores); i++ {
+		for j := i + 1; j < len(scores); j++ {
+			if scores[i] == scores[j] {
+				t.Errorf("positions %d and %d both score %d — possible collapse", i, j, scores[i])
+			}
+		}
+	}
+}
+
 // TestNNUEV5SIMDvsGeneric validates that SIMD v5 forward pass matches the Go fallback
 // across multiple net architectures and positions.
 func TestNNUEV5SIMDvsGeneric(t *testing.T) {
