@@ -192,7 +192,7 @@ Changes to search, eval, or move ordering must be validated by self-play Elo, no
      -engine name=New cmd=./chess-new proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net.nnue option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
      -engine name=Base cmd=./chess-base proto=uci option.UseNNUE=true option.NNUEFile=$(pwd)/net.nnue option.OwnBook=false option.Hash=64 option.MoveOverhead=100 \
      -each tc=0/10+0.1 \
-     -rounds 5000 -concurrency 6 \
+     -rounds 5000 -concurrency 8 \
      -sprt elo0=-10 elo1=5 alpha=0.05 beta=0.05 \
      -openings file=testdata/noob_3moves.epd format=epd order=random \
      -pgnout sprt_test.pgn -recover -ratinginterval 20
@@ -203,7 +203,7 @@ Changes to search, eval, or move ordering must be validated by self-play Elo, no
 7. **Merge on SPRT acceptance** — merge the worktree branch to main, commit, push. Then move to the next idea.
 8. **Log results in `experiments.md`** — record every experiment (pass or fail) with the change, SPRT result, baseline, and lessons learned. This builds institutional knowledge and prevents re-testing failed ideas.
 
-CPU budget: on a 16-thread machine, 7 concurrency is the max for 10s+0.1s games without time-pressure noise. Two parallel experiments at 4 each is fine.
+CPU budget: on a 16-thread machine, use concurrency 8 for single-thread engine games (engines don't ponder with OwnBook=false, so each game uses 2 threads — one per engine). Two parallel experiments at 8 each is fine on 16 threads.
 
 ### Research Pipeline (Parallel SPRT)
 
