@@ -1232,6 +1232,18 @@ func TestNNUEV7SaveLoadRoundTrip(t *testing.T) {
 	if score == 0 {
 		t.Error("forward pass returned exactly 0 with random weights — likely a bug")
 	}
+
+	// Test SCReLU variant produces different (but non-zero) output
+	loaded.UseSCReLU = true
+	scoreSCReLU := loaded.Forward(&acc, White, b.AllPieces.Count())
+	t.Logf("v7 startpos eval (SCReLU): %d cp", scoreSCReLU)
+	if scoreSCReLU == 0 {
+		t.Error("SCReLU forward pass returned exactly 0 with random weights — likely a bug")
+	}
+	if scoreSCReLU == score {
+		t.Error("SCReLU forward pass returned same value as CReLU — activation not applied")
+	}
+	loaded.UseSCReLU = false // restore
 }
 
 // TestNNUEV5SIMDvsGeneric validates that SIMD v5 forward pass matches the Go fallback

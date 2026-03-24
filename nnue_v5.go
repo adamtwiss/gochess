@@ -512,18 +512,17 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 
 	var hidden [64]int32 // L1 <= 64 for any reasonable hidden layer
 
+	if net.UseSCReLU {
+		return net.forwardWithL1SCReLU(stmAcc, ntmAcc, bucket, H, L1, &hidden)
+	}
+
 	if nnueUseSIMDV5 && net.L1WeightsT != nil {
-		// SIMD path: use transposed weights [L1 × 2H]
-		// Initialize hidden from biases (widened to int32)
 		for i := 0; i < L1; i++ {
 			hidden[i] = int32(net.L1Biases[i])
 		}
-		// STM perspective: first half of transposed weights
 		nnueV5L1MatMulN(&stmAcc[0], &net.L1WeightsT[0], &hidden[0], H, L1)
-		// NTM perspective: second half of transposed weights
 		nnueV5L1MatMulN(&ntmAcc[0], &net.L1WeightsT[L1*H], &hidden[0], H, L1)
 	} else {
-		// Scalar fallback: outer product with row-major weights [2H × L1]
 		for i := 0; i < L1; i++ {
 			hidden[i] = int32(net.L1Biases[i])
 		}
@@ -555,7 +554,7 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 		}
 	}
 
-	// Step 3: Divide by QA (L1 output is at scale QA²), then CReLU clamp [0, QA]
+	// Divide by QA (L1 output is at scale QA²), then CReLU clamp [0, QA]
 	for i := 0; i < L1; i++ {
 		hidden[i] /= nnueV5InputScale
 		if hidden[i] < 0 {
@@ -566,19 +565,104 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 		}
 	}
 
-	// Step 4: Output dot product
+	// Output dot product: hidden at scale QA, weights at scale QB → scale QA*QB
 	outW := net.outputWeightRow(bucket)
 	output := int64(net.OutputBias[bucket])
 	for i := 0; i < L1; i++ {
 		output += int64(hidden[i]) * int64(outW[i])
 	}
 
-	// Step 5: Scale — same as the no-L1 path: output at scale QA*QB
+	return int(output) * nnueV5EvalScale / nnueV5BiasScale
+}
+
+// forwardWithL1SCReLU handles the SCReLU activation variant for hidden layer nets.
+// SCReLU: clamp [0, QA] then square, divide by QA → result in [0, QA].
+// Applied at both accumulator→L1 and L1→output boundaries.
+//
+// Scale chain (identical to CReLU thanks to /QA after squaring):
+//   acc: scale QA → SCReLU(v²/QA): scale QA, range [0, QA]
+//   L1 matmul: scale QA² → /QA → scale QA → SCReLU(h²/QA): scale QA
+//   Output dot: scale QA*QB → standard scaling
+func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 int, hidden *[64]int32) int {
+	// Pre-process accumulators with SCReLU: clamp, square, /QA → [0, QA]
+	// Values are in [0, 255] so the existing CReLU L1 matmul kernel works as-is
+	// (its internal clamp is a no-op on values already in range).
+	var stmBuf [1536]int16
+	var ntmBuf [1536]int16
+	for j := 0; j < H; j++ {
+		v := int32(stmAcc[j])
+		if v < 0 {
+			v = 0
+		}
+		if v > nnueV5ClipMax {
+			v = nnueV5ClipMax
+		}
+		stmBuf[j] = int16(v * v / nnueV5InputScale)
+	}
+	for j := 0; j < H; j++ {
+		v := int32(ntmAcc[j])
+		if v < 0 {
+			v = 0
+		}
+		if v > nnueV5ClipMax {
+			v = nnueV5ClipMax
+		}
+		ntmBuf[j] = int16(v * v / nnueV5InputScale)
+	}
+
+	// L1 matmul with SCReLU-preprocessed inputs
+	for i := 0; i < L1; i++ {
+		hidden[i] = int32(net.L1Biases[i])
+	}
+	if nnueUseSIMDV5 && net.L1WeightsT != nil {
+		nnueV5L1MatMulN(&stmBuf[0], &net.L1WeightsT[0], &hidden[0], H, L1)
+		nnueV5L1MatMulN(&ntmBuf[0], &net.L1WeightsT[L1*H], &hidden[0], H, L1)
+	} else {
+		for j := 0; j < H; j++ {
+			v := int32(stmBuf[j])
+			if v == 0 {
+				continue
+			}
+			wOff := j * L1
+			for i := 0; i < L1; i++ {
+				hidden[i] += v * int32(net.L1Weights[wOff+i])
+			}
+		}
+		for j := 0; j < H; j++ {
+			v := int32(ntmBuf[j])
+			if v == 0 {
+				continue
+			}
+			wOff := (H + j) * L1
+			for i := 0; i < L1; i++ {
+				hidden[i] += v * int32(net.L1Weights[wOff+i])
+			}
+		}
+	}
+
+	// Divide by QA, then SCReLU on hidden: clamp, square, /QA → [0, QA]
+	for i := 0; i < L1; i++ {
+		h := hidden[i] / nnueV5InputScale
+		if h < 0 {
+			h = 0
+		}
+		if h > nnueV5ClipMax {
+			h = nnueV5ClipMax
+		}
+		hidden[i] = h * h / nnueV5InputScale
+	}
+
+	// Output dot product: hidden at scale QA, weights at scale QB → scale QA*QB
+	outW := net.outputWeightRow(bucket)
+	output := int64(net.OutputBias[bucket])
+	for i := 0; i < L1; i++ {
+		output += int64(hidden[i]) * int64(outW[i])
+	}
+
 	result := int(output) * nnueV5EvalScale / nnueV5BiasScale
 
-	if net.UseSCReLU {
-		result = result * 4 / 5
-	}
+	// SCReLU eval scale correction
+	result = result * 4 / 5
 
 	return result
 }
