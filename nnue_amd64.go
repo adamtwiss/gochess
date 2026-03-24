@@ -153,3 +153,14 @@ func nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count
 //
 //go:noescape
 func nnueV5L1MatMulN(acc *int16, wT *int16, hidden *int32, accLen int, l1 int)
+
+// nnueV5L1SCReLUMatMulN computes the SCReLU L1 hidden layer matmul for one perspective:
+//
+//	hidden[i] += sum_j( clamp(acc[j], 0, 255)² * wT[i*accLen + j] )
+//
+// for i=0..l1-1, j=0..accLen-1. accLen must be a multiple of 16.
+// Uses lo/hi decomposition of v² to avoid int32 overflow with VPMADDWD.
+// hidden must be pre-initialized (e.g. with biases scaled to QA³).
+//
+//go:noescape
+func nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)

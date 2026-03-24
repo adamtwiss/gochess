@@ -1350,3 +1350,92 @@ l1mm_neon_inner:
 	BNE l1mm_neon_outer
 
 	RET
+
+// ============================================================================
+// nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)
+//
+// SCReLU L1 matmul: hidden[i] += sum_j( clamp(acc[j], 0, 255)² * wT[i*accLen+j] )
+// Processes 4 elements at a time: widen to int32, square, multiply, accumulate int64.
+// accLen must be a multiple of 4. l1 can be any positive value.
+//
+// Register allocation:
+//   R0 = acc base, R1 = weight pointer, R2 = hidden pointer
+//   R3 = inner loop count (accLen/4), R4 = outer loop count (l1)
+//   R5 = weight row stride, V0 = zero, V1 = 255
+//   V16-V17 = int64 accumulators
+// ============================================================================
+TEXT ·nnueV5L1SCReLUMatMulN(SB), NOSPLIT, $0-40
+	MOVD acc+0(FP), R0
+	MOVD wT+8(FP), R1
+	MOVD hidden+16(FP), R2
+	MOVD accLen+24(FP), R3
+	MOVD l1+32(FP), R4
+
+	// Weight row stride in bytes
+	LSL $1, R3, R5                       // R5 = accLen * 2
+
+	// Inner loop count: accLen / 4
+	LSR $2, R3, R3
+
+	// Constants
+	VEOR V0.B16, V0.B16, V0.B16         // V0 = zero
+	MOVD $255, R9
+	WORD $0x4E040D21                     // DUP V1.4S, W9   (broadcast 255 as int32)
+
+l1screlu_neon_outer:
+	VEOR V16.B16, V16.B16, V16.B16      // int64 accumulator low
+	VEOR V17.B16, V17.B16, V17.B16      // int64 accumulator high
+	MOVD R0, R6                          // acc cursor
+	MOVD R1, R7                          // weight cursor
+	MOVD R3, R8                          // inner loop counter
+
+l1screlu_neon_inner:
+	// Load 4 acc values as int16, widen to int32
+	WORD $0x0F10A4C2                     // SSHLL V2.4S, V_loaded.4H, #0 — but need to load first
+	// Actually: load 8 bytes (4 x int16), then widen
+	MOVD (R6), R10
+	WORD $0x4E080D42                     // DUP V2.2D, X10 (load 8 bytes into V2)
+	WORD $0x0F10A442                     // SSHLL V2.4S, V2.4H, #0 (widen int16 → int32)
+
+	// Clamp to [0, 255]
+	WORD $0x4EA06442                     // SMAX V2.4S, V2.4S, V0.4S
+	WORD $0x4EA16C42                     // SMIN V2.4S, V2.4S, V1.4S
+
+	// Square: V3 = V2 * V2
+	WORD $0x4EA29C43                     // MUL V3.4S, V2.4S, V2.4S
+
+	// Load 4 weights as int16, widen to int32
+	MOVD (R7), R10
+	WORD $0x4E080D44                     // DUP V4.2D, X10
+	WORD $0x0F10A484                     // SSHLL V4.4S, V4.4H, #0
+
+	// Multiply: V5 = v² × w (int32)
+	WORD $0x4EA49C65                     // MUL V5.4S, V3.4S, V4.4S
+
+	// Widen to int64 and accumulate
+	WORD $0x0F20A4A6                     // SSHLL V6.2D, V5.2S, #0 (low 2 → int64)
+	WORD $0x4EA68610                     // ADD V16.2D, V16.2D, V6.2D
+	WORD $0x4F20A4A6                     // SSHLL2 V6.2D, V5.4S, #0 (high 2 → int64)
+	WORD $0x4EA68631                     // ADD V17.2D, V17.2D, V6.2D
+
+	ADD $8, R6, R6                       // 4 × int16 = 8 bytes
+	ADD $8, R7, R7
+	SUBS $1, R8, R8
+	BNE l1screlu_neon_inner
+
+	// Horizontal sum: V16 + V17 → single int64
+	WORD $0x4EF18610                     // ADD V16.2D, V16.2D, V17.2D
+	WORD $0x4EF0BE10                     // ADDP V16.2D, V16.2D, V16.2D
+	WORD $0x9E66020C                     // FMOV X12, D16
+
+	// Accumulate into hidden[i] (int64)
+	MOVD (R2), R9
+	ADD R12, R9, R9
+	MOVD R9, (R2)
+
+	ADD $8, R2, R2                       // next hidden slot (int64)
+	ADD R5, R1, R1                       // next weight row
+	SUBS $1, R4, R4
+	BNE l1screlu_neon_outer
+
+	RET

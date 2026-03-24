@@ -30,3 +30,4 @@ func nnueV5CReLUDotN(acc *int16, weights *int16, count int) int32  { panic("SIMD
 func nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64 { panic("SIMD not available") }
 func nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count int) int64 { panic("SIMD not available") }
 func nnueV5L1MatMulN(acc *int16, wT *int16, hidden *int32, accLen int, l1 int) { panic("SIMD not available") }
+func nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int) { panic("SIMD not available") }

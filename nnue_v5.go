@@ -614,51 +614,72 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 
 	qa2 := int32(nnueV5InputScale) * int32(nnueV5InputScale) // QA² = 65025
 
-	// Initialize hidden with biases scaled to QA³ (bias at QA, multiply by QA²)
-	for i := 0; i < L1; i++ {
-		hidden[i] = int32(net.L1Biases[i]) * qa2
-	}
-
-	// Scalar matmul with full-precision SCReLU (v² without /QA)
-	for j := 0; j < H; j++ {
-		v := int32(stmAcc[j])
-		if v <= 0 {
-			continue
-		}
-		if v > nnueV5ClipMax {
-			v = nnueV5ClipMax
-		}
-		vsq := v * v // at scale QA², fits in int32 (max 65025)
-		wOff := j * L1
+	if nnueUseSIMDV5 && net.L1WeightsT != nil {
+		// SIMD path: SCReLU matmul with int64 accumulation
+		var hidden64 [64]int64
+		qa2_64 := int64(qa2)
 		for i := 0; i < L1; i++ {
-			hidden[i] += vsq * int32(net.L1Weights[wOff+i])
+			hidden64[i] = int64(net.L1Biases[i]) * int64(qa2) // bias scaled to QA³
 		}
-	}
-	for j := 0; j < H; j++ {
-		v := int32(ntmAcc[j])
-		if v <= 0 {
-			continue
-		}
-		if v > nnueV5ClipMax {
-			v = nnueV5ClipMax
-		}
-		vsq := v * v
-		wOff := (H + j) * L1
-		for i := 0; i < L1; i++ {
-			hidden[i] += vsq * int32(net.L1Weights[wOff+i])
-		}
-	}
+		nnueV5L1SCReLUMatMulN(&stmAcc[0], &net.L1WeightsT[0], &hidden64[0], H, L1)
+		nnueV5L1SCReLUMatMulN(&ntmAcc[0], &net.L1WeightsT[L1*H], &hidden64[0], H, L1)
 
-	// Divide by QA² to get hidden at scale QA, then SCReLU: clamp [0, QA], square
-	for i := 0; i < L1; i++ {
-		hidden[i] /= qa2
-		if hidden[i] < 0 {
-			hidden[i] = 0
+		// Divide by QA², SCReLU clamp+square into int32 hidden
+		for i := 0; i < L1; i++ {
+			h := int32(hidden64[i] / qa2_64)
+			if h < 0 {
+				h = 0
+			}
+			if h > nnueV5ClipMax {
+				h = nnueV5ClipMax
+			}
+			hidden[i] = h * h // SCReLU square → scale QA²
 		}
-		if hidden[i] > nnueV5ClipMax {
-			hidden[i] = nnueV5ClipMax
+	} else {
+		// Scalar fallback
+		for i := 0; i < L1; i++ {
+			hidden[i] = int32(net.L1Biases[i]) * qa2
 		}
-		hidden[i] = hidden[i] * hidden[i] // SCReLU square → scale QA²
+		for j := 0; j < H; j++ {
+			v := int32(stmAcc[j])
+			if v <= 0 {
+				continue
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			vsq := v * v
+			wOff := j * L1
+			for i := 0; i < L1; i++ {
+				hidden[i] += vsq * int32(net.L1Weights[wOff+i])
+			}
+		}
+		for j := 0; j < H; j++ {
+			v := int32(ntmAcc[j])
+			if v <= 0 {
+				continue
+			}
+			if v > nnueV5ClipMax {
+				v = nnueV5ClipMax
+			}
+			vsq := v * v
+			wOff := (H + j) * L1
+			for i := 0; i < L1; i++ {
+				hidden[i] += vsq * int32(net.L1Weights[wOff+i])
+			}
+		}
+
+		// Divide by QA², SCReLU clamp+square
+		for i := 0; i < L1; i++ {
+			hidden[i] /= qa2
+			if hidden[i] < 0 {
+				hidden[i] = 0
+			}
+			if hidden[i] > nnueV5ClipMax {
+				hidden[i] = nnueV5ClipMax
+			}
+			hidden[i] = hidden[i] * hidden[i]
+		}
 	}
 
 	// L2 layer (if present)
@@ -668,14 +689,12 @@ func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 
 
 	// Output dot product: hidden at scale QA², weights at scale QB → scale QA²·QB
 	outW := net.outputWeightRow(bucket)
-	output := int64(net.OutputBias[bucket]) // bias at scale QA·QB
-	// Must scale bias to QA²·QB to match: multiply by QA
-	output *= int64(nnueV5InputScale)
+	output := int64(net.OutputBias[bucket])
+	output *= int64(nnueV5InputScale) // scale bias to QA²·QB
 	for i := 0; i < L1; i++ {
 		output += int64(hidden[i]) * int64(outW[i])
 	}
 
-	// Scale: output at QA²·QB. Divide by QA²·QB, multiply by 400.
 	result := int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
 
 	return result

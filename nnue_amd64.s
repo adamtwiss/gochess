@@ -1184,3 +1184,110 @@ l1mm_inner:
 
 	VZEROUPPER
 	RET
+
+// ============================================================================
+// nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)
+//
+// SCReLU L1 matmul: hidden[i] += sum_j( clamp(acc[j], 0, 255)² * wT[i*accLen+j] )
+// Uses lo/hi decomposition of v² to stay in VPMADDWD:
+//   v² = lo + hi * 32768, where lo = v² & 0x7FFF, hi = v² >> 15
+//   sum(v² * w) = sum(lo * w) + sum(hi * w) * 32768
+// Accumulates into int64 hidden[] to avoid overflow.
+// accLen must be a multiple of 16. l1 can be any positive value.
+//
+// Register allocation:
+//   Y0  = zero, Y1 = 255 ceiling, Y2 = 0x7FFF mask
+//   Y3  = loaded acc (clamped), Y4 = v² (VPMULLW)
+//   Y5  = lo (v² & 0x7FFF), Y6 = hi (v² >> 15)
+//   Y7  = loaded weights
+//   Y8  = VPMADDWD(lo, w), Y9 = VPMADDWD(hi, w)
+//   Y10 = lo accumulator (int32), Y11 = hi accumulator (int32)
+// ============================================================================
+TEXT ·nnueV5L1SCReLUMatMulN(SB), NOSPLIT, $0-40
+	MOVQ acc+0(FP), SI
+	MOVQ wT+8(FP), DI
+	MOVQ hidden+16(FP), R8
+	MOVQ accLen+24(FP), CX
+	MOVQ l1+32(FP), DX
+
+	// Weight row stride in bytes
+	MOVQ CX, R9
+	SHLQ $1, R9                         // R9 = accLen * 2
+
+	// Inner loop count: accLen / 16
+	SHRQ $4, CX
+
+	VPXOR Y0, Y0, Y0                    // Y0 = zero
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 ceiling
+	VPCMPEQW Y2, Y2, Y2                 // all 1s
+	VPSRLW $1, Y2, Y2                   // Y2 = 0x7FFF mask
+
+l1screlu_outer:
+	VPXOR Y10, Y10, Y10                 // lo accumulator (int32)
+	VPXOR Y11, Y11, Y11                 // hi accumulator (int32)
+	MOVQ SI, R10                        // R10 = acc cursor
+	MOVQ DI, R11                        // R11 = weight cursor
+	MOVQ CX, R12                        // R12 = inner loop counter
+
+l1screlu_inner:
+	// Load 16 acc values, clamp to [0, 255]
+	VMOVDQU (R10), Y3
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3
+
+	// Square: v² = v * v (unsigned result, fits uint16)
+	VPMULLW Y3, Y3, Y4
+
+	// Decompose: lo = v² & 0x7FFF (safe signed int16), hi = v² >> 15 (0 or 1)
+	VPAND Y4, Y2, Y5                    // lo
+	VPSRLW $15, Y4, Y6                  // hi
+
+	// Load weights
+	VMOVDQU (R11), Y7
+
+	// Multiply-accumulate both halves
+	VPMADDWD Y5, Y7, Y8                 // lo * w → 8 int32
+	VPMADDWD Y6, Y7, Y9                 // hi * w → 8 int32
+	VPADDD Y8, Y10, Y10
+	VPADDD Y9, Y11, Y11
+
+	ADDQ $32, R10
+	ADDQ $32, R11
+	DECQ R12
+	JNZ l1screlu_inner
+
+	// Horizontal sum of lo accumulator (Y10) → single int32
+	VEXTRACTI128 $1, Y10, X12
+	VPADDD X12, X10, X10
+	VPSHUFD $0x4E, X10, X12
+	VPADDD X12, X10, X10
+	VPSHUFD $0x01, X10, X12
+	VPADDD X12, X10, X10
+	VMOVD X10, AX                       // AX = lo_sum (int32)
+
+	// Horizontal sum of hi accumulator (Y11) → single int32
+	VEXTRACTI128 $1, Y11, X12
+	VPADDD X12, X11, X11
+	VPSHUFD $0x4E, X11, X12
+	VPADDD X12, X11, X11
+	VPSHUFD $0x01, X11, X12
+	VPADDD X12, X11, X11
+	VMOVD X11, BX                       // BX = hi_sum (int32)
+
+	// Combine: total = lo_sum + hi_sum * 32768 (in int64)
+	MOVLQSX AX, AX                      // sign-extend int32 → int64
+	MOVLQSX BX, BX
+	SHLQ $15, BX                        // hi_sum * 32768
+	ADDQ BX, AX                         // AX = total (int64)
+
+	// Accumulate into hidden[i] (int64)
+	ADDQ (R8), AX
+	MOVQ AX, (R8)
+
+	ADDQ $8, R8                          // next hidden slot (int64 = 8 bytes)
+	ADDQ R9, DI                          // next weight row
+	DECQ DX
+	JNZ l1screlu_outer
+
+	VZEROUPPER
+	RET
