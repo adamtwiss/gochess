@@ -584,82 +584,83 @@ func (net *NNUENetV5) forwardWithL1(stmAcc, ntmAcc []int16, bucket int) int {
 //   L1 matmul: scale QA² → /QA → scale QA → SCReLU(h²/QA): scale QA
 //   Output dot: scale QA*QB → standard scaling
 func (net *NNUENetV5) forwardWithL1SCReLU(stmAcc, ntmAcc []int16, bucket, H, L1 int, hidden *[64]int32) int {
-	// Pre-process accumulators with SCReLU: clamp, square, /QA → [0, QA]
-	// Values are in [0, 255] so the existing CReLU L1 matmul kernel works as-is
-	// (its internal clamp is a no-op on values already in range).
-	var stmBuf [1536]int16
-	var ntmBuf [1536]int16
+	// SCReLU: clamp [0, QA] then square. No /QA before the matmul — keep full
+	// precision at scale QA². The matmul produces scale QA²·QA = QA³.
+	// Bias is at scale QA, so we must scale bias up by QA² to match.
+	// After matmul: divide by QA² to get back to scale QA for the hidden values.
+	//
+	// Scale chain:
+	//   screlu(acc): scale QA² (v² where v in [0, QA])
+	//   L1 weights: scale QA
+	//   matmul result: scale QA³
+	//   bias: scale QA → must add as bias * QA² to match QA³
+	//   divide by QA²: scale QA → screlu clamp [0, QA] → scale QA²
+	//   output weights: scale QB
+	//   output dot: scale QA²·QB
+	//   divide by QA·QB → centipawns via ×400
+
+	qa2 := int32(nnueV5InputScale) * int32(nnueV5InputScale) // QA² = 65025
+
+	// Initialize hidden with biases scaled to QA³ (bias at QA, multiply by QA²)
+	for i := 0; i < L1; i++ {
+		hidden[i] = int32(net.L1Biases[i]) * qa2
+	}
+
+	// Scalar matmul with full-precision SCReLU (v² without /QA)
 	for j := 0; j < H; j++ {
 		v := int32(stmAcc[j])
-		if v < 0 {
-			v = 0
+		if v <= 0 {
+			continue
 		}
 		if v > nnueV5ClipMax {
 			v = nnueV5ClipMax
 		}
-		stmBuf[j] = int16(v * v / nnueV5InputScale)
+		vsq := v * v // at scale QA², fits in int32 (max 65025)
+		wOff := j * L1
+		for i := 0; i < L1; i++ {
+			hidden[i] += vsq * int32(net.L1Weights[wOff+i])
+		}
 	}
 	for j := 0; j < H; j++ {
 		v := int32(ntmAcc[j])
-		if v < 0 {
-			v = 0
+		if v <= 0 {
+			continue
 		}
 		if v > nnueV5ClipMax {
 			v = nnueV5ClipMax
 		}
-		ntmBuf[j] = int16(v * v / nnueV5InputScale)
-	}
-
-	// L1 matmul with SCReLU-preprocessed inputs
-	for i := 0; i < L1; i++ {
-		hidden[i] = int32(net.L1Biases[i])
-	}
-	if nnueUseSIMDV5 && net.L1WeightsT != nil {
-		nnueV5L1MatMulN(&stmBuf[0], &net.L1WeightsT[0], &hidden[0], H, L1)
-		nnueV5L1MatMulN(&ntmBuf[0], &net.L1WeightsT[L1*H], &hidden[0], H, L1)
-	} else {
-		for j := 0; j < H; j++ {
-			v := int32(stmBuf[j])
-			if v == 0 {
-				continue
-			}
-			wOff := j * L1
-			for i := 0; i < L1; i++ {
-				hidden[i] += v * int32(net.L1Weights[wOff+i])
-			}
-		}
-		for j := 0; j < H; j++ {
-			v := int32(ntmBuf[j])
-			if v == 0 {
-				continue
-			}
-			wOff := (H + j) * L1
-			for i := 0; i < L1; i++ {
-				hidden[i] += v * int32(net.L1Weights[wOff+i])
-			}
+		vsq := v * v
+		wOff := (H + j) * L1
+		for i := 0; i < L1; i++ {
+			hidden[i] += vsq * int32(net.L1Weights[wOff+i])
 		}
 	}
 
-	// Divide by QA, then CReLU clamp on hidden (Bullet's l2 is linear — no activation
-	// after hidden layer, just clamp for quantization safety)
+	// Divide by QA² to get hidden at scale QA, then SCReLU: clamp [0, QA], square
+	// The screlu on hidden produces values at scale QA², which pairs with
+	// output weights at scale QB to give QA²·QB.
 	for i := 0; i < L1; i++ {
-		hidden[i] /= nnueV5InputScale
+		hidden[i] /= qa2
 		if hidden[i] < 0 {
 			hidden[i] = 0
 		}
 		if hidden[i] > nnueV5ClipMax {
 			hidden[i] = nnueV5ClipMax
 		}
+		hidden[i] = hidden[i] * hidden[i] // SCReLU square → scale QA²
 	}
 
-	// Output dot product: hidden at scale QA, weights at scale QB → scale QA*QB
+	// Output dot product: hidden at scale QA², weights at scale QB → scale QA²·QB
 	outW := net.outputWeightRow(bucket)
-	output := int64(net.OutputBias[bucket])
+	output := int64(net.OutputBias[bucket]) // bias at scale QA·QB
+	// Must scale bias to QA²·QB to match: multiply by QA
+	output *= int64(nnueV5InputScale)
 	for i := 0; i < L1; i++ {
 		output += int64(hidden[i]) * int64(outW[i])
 	}
 
-	result := int(output) * nnueV5EvalScale / nnueV5BiasScale
+	// Scale: output at QA²·QB. Divide by QA²·QB, multiply by 400.
+	result := int(output) * nnueV5EvalScale / (int(qa2) * nnueV5OutputScale)
 
 	return result
 }
