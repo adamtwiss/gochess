@@ -147,11 +147,22 @@ We train on **Bullet** (Rust, CUDA) using T80 binpack data (~12B positions acros
 
 Key findings:
 - **CReLU kills hidden layer neurons** during long training (dying ReLU). At e800-s400, 15/16 L1 neurons were dead. SCReLU prevents this — all 16 survived e800.
+- **LR warmup is critical for hidden layers**: Standard cosine LR (0.001→0.0001) destroys narrow hidden layers (16→32 neurons) before they can establish structure. The fix: **5 SB linear warmup 0.0001→0.001, then cosine 0.001→0.0001 for remaining SBs**. Without warmup, L1 mean|w| dropped to 0.7 by SB40 (dead). With warmup, L1 mean|w| reached 17.7 by SB20 (healthy). This is because the FT layer (12M params) benefits from high LR, but hidden layers (33K params) get washed out by it.
 - **SCReLU scale chain**: SCReLU squares accumulator values (scale QA²). The full v² must be preserved through the L1 matmul — dividing by QA before the matmul loses too much precision. Correct chain: bias×QA² + sum(v²×w), then /QA² after matmul.
 - **Hidden→output activation is linear** in Bullet (no SCReLU on the final layer before output buckets). The `l2.forward(hidden)` call in Bullet has no `.screlu()`.
 - **L1 quantisation**: int16 at QA=255. L2 quantisation: int16 at QA=255. Output weights: int16 at QB=64. Output bias: int32 at QA×QB.
 - **v5 architecture is saturated**: 1024 CReLU, 1024 SCReLU, 1536 CReLU, 1536 SCReLU all within ~20 Elo of each other cross-engine. Hidden layers are needed to break through.
 - **Float inference for small layers**: Viridithas/top engines use float for the 16→32 layers. Worth considering if quantization precision becomes an issue.
+
+Bullet LR schedule for hidden layer nets:
+```rust
+// CRITICAL: warmup prevents hidden layer collapse
+lr_scheduler: Sequence {
+    first: LinearDecayLR { initial_lr: 0.0001, final_lr: 0.001, final_superbatch: 5 },   // ramp UP
+    second: CosineDecayLR { initial_lr: 0.001, final_lr: 0.0001, final_superbatch: N-5 }, // decay
+    first_scheduler_final_superbatch: 5,
+}
+```
 
 ### Texel Tuner
 
