@@ -1412,6 +1412,74 @@ screlu_pack_neon_loop:
 	RET
 
 // ============================================================================
+// nnueCReLUPackN(src *int16, dst *byte, count int)
+// CReLU pack: clamp [0,255] and narrow to uint8. count must be multiple of 16.
+// ============================================================================
+TEXT ·nnueCReLUPackN(SB), NOSPLIT, $0-24
+	MOVD src+0(FP), R0
+	MOVD dst+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $4, R2, R2                       // count / 16
+
+	VEOR V0.B16, V0.B16, V0.B16
+	MOVD $255, R3
+	WORD $0x4E020C61                     // DUP V1.8H, W3
+
+crelu_packn_neon_loop:
+	VLD1 (R0), [V2.B16]
+	WORD $0x4E606442                     // SMAX V2.8H, V2.8H, V0.8H
+	WORD $0x4E616C42                     // SMIN V2.8H, V2.8H, V1.8H
+	// Narrow int16 → uint8 (saturating)
+	WORD $0x0E212842                     // XTN V2.8B, V2.8H
+	WORD $0x0D008022                     // ST1 {V2.8B}, [R1]
+	ADD $16, R0, R0
+	ADD $8, R1, R1
+	SUBS $1, R2, R2
+	BNE crelu_packn_neon_loop
+	RET
+
+// ============================================================================
+// nnueInt8DotN(a *byte, b *int8, count int) int32
+// Dot product u8 × i8 → i32. count must be multiple of 16.
+// ============================================================================
+TEXT ·nnueInt8DotN(SB), NOSPLIT, $0-28
+	MOVD a+0(FP), R0
+	MOVD b+8(FP), R1
+	MOVD count+16(FP), R2
+	LSR $4, R2, R2
+
+	VEOR V16.B16, V16.B16, V16.B16
+	VEOR V17.B16, V17.B16, V17.B16
+
+i8dot_neon_loop:
+	VLD1 (R0), [V2.B16]                 // 16 x uint8
+	VLD1 (R1), [V3.B16]                 // 16 x int8
+	// Widen and multiply low 8
+	WORD $0x2F08A444                     // USHLL V4.8H, V2.8B, #0
+	WORD $0x0F08A465                     // SSHLL V5.8H, V3.8B, #0
+	WORD $0x0E65C086                     // SMULL V6.4S, V4.4H, V5.4H
+	WORD $0x4E658086                     // SMLAL2 V6.4S, V4.8H, V5.8H
+	WORD $0x4EA68610                     // ADD V16.4S, V16.4S, V6.4S
+	// High 8
+	WORD $0x6F08A444                     // USHLL2 V4.8H, V2.16B, #0
+	WORD $0x4F08A465                     // SSHLL2 V5.8H, V3.16B, #0
+	WORD $0x0E65C086                     // SMULL V6.4S, V4.4H, V5.4H
+	WORD $0x4E658086                     // SMLAL2 V6.4S, V4.8H, V5.8H
+	WORD $0x4EA68631                     // ADD V17.4S, V17.4S, V6.4S
+
+	ADD $16, R0, R0
+	ADD $16, R1, R1
+	SUBS $1, R2, R2
+	BNE i8dot_neon_loop
+
+	WORD $0x4EB18610                     // ADD V16.4S, V16.4S, V17.4S
+	WORD $0x4EB0BE10                     // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x4EB0BE10                     // ADDP V16.4S, V16.4S, V16.4S
+	WORD $0x1E26020C                     // FMOV W12, S16
+	MOVW R12, ret+24(FP)
+	RET
+
+// ============================================================================
 // nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 int)
 //
 // Int8 L1 matmul using NEON. Processes 16 bytes at a time.

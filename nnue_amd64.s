@@ -25,6 +25,86 @@ DATA nnue_ones_16<>+16(SB)/8, $0x0001000100010001
 DATA nnue_ones_16<>+24(SB)/8, $0x0001000100010001
 GLOBL nnue_ones_16<>(SB), NOPTR+RODATA, $32
 
+// ============================================================================
+// nnueCReLUPackN(src *int16, dst *byte, count int)
+// Packs int16 to uint8 with CReLU: dst[i] = clamp(src[i], 0, 255)
+// count must be a multiple of 32. Processes 32 elements per iteration.
+// ============================================================================
+TEXT ·nnueCReLUPackN(SB), NOSPLIT, $0-24
+	MOVQ src+0(FP), AX
+	MOVQ dst+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $5, CX                         // count / 32
+
+	VPXOR Y0, Y0, Y0                    // zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // 255 (ceiling)
+
+crelu_pack_loop:
+	VMOVDQU (AX), Y2
+	VPMAXSW Y0, Y2, Y2
+	VPMINSW Y1, Y2, Y2
+	VMOVDQU 32(AX), Y3
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3
+	VPACKUSWB Y3, Y2, Y4
+	VPERMQ $0xD8, Y4, Y4                // fix lane interleaving
+	VMOVDQU Y4, (BX)
+	ADDQ $64, AX
+	ADDQ $32, BX
+	DECQ CX
+	JNZ crelu_pack_loop
+
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueInt8DotN(a *byte, b *int8, count int) int32
+// Dot product of uint8 × int8 using VPMADDUBSW + VPMADDWD.
+// count must be a multiple of 64 (2x unrolled, 32 per group).
+// ============================================================================
+TEXT ·nnueInt8DotN(SB), NOSPLIT, $0-28
+	MOVQ a+0(FP), AX
+	MOVQ b+8(FP), BX
+	MOVQ count+16(FP), CX
+	SHRQ $6, CX                         // count / 64
+
+	VMOVDQU nnue_ones_16<>(SB), Y0      // ones for VPMADDWD widening
+	VPXOR Y6, Y6, Y6                    // accumulator 1
+	VPXOR Y7, Y7, Y7                    // accumulator 2
+
+i8dot_loop:
+	// First 32
+	VMOVDQU (AX), Y2
+	VMOVDQU (BX), Y3
+	VPMADDUBSW Y3, Y2, Y4
+	VPMADDWD Y0, Y4, Y4
+	VPADDD Y4, Y6, Y6
+	// Second 32
+	VMOVDQU 32(AX), Y2
+	VMOVDQU 32(BX), Y3
+	VPMADDUBSW Y3, Y2, Y5
+	VPMADDWD Y0, Y5, Y5
+	VPADDD Y5, Y7, Y7
+
+	ADDQ $64, AX
+	ADDQ $64, BX
+	DECQ CX
+	JNZ i8dot_loop
+
+	// Horizontal sum
+	VPADDD Y7, Y6, Y6
+	VEXTRACTI128 $1, Y6, X5
+	VPADDD X5, X6, X6
+	VPSHUFD $0x4E, X6, X5
+	VPADDD X5, X6, X6
+	VPSHUFD $0x01, X6, X5
+	VPADDD X5, X6, X6
+	VMOVD X6, AX
+	MOVL AX, ret+24(FP)
+
+	VZEROUPPER
+	RET
+
 // 16 x uint16(257) for SCReLU v²/255 approximation: VPMULHUW(v², 257) ≈ v²/255
 DATA nnue_257_16<>+0(SB)/8, $0x0101010101010101
 DATA nnue_257_16<>+8(SB)/8, $0x0101010101010101

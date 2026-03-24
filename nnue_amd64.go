@@ -154,6 +154,19 @@ func nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count
 //go:noescape
 func nnueV5L1MatMulN(acc *int16, wT *int16, hidden *int32, accLen int, l1 int)
 
+// nnueCReLUPackN packs int16 accumulator values to uint8 with CReLU clamp [0, 255].
+// count must be a multiple of 32.
+//
+//go:noescape
+func nnueCReLUPackN(src *int16, dst *byte, count int)
+
+// nnueInt8DotN computes dot product of uint8 × int8 arrays:
+//   sum = sum_i( a[i] * b[i] ) for i=0..count-1
+// Uses VPMADDUBSW + VPMADDWD for 2x throughput. count must be a multiple of 64.
+//
+//go:noescape
+func nnueInt8DotN(a *byte, b *int8, count int) int32
+
 // nnueSCReLUPack packs int16 accumulator values to uint8 with SCReLU activation:
 //   dst[i] = clamp(src[i], 0, 255)² / 255
 // count must be a multiple of 32.

@@ -70,8 +70,9 @@ type NNUENetV5 struct {
 	OutBiasF    [NNUEOutputBuckets]float32 // OutputBias / (QA * QB)
 
 	// Output layer: [bucket * outWidth] where outWidth = L2Size or L1Size or 2*HiddenSize
-	OutputWeights []int16
-	OutputBias    [NNUEOutputBuckets]int32
+	OutputWeights  []int16
+	OutputWeights8 []int8 // int8 version for VPMADDUBSW (prepared at load time if weights fit)
+	OutputBias     [NNUEOutputBuckets]int32
 
 	// Activation: false = CReLU (clamp to [0,QA]), true = SCReLU (clamp then square)
 	UseSCReLU bool
@@ -1226,6 +1227,21 @@ func readNNUEV5Body(f io.Reader, net *NNUENetV5) (*NNUENetV5, error) {
 	// Output bias: 8 × int32
 	if err := binary.Read(f, binary.LittleEndian, &net.OutputBias); err != nil {
 		return nil, fmt.Errorf("reading output bias: %w", err)
+	}
+
+	// Prepare int8 output weights if all fit in [-128, 127]
+	allFit := true
+	for _, w := range net.OutputWeights {
+		if w > 127 || w < -128 {
+			allFit = false
+			break
+		}
+	}
+	if allFit && len(net.OutputWeights) > 0 {
+		net.OutputWeights8 = make([]int8, len(net.OutputWeights))
+		for i, w := range net.OutputWeights {
+			net.OutputWeights8[i] = int8(w)
+		}
 	}
 
 	// Prepare transposed L1 weights for SIMD matmul
