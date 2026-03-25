@@ -270,11 +270,29 @@ Key principles:
 7. **Extensions** (check ext, singular ext): **DO NOT trust self-play.** Extensions invest nodes based on eval judgment, which is amplified 3:1 against diverse opponents. Only recapture extensions (forced tactical resolution) are proven beneficial.
 8. **Eval scale changes** (SCReLU activation, quantization): **Must test cross-engine.** Different eval dynamic ranges interact with all search thresholds simultaneously. SCReLU needs ×0.80 scale correction to match CReLU-tuned thresholds.
 
-**Practical workflow:**
-1. Self-play SPRT as fast first filter (kills -50 Elo disasters in 10 min)
-2. Cross-engine gauntlet (3-5 rival engines, 200 games each) for anything that touches eval-dependent thresholds, extensions, or capture handling
-3. RR tournament (8+ engines, 200 games per pair) for major changes before production release
-4. Only merge if cross-engine delta is positive or clearly neutral
+**Three-tier validation (discovered 2026-03-25):**
+
+Self-play SPRT gives **contradictory signals** to cross-engine testing. Confirmed examples:
+- TT staticEval fix: -9 self-play, **+12 cross-engine**
+- Evasion capture ordering fix: unknown self-play, **+26 cross-engine**
+- Previous "Titan reverts" were features that gained +10-30 self-play but hurt cross-engine — tested against a baseline with the evasion bug, so cross-engine results may have been contaminated
+
+**Tier 1: Self-play SPRT (fast fail, ~10 min)**
+- Catches disasters (-50 Elo) quickly
+- **Pass even if mildly negative (down to -10)** — real cross-engine gains can show as -9 in self-play
+- Only reject if clearly catastrophic
+
+**Tier 2: Rival engine gauntlet (the real test, ~20 min)**
+- 3-5 engines near our Elo (e.g. Texel, Ethereal, Laser), 200 games each, concurrency 16
+- This is the **acceptance criterion** — positive delta here means merge
+- Catches eval-dependent effects, TT interactions, and move ordering issues that self-play misses
+
+**Tier 3: Broad RR (validation before production, ~2 hours)**
+- 10-12 engines in our competitive range (Tucano through Laser tier)
+- Confirms the gauntlet result against diverse opponents
+- Guards against overfitting to the 3 gauntlet engines
+
+**Only merge if Tier 2 is positive.** Tier 1 rejection is not grounds to skip Tier 2 unless clearly catastrophic. Tier 3 is for production releases and major changes.
 
 ## Maintenance Reminders
 
