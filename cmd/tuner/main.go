@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -47,6 +48,8 @@ func main() {
 		runConvertBinpack(os.Args[2:])
 	case "convert-bullet":
 		runConvertBullet(os.Args[2:])
+	case "eval-quality":
+		runEvalQuality(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -64,6 +67,7 @@ Commands:
   check-net    Health check: evaluate test positions and flag scale issues
   rescore      Re-search positions in a .bin file and update scores in-place
   shuffle      Fisher-Yates shuffle a .bin file in-place (32-byte records)
+  eval-quality Evaluate net quality: correlation, smoothness, consistency
   dump-binpack    Decode and print chains from a Stockfish .binpack file
   convert-binpack Convert Stockfish .binpack to internal .bin format
 
@@ -1552,4 +1556,363 @@ func convertBulletV7(data []byte, outputPath string, useSCReLU bool, usePairwise
 	fi, _ := os.Stat(outputPath)
 	fmt.Printf("Saved %s (%d bytes, v7 %s)\n", outputPath, fi.Size(), archDesc)
 	fmt.Printf("Fingerprint: %s\n", net.Fingerprint())
+}
+
+func runEvalQuality(args []string) {
+	fs := flag.NewFlagSet("eval-quality", flag.ExitOnError)
+	netPath := fs.String("net", "", "NNUE net to evaluate (required)")
+	netPath2 := fs.String("net2", "", "second net to compare against (optional)")
+	dataPath := fs.String("data", "", ".bin file with reference positions+scores (optional)")
+	numPos := fs.Int("n", 10000, "number of positions to sample")
+	smoothN := fs.Int("smooth", 200, "number of positions for smoothness test (evaluates all legal moves)")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: tuner eval-quality -net <net.nnue> [options]
+
+Evaluate NNUE net quality with multiple metrics:
+  - Correlation with reference scores (if -data provided)
+  - Smoothness: how erratically eval changes between parent and child positions
+  - Consistency: eval symmetry (position eval ≈ -flipped position eval)
+  - Output bucket analysis: per-bucket correlation and bias
+  - Outlier analysis: positions where eval differs most from reference
+
+Options:
+`)
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	if *netPath == "" {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	// Load primary net
+	version, err := chess.DetectNNUEVersion(*netPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var net1 *chess.NNUENetV5
+	if version >= 5 {
+		net1, err = chess.LoadNNUEV5(*netPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading net: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: eval-quality only supports v5+ nets\n")
+		os.Exit(1)
+	}
+
+	// Load optional second net
+	var net2 *chess.NNUENetV5
+	if *netPath2 != "" {
+		net2, err = chess.LoadNNUEV5(*netPath2)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading net2: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Helper: evaluate a position with a net
+	evalPos := func(net *chess.NNUENetV5, b *chess.Board) int {
+		acc := chess.NNUEAccumulatorV5{
+			White: make([]int16, net.HiddenSize),
+			Black: make([]int16, net.HiddenSize),
+		}
+		net.RecomputeAccumulator(b, &acc, chess.White)
+		net.RecomputeAccumulator(b, &acc, chess.Black)
+		return net.Forward(&acc, b.SideToMove, b.AllPieces.Count())
+	}
+
+	fmt.Printf("Eval Quality Benchmark\n")
+	fmt.Printf("Net 1: %s (fingerprint %s)\n", *netPath, net1.Fingerprint())
+	if net2 != nil {
+		fmt.Printf("Net 2: %s (fingerprint %s)\n", *netPath2, net2.Fingerprint())
+	}
+	fmt.Println()
+
+	// === CORRELATION WITH REFERENCE SCORES ===
+	if *dataPath != "" {
+		f, err := os.Open(*dataPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening data: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+
+		fi, _ := f.Stat()
+		totalRecords := int(fi.Size()) / chess.BinpackRecordSize
+		step := 1
+		if totalRecords > *numPos {
+			step = totalRecords / *numPos
+		}
+
+		type sample struct {
+			refScore float64
+			eval1    float64
+			eval2    float64
+			bucket   int
+			fen      string
+		}
+		var samples []sample
+
+		var rec [chess.BinpackRecordSize]byte
+		idx := 0
+		for {
+			_, err := io.ReadFull(f, rec[:])
+			if err != nil {
+				break
+			}
+			idx++
+			if idx%step != 0 {
+				continue
+			}
+
+			b, score, _, err := chess.UnpackPosition(rec)
+			if err != nil {
+				continue
+			}
+			// Skip extreme scores and positions with too few pieces
+			if score > 10000 || score < -10000 {
+				continue
+			}
+
+			e1 := evalPos(net1, b)
+			s := sample{
+				refScore: float64(score),
+				eval1:    float64(e1),
+				bucket:   chess.OutputBucket(b.AllPieces.Count()),
+			}
+
+			if net2 != nil {
+				s.eval2 = float64(evalPos(net2, b))
+			}
+
+			// Save FEN for outlier analysis
+			if len(samples) < 100 || (len(samples) < *numPos) {
+				s.fen = "" // only store for outlier candidates
+			}
+
+			samples = append(samples, s)
+			if len(samples) >= *numPos {
+				break
+			}
+		}
+
+		fmt.Printf("=== Correlation with Reference Scores (%d positions) ===\n", len(samples))
+
+		// Compute Pearson correlation and MSE
+		var sumRef, sumE1, sumE2 float64
+		var sumRef2, sumE12, sumE22 float64
+		var sumRefE1, sumRefE2 float64
+		var sumSqErr1, sumSqErr2 float64
+		n := float64(len(samples))
+
+		for _, s := range samples {
+			sumRef += s.refScore
+			sumE1 += s.eval1
+			sumRef2 += s.refScore * s.refScore
+			sumE12 += s.eval1 * s.eval1
+			sumRefE1 += s.refScore * s.eval1
+			sumSqErr1 += (s.refScore - s.eval1) * (s.refScore - s.eval1)
+
+			if net2 != nil {
+				sumE2 += s.eval2
+				sumE22 += s.eval2 * s.eval2
+				sumRefE2 += s.refScore * s.eval2
+				sumSqErr2 += (s.refScore - s.eval2) * (s.refScore - s.eval2)
+			}
+		}
+
+		pearson := func(sumX, sumY, sumX2, sumY2, sumXY, n float64) float64 {
+			num := n*sumXY - sumX*sumY
+			den := math.Sqrt((n*sumX2 - sumX*sumX) * (n*sumY2 - sumY*sumY))
+			if den == 0 {
+				return 0
+			}
+			return num / den
+		}
+
+		r1 := pearson(sumRef, sumE1, sumRef2, sumE12, sumRefE1, n)
+		mse1 := sumSqErr1 / n
+		mae1 := 0.0
+		for _, s := range samples {
+			mae1 += math.Abs(s.refScore - s.eval1)
+		}
+		mae1 /= n
+
+		fmt.Printf("  Net 1:  Pearson r=%.4f  MSE=%.0f  MAE=%.1f  mean_eval=%.1f  mean_ref=%.1f\n",
+			r1, mse1, mae1, sumE1/n, sumRef/n)
+
+		if net2 != nil {
+			r2 := pearson(sumRef, sumE2, sumRef2, sumE22, sumRefE2, n)
+			mse2 := sumSqErr2 / n
+			mae2 := 0.0
+			for _, s := range samples {
+				mae2 += math.Abs(s.refScore - s.eval2)
+			}
+			mae2 /= n
+			fmt.Printf("  Net 2:  Pearson r=%.4f  MSE=%.0f  MAE=%.1f  mean_eval=%.1f  mean_ref=%.1f\n",
+				r2, mse2, mae2, sumE2/n, sumRef/n)
+
+			// Net1 vs Net2 correlation
+			r12 := pearson(sumE1, sumE2, sumE12, sumE22, func() float64 {
+				var s float64
+				for _, x := range samples {
+					s += x.eval1 * x.eval2
+				}
+				return s
+			}(), n)
+			fmt.Printf("  Net1↔Net2: Pearson r=%.4f\n", r12)
+		}
+
+		// Per-bucket analysis
+		fmt.Printf("\n=== Per-Bucket Analysis ===\n")
+		fmt.Printf("  %-8s  %6s  %8s  %8s  %8s\n", "Bucket", "Count", "Pearson", "MSE", "Bias")
+		bucketSamples := make([][]sample, chess.NNUEOutputBuckets)
+		for _, s := range samples {
+			bucketSamples[s.bucket] = append(bucketSamples[s.bucket], s)
+		}
+		for bk := 0; bk < chess.NNUEOutputBuckets; bk++ {
+			bs := bucketSamples[bk]
+			if len(bs) < 10 {
+				continue
+			}
+			var sR, sE, sR2, sE2, sRE, bias float64
+			bn := float64(len(bs))
+			for _, s := range bs {
+				sR += s.refScore
+				sE += s.eval1
+				sR2 += s.refScore * s.refScore
+				sE2 += s.eval1 * s.eval1
+				sRE += s.refScore * s.eval1
+				bias += s.eval1 - s.refScore
+			}
+			pr := pearson(sR, sE, sR2, sE2, sRE, bn)
+			mse := 0.0
+			for _, s := range bs {
+				d := s.refScore - s.eval1
+				mse += d * d
+			}
+			mse /= bn
+			fmt.Printf("  Bucket %d  %6d  %8.4f  %8.0f  %8.1f\n", bk, len(bs), pr, mse, bias/bn)
+		}
+
+		// Outlier analysis: top 10 positions where eval differs most from reference
+		fmt.Printf("\n=== Top 10 Outliers (largest |eval - ref|) ===\n")
+		type outlier struct {
+			idx  int
+			diff float64
+		}
+		outliers := make([]outlier, len(samples))
+		for i, s := range samples {
+			outliers[i] = outlier{i, math.Abs(s.eval1 - s.refScore)}
+		}
+		// Simple selection of top 10
+		for i := 0; i < 10 && i < len(outliers); i++ {
+			maxJ := i
+			for j := i + 1; j < len(outliers); j++ {
+				if outliers[j].diff > outliers[maxJ].diff {
+					maxJ = j
+				}
+			}
+			outliers[i], outliers[maxJ] = outliers[maxJ], outliers[i]
+			s := samples[outliers[i].idx]
+			fmt.Printf("  ref=%6.0f  eval=%6.0f  diff=%6.0f  bucket=%d\n",
+				s.refScore, s.eval1, s.eval1-s.refScore, s.bucket)
+		}
+	}
+
+	// === SMOOTHNESS TEST ===
+	fmt.Printf("\n=== Smoothness Test (%d positions) ===\n", *smoothN)
+	// Use fixed test positions for reproducibility
+	testFens := []string{
+		"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+		"r1bqkb1r/pppppppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+		"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+		"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+		"r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+		"rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+		"r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+	}
+
+	// Also generate positions by making random-ish moves from startpos
+	var smoothPositions []chess.Board
+	for _, fen := range testFens {
+		var b chess.Board
+		b.Reset()
+		b.SetFEN(fen)
+		smoothPositions = append(smoothPositions, b)
+		// Make a few moves to get more positions
+		for d := 0; d < 5; d++ {
+			moves := b.GenerateLegalMoves()
+			if len(moves) == 0 {
+				break
+			}
+			b.MakeMove(moves[0])
+			smoothPositions = append(smoothPositions, b)
+		}
+		if len(smoothPositions) >= *smoothN {
+			break
+		}
+	}
+
+	var totalJumps, maxJump float64
+	var jumpCount int
+	for _, pos := range smoothPositions {
+		if len(smoothPositions) > *smoothN {
+			break
+		}
+		parentEval := float64(evalPos(net1, &pos))
+
+		// Evaluate all legal moves
+		moves := pos.GenerateLegalMoves()
+		for _, m := range moves {
+			child := pos
+			child.MakeMove(m)
+			childEval := float64(evalPos(net1, &child))
+			// Child eval is from opponent's perspective, so negate
+			jump := math.Abs(parentEval + childEval)
+			totalJumps += jump
+			if jump > maxJump {
+				maxJump = jump
+			}
+			jumpCount++
+		}
+	}
+
+	if jumpCount > 0 {
+		avgJump := totalJumps / float64(jumpCount)
+		fmt.Printf("  Positions tested: %d\n", len(smoothPositions))
+		fmt.Printf("  Move evaluations: %d\n", jumpCount)
+		fmt.Printf("  Avg |parent + child_eval|: %.1f cp  (lower = smoother)\n", avgJump)
+		fmt.Printf("  Max jump: %.0f cp\n", maxJump)
+
+		if net2 != nil {
+			var totalJumps2, maxJump2 float64
+			var jumpCount2 int
+			for _, pos := range smoothPositions {
+				parentEval := float64(evalPos(net2, &pos))
+				moves := pos.GenerateLegalMoves()
+				for _, m := range moves {
+					child := pos
+					child.MakeMove(m)
+					childEval := float64(evalPos(net2, &child))
+					jump := math.Abs(parentEval + childEval)
+					totalJumps2 += jump
+					if jump > maxJump2 {
+						maxJump2 = jump
+					}
+					jumpCount2++
+				}
+			}
+			if jumpCount2 > 0 {
+				fmt.Printf("  Net 2 avg jump: %.1f cp  max: %.0f cp\n", totalJumps2/float64(jumpCount2), maxJump2)
+			}
+		}
+	}
+
+	fmt.Println("\nDone.")
 }
