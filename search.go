@@ -1475,7 +1475,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			if contHistPtr != nil {
 				histPruneScore += int32(contHistPtr[movedPiece][move.To()])
 			}
-			if histPruneScore < -2000*int32(depth) {
+			if histPruneScore < -1500*int32(depth) {
 				continue
 			}
 		}
@@ -2092,7 +2092,7 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 			if move.Flags() == FlagEnPassant {
 				capturedPiece = pieceOf(WhitePawn, 1-b.SideToMove)
 			}
-			if capturedPiece != Empty && standPat+SEEPieceValues[capturedPiece]+280 <= alpha {
+			if capturedPiece != Empty && standPat+SEEPieceValues[capturedPiece]+240 <= alpha {
 				continue
 			}
 		}
