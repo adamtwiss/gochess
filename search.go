@@ -1312,7 +1312,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Counter-move and continuation history lookup from opponent's last move
 	var counterMove Move
 	var contHistPtr *[13][64]int16
-	var contHistPtr2 *[13][64]int16
+	// NOTE: contHistPtr2 (2-ply continuation history) removed — the table was
+	// read for pruning/LMR but never updated, so it always returned zero.
+	// Proper implementation needs tuned update weights (~bonus/4). See experiments.md.
 	if len(b.UndoStack) > 0 {
 		undo := b.UndoStack[len(b.UndoStack)-1]
 		pm := undo.Move
@@ -1325,16 +1327,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 	}
 
-	// 2-ply continuation history: what worked after our own previous move
 	if len(b.UndoStack) > 1 {
-		undo2 := b.UndoStack[len(b.UndoStack)-2]
-		pm2 := undo2.Move
-		if pm2 != NoMove {
-			piece2 := b.Squares[pm2.To()]
-			if piece2 != Empty && piece2.Color() == b.SideToMove {
-				contHistPtr2 = &info.ContHistory[piece2][pm2.To()]
-			}
-		}
+		// 2-ply undo stack access preserved for future use
 	}
 
 	// Pawn history pointer for this position's pawn structure
@@ -1480,9 +1474,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			histPruneScore := info.History[move.From()][move.To()]
 			if contHistPtr != nil {
 				histPruneScore += int32(contHistPtr[movedPiece][move.To()])
-			}
-			if contHistPtr2 != nil {
-				histPruneScore += int32(contHistPtr2[movedPiece][move.To()]) / 2
 			}
 			if histPruneScore < -2000*int32(depth) {
 				continue
@@ -1690,9 +1681,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				histScore := info.History[move.From()][move.To()]
 				if contHistPtr != nil {
 					histScore += int32(contHistPtr[movedPiece][move.To()])
-				}
-				if contHistPtr2 != nil {
-					histScore += int32(contHistPtr2[movedPiece][move.To()]) / 2
 				}
 				reduction -= int(histScore / 5000)
 
