@@ -21,41 +21,43 @@ type TTEntry struct {
 	Score      int16  // Evaluation score
 	Flag       TTFlag // Type of score
 	Move       Move   // Best move found
-	StaticEval int16  // Static eval (stored as int8 * 4, range ±508)
+	StaticEval int16  // Static eval (14 bits, range ±8191)
 }
 
 // packTTData packs entry fields into a single uint64:
 //
 //	bits  0-15: Move (uint16)
-//	bits 16-23: Flag (uint8)
-//	bits 24-39: Score (int16, stored as uint16)
-//	bits 40-47: Depth (int8, stored as uint8)
-//	bits 48-55: Generation (uint8)
-//	bits 56-63: StaticEval (int8, actual eval = int16(int8) * 4)
+//	bits 16-17: Flag (2 bits, 4 values: None/Exact/Lower/Upper)
+//	bits 18-31: StaticEval (14 bits signed, range ±8191 cp)
+//	bits 32-47: Score (int16, stored as uint16)
+//	bits 48-55: Depth (int8, stored as uint8)
+//	bits 56-63: Generation (uint8)
 func packTTData(depth int8, score int16, flag TTFlag, move Move, gen uint8, staticEval int16) uint64 {
-	// Compress static eval to int8 by dividing by 4 (range ±508cp)
-	se := staticEval / 4
-	if se > 127 {
-		se = 127
-	} else if se < -128 {
-		se = -128
+	// StaticEval in 14 bits: clamp to ±8191
+	se := staticEval
+	if se > 8191 {
+		se = 8191
+	} else if se < -8191 {
+		se = -8191
 	}
+	se14 := uint16(se+8192) & 0x3FFF // bias to unsigned [0, 16383], mask 14 bits
 	return uint64(move) |
-		uint64(flag)<<16 |
-		uint64(uint16(score))<<24 |
-		uint64(uint8(depth))<<40 |
-		uint64(gen)<<48 |
-		uint64(uint8(int8(se)))<<56
+		uint64(flag&0x3)<<16 |
+		uint64(se14)<<18 |
+		uint64(uint16(score))<<32 |
+		uint64(uint8(depth))<<48 |
+		uint64(gen)<<56
 }
 
 // unpackTTData unpacks a data uint64 into entry fields.
 func unpackTTData(data uint64) (depth int8, score int16, flag TTFlag, move Move, gen uint8, staticEval int16) {
 	move = Move(data & 0xFFFF)
-	flag = TTFlag((data >> 16) & 0xFF)
-	score = int16(uint16((data >> 24) & 0xFFFF))
-	depth = int8(uint8((data >> 40) & 0xFF))
-	gen = uint8((data >> 48) & 0xFF)
-	staticEval = int16(int8(uint8((data >> 56) & 0xFF))) * 4
+	flag = TTFlag((data >> 16) & 0x3)
+	se14 := uint16((data >> 18) & 0x3FFF)
+	staticEval = int16(se14) - 8192
+	score = int16(uint16((data >> 32) & 0xFFFF))
+	depth = int8(uint8((data >> 48) & 0xFF))
+	gen = uint8((data >> 56) & 0xFF)
 	return
 }
 
@@ -180,9 +182,11 @@ func (tt *TranspositionTable) Store(key uint64, depth int, score int, flag TTFla
 			return
 		}
 
-		// Key match: update if newer generation or deeper/equal depth
+		// Key match: update if newer generation or sufficiently deep.
+		// d > slotDepth-3 prevents shallow re-searches (NMP verification,
+		// singular extension checks) from overwriting deeper entries.
 		if recoveredUpper == keyUpper {
-			if d >= slotDepth || gen != slotGen {
+			if d > slotDepth-3 || gen != slotGen {
 				atomic.StoreUint64(&bucket.data[i], newData)
 				atomic.StoreUint32(&bucket.keys[i], newKey)
 		

@@ -61,28 +61,36 @@ func TestTTDepthReplacement(t *testing.T) {
 
 	key := uint64(0x123456789ABCDEF0)
 
-	// Store with depth 3
-	tt.Store(key, 3, 50, TTExact, NewMove(12, 28), 0)
+	// Store with depth 10
+	tt.Store(key, 10, 50, TTExact, NewMove(12, 28), 0)
 
-	// Try to store with lower depth - should not replace in slot 0
-	tt.Store(key, 2, 60, TTExact, NewMove(12, 20), 0)
+	// Try to store with much lower depth - should NOT replace (outside 3-ply margin)
+	tt.Store(key, 5, 60, TTExact, NewMove(12, 20), 0)
 
 	entry, found := tt.Probe(key)
 	if !found {
 		t.Fatal("Entry not found")
 	}
 
-	// Should still have depth 3 entry
-	if entry.Depth != 3 {
-		t.Errorf("Depth = %d, want 3 (should not be replaced by shallower)", entry.Depth)
+	// Should still have depth 10 entry (depth 5 is > 3 ply shallower)
+	if entry.Depth != 10 {
+		t.Errorf("Depth = %d, want 10 (should not be replaced by much shallower)", entry.Depth)
+	}
+
+	// Store with depth within 3 ply - should replace
+	tt.Store(key, 8, 65, TTExact, NewMove(12, 36), 0)
+
+	entry, _ = tt.Probe(key)
+	if entry.Depth != 8 {
+		t.Errorf("Depth = %d, want 8 (within 3-ply margin, should replace)", entry.Depth)
 	}
 
 	// Store with higher depth - should replace
-	tt.Store(key, 5, 70, TTExact, NewMove(52, 36), 0)
+	tt.Store(key, 12, 70, TTExact, NewMove(52, 36), 0)
 
 	entry, _ = tt.Probe(key)
-	if entry.Depth != 5 {
-		t.Errorf("Depth = %d, want 5 (should be replaced by deeper)", entry.Depth)
+	if entry.Depth != 12 {
+		t.Errorf("Depth = %d, want 12 (should be replaced by deeper)", entry.Depth)
 	}
 }
 
@@ -180,15 +188,18 @@ func TestTTGeneration(t *testing.T) {
 		t.Errorf("Gen 1: depth=%d score=%d, want 3/200", entry.Depth, entry.Score)
 	}
 
-	// Without advancing generation, shallower should NOT replace
-	tt.Store(key, 1, 300, TTUpper, NewMove(1, 18), 0)
+	// Without advancing generation, much shallower should NOT replace (outside 3-ply margin)
+	// First store a deeper entry
+	tt.Store(key, 10, 250, TTExact, NewMove(52, 36), 0)
+	// Then try to store much shallower
+	tt.Store(key, 4, 300, TTUpper, NewMove(1, 18), 0)
 
 	entry, found = tt.Probe(key)
 	if !found {
 		t.Fatal("Entry not found after same-gen shallow store")
 	}
-	if entry.Depth != 3 {
-		t.Errorf("Same-gen shallower replaced deeper: depth=%d, want 3", entry.Depth)
+	if entry.Depth != 10 {
+		t.Errorf("Same-gen much shallower replaced deeper: depth=%d, want 10", entry.Depth)
 	}
 
 	// Test that stale entries are evicted first in a full bucket
