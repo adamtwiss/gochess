@@ -311,7 +311,7 @@ func (mp *MovePicker) generateAndScoreEvasions() {
 			}
 		} else if mp.board.Squares[m.To()] != Empty || m.Flags() == FlagEnPassant {
 			// Capture: MVV-LVA + capture history
-			score = 10000 + mp.mvvLva(m) + mp.captHistScore(m)
+			score = 10000 + mp.mvvLva(m) + mp.captHistScore(m)/16
 		} else {
 			// Quiet: history + continuation history + pawn history
 			if mp.history != nil {
