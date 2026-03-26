@@ -1010,113 +1010,117 @@ v5dotn_loop:
 
 // ============================================================================
 // nnueV5SCReLUDotN(acc *int16, weights *int16, count int) int64
-// Optimized SCReLU dot product using VPMADDWD instead of VPMULLD.
+// Optimized SCReLU dot product using byte decomposition + VPMADDWD.
 // Computes: sum = sum_i( clamp(acc[i], 0, 255)^2 * weights[i] ) for i=0..count-1
 // Returns int64 (caller divides by QA=255).
 //
-// Key optimization: decompose x^2 = x_sq_lo + x_sq_hi * 32768 where:
-//   x_sq_lo = x^2 & 0x7FFF (always positive int16, safe for signed VPMADDWD)
-//   x_sq_hi = x^2 >> 15    (0 or 1)
-// This replaces 4 slow VPMULLD per 16 elements with 1 VPMULLW + 2 VPMADDWD.
-// hi terms (max 65534/pair) safely accumulate in int32 throughout the loop.
-// 2x unrolled: processes 32 elements per iteration. count must be multiple of 32.
+// Key optimization: decompose x^2 = byte0 + byte1 * 256 where:
+//   byte0 = x^2 & 0xFF (max 255, safe for signed VPMADDWD pairwise)
+//   byte1 = x^2 >> 8   (max 254, safe for signed VPMADDWD pairwise)
+// Both terms accumulate safely in int32 for up to 256 elements per batch:
+//   max pair = 2 * 255 * 32767 = 16.7M, × 64 pairs (256 elements) = 1.07B < INT32_MAX
+// Drains to int64 every 256 elements (8 iterations of 32).
+// 2x unrolled inner loop. count must be multiple of 256.
 //
 // Register allocation:
-//   Y0  = zero (floor), Y1 = 255 (ceiling), Y2 = 0x7FFF mask
-//   Y3-Y7 = temporaries (loaded data, x_sq, lo/hi terms, reused for both groups)
-//   Y8-Y11 = int64 accumulators (lo terms)
-//   Y12-Y13 = int32 accumulators (hi terms)
+//   Y0  = zero (floor), Y1 = 0x00FF (clamp ceiling = byte0 mask)
+//   Y3-Y7 = temporaries
+//   Y8-Y9 = int32 byte0 accumulators (2x unroll)
+//   Y10-Y11 = int32 byte1 accumulators (2x unroll)
+//   Y12-Y13 = int64 drain accumulators (byte0)
+//   Y14-Y15 = int64 drain accumulators (byte1)
 // ============================================================================
 TEXT ·nnueV5SCReLUDotN(SB), NOSPLIT, $0-32
 	MOVQ acc+0(FP), AX
 	MOVQ weights+8(FP), BX
 	MOVQ count+16(FP), CX
-	SHRQ $5, CX                         // count / 32 = iterations
+
+	// Outer loop = count / 256 (drain cycles), inner = 8 iterations of 32 elements
+	SHRQ $8, CX                         // CX = count / 256 = drain cycles
 
 	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
-	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 0x00FF (ceiling + byte0 mask)
 
-	// Generate mask 0x7FFF: all 1s shifted right 1
-	VPCMPEQW Y2, Y2, Y2                 // all 1s (0xFFFF per word)
-	VPSRLW $1, Y2, Y2                   // 0x7FFF per word
+	// Int64 drain accumulators
+	VPXOR Y12, Y12, Y12
+	VPXOR Y13, Y13, Y13
+	VPXOR Y14, Y14, Y14
+	VPXOR Y15, Y15, Y15
 
-	// Int64 accumulators for lo terms
+v5screlu_drain_loop:
+	// Reset int32 batch accumulators
 	VPXOR Y8, Y8, Y8
 	VPXOR Y9, Y9, Y9
 	VPXOR Y10, Y10, Y10
 	VPXOR Y11, Y11, Y11
-	// Int32 accumulators for hi terms
-	VPXOR Y12, Y12, Y12
-	VPXOR Y13, Y13, Y13
+	MOVQ $8, DX                          // 8 inner iterations × 32 elements = 256
 
-v5screlu_n_loop:
+v5screlu_inner:
 	// ======== First 16 elements ========
 	VMOVDQU (AX), Y3                    // acc[0..15]
 	VPMAXSW Y0, Y3, Y3                  // clamp lower
 	VPMINSW Y1, Y3, Y3                  // clamp upper
-	VPMULLW Y3, Y3, Y4                  // x_sq = x^2 (uint16, exact for x<=255)
+	VPMULLW Y3, Y3, Y4                  // x_sq = x^2 (uint16)
 	VMOVDQU (BX), Y5                    // weights[0..15]
-	VPAND Y2, Y4, Y6                    // x_sq_lo = x_sq & 0x7FFF
-	VPSRLW $15, Y4, Y7                  // x_sq_hi = x_sq >> 15 (0 or 1)
-	VPMADDWD Y5, Y6, Y6                 // lo_pairs (int32)
-	VPMADDWD Y5, Y7, Y7                 // hi_pairs (int32)
-	VPADDD Y7, Y12, Y12                 // hi_acc += hi_pairs
-
-	// Widen lo_pairs to int64 and accumulate
-	VPMOVSXDQ X6, Y4
-	VPADDQ Y4, Y8, Y8
-	VEXTRACTI128 $1, Y6, X4
-	VPMOVSXDQ X4, Y4
-	VPADDQ Y4, Y9, Y9
+	VPAND Y1, Y4, Y6                    // byte0 = x_sq & 0xFF
+	VPSRLW $8, Y4, Y7                   // byte1 = x_sq >> 8
+	VPMADDWD Y5, Y6, Y6                 // byte0 pairs (int32)
+	VPMADDWD Y5, Y7, Y7                 // byte1 pairs (int32)
+	VPADDD Y6, Y8, Y8                   // byte0 acc
+	VPADDD Y7, Y10, Y10                 // byte1 acc
 
 	// ======== Second 16 elements ========
-	VMOVDQU 32(AX), Y3                  // acc[16..31]
+	VMOVDQU 32(AX), Y3
 	VPMAXSW Y0, Y3, Y3
 	VPMINSW Y1, Y3, Y3
-	VPMULLW Y3, Y3, Y4                  // x_sq
-	VMOVDQU 32(BX), Y5                  // weights[16..31]
-	VPAND Y2, Y4, Y6                    // x_sq_lo
-	VPSRLW $15, Y4, Y7                  // x_sq_hi
-	VPMADDWD Y5, Y6, Y6                 // lo_pairs
-	VPMADDWD Y5, Y7, Y7                 // hi_pairs
-	VPADDD Y7, Y13, Y13                 // hi_acc2 += hi_pairs
-
-	// Widen lo_pairs to int64 and accumulate
-	VPMOVSXDQ X6, Y4
-	VPADDQ Y4, Y10, Y10
-	VEXTRACTI128 $1, Y6, X4
-	VPMOVSXDQ X4, Y4
-	VPADDQ Y4, Y11, Y11
+	VPMULLW Y3, Y3, Y4
+	VMOVDQU 32(BX), Y5
+	VPAND Y1, Y4, Y6
+	VPSRLW $8, Y4, Y7
+	VPMADDWD Y5, Y6, Y6
+	VPMADDWD Y5, Y7, Y7
+	VPADDD Y6, Y9, Y9
+	VPADDD Y7, Y11, Y11
 
 	ADDQ $64, AX
 	ADDQ $64, BX
+	DECQ DX
+	JNZ v5screlu_inner
+
+	// === Drain int32 → int64 ===
+
+	// Merge byte0 accumulators and drain
+	VPADDD Y9, Y8, Y8                   // Y8 = 8 x int32 (byte0 batch total)
+	VPMOVSXDQ X8, Y2
+	VPADDQ Y2, Y12, Y12
+	VEXTRACTI128 $1, Y8, X2
+	VPMOVSXDQ X2, Y2
+	VPADDQ Y2, Y13, Y13
+
+	// Merge byte1 accumulators, shift left 8, and drain
+	VPADDD Y11, Y10, Y10                // Y10 = 8 x int32 (byte1 batch total)
+	VPMOVSXDQ X10, Y2
+	VPSLLQ $8, Y2, Y2                   // × 256
+	VPADDQ Y2, Y14, Y14
+	VEXTRACTI128 $1, Y10, X2
+	VPMOVSXDQ X2, Y2
+	VPSLLQ $8, Y2, Y2
+	VPADDQ Y2, Y15, Y15
+
 	DECQ CX
-	JNZ v5screlu_n_loop
+	JNZ v5screlu_drain_loop
 
-	// === Epilogue: combine accumulators ===
+	// === Epilogue: combine all int64 accumulators ===
+	VPADDQ Y13, Y12, Y12                // byte0: 4 x int64
+	VPADDQ Y15, Y14, Y14                // byte1: 4 x int64
+	VPADDQ Y14, Y12, Y12                // combined: 4 x int64
 
-	// Phase 1: Reduce 4 int64 lo accumulators to 1
-	VPADDQ Y9, Y8, Y8
-	VPADDQ Y11, Y10, Y10
-	VPADDQ Y10, Y8, Y8                  // Y8 = 4 x int64 (lo total)
-
-	// Phase 2: Reduce 2 int32 hi accumulators and add to lo
-	VPADDD Y13, Y12, Y12                // Y12 = 8 x int32 (hi total)
-	// Widen hi to int64, shift left by 15 (multiply by 32768), add to Y8
-	VPMOVSXDQ X12, Y4                   // low 4 int32 -> int64
-	VPSLLQ $15, Y4, Y4                  // * 32768
-	VPADDQ Y4, Y8, Y8
-	VEXTRACTI128 $1, Y12, X12
-	VPMOVSXDQ X12, Y4                   // high 4 int32 -> int64
-	VPSLLQ $15, Y4, Y4
-	VPADDQ Y4, Y8, Y8
-
-	// Phase 3: Horizontal sum of Y8 (4 x int64 -> 1 int64)
-	VEXTRACTI128 $1, Y8, X9
-	VPADDQ X9, X8, X8                   // 2 x int64
-	VPSHUFD $0x4E, X8, X9               // swap 64-bit halves
-	VPADDQ X9, X8, X8                   // 1 x int64
-	VMOVQ X8, AX
+	// Horizontal sum of Y12 (4 x int64 → 1 int64)
+	VEXTRACTI128 $1, Y12, X9
+	VPADDQ X9, X12, X12                 // 2 x int64
+	VPSHUFD $0x4E, X12, X9              // swap 64-bit halves
+	VPADDQ X9, X12, X12                 // 1 x int64
+	VMOVQ X12, AX
 	MOVQ AX, ret+24(FP)
 
 	VZEROUPPER
