@@ -893,13 +893,17 @@ func (net *NNUENetV5) forwardL2SCReLUFloat(l1out []float32, bucket int) int {
 	for k := 0; k < L2; k++ {
 		h2[k] = net.L2BiasesF[k]
 	}
-	for i := 0; i < L1; i++ {
-		if l1out[i] == 0 {
-			continue
-		}
-		wOff := i * L2
-		for k := 0; k < L2; k++ {
-			h2[k] += l1out[i] * net.L2WeightsF[wOff+k]
+	if nnueUseSIMDV5 && L2%8 == 0 && L2 <= 64 {
+		nnueFloatMatVecFMA(&h2[0], &l1out[0], &net.L2WeightsF[0], L1, L2)
+	} else {
+		for i := 0; i < L1; i++ {
+			if l1out[i] == 0 {
+				continue
+			}
+			wOff := i * L2
+			for k := 0; k < L2; k++ {
+				h2[k] += l1out[i] * net.L2WeightsF[wOff+k]
+			}
 		}
 	}
 
@@ -914,7 +918,7 @@ func (net *NNUENetV5) forwardL2SCReLUFloat(l1out []float32, bucket int) int {
 		h2[k] = h2[k] * h2[k]
 	}
 
-	// Output dot in float
+	// Output dot in float (L2 is small, scalar is fine)
 	outW := net.OutWeightsF[bucket*L2 : bucket*L2+L2]
 	output := net.OutBiasF[bucket]
 	for k := 0; k < L2; k++ {

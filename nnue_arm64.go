@@ -180,3 +180,9 @@ func nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 in
 //
 //go:noescape
 func nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)
+
+// nnueFloatMatVecFMA — not yet implemented for ARM64, Go fallback used.
+// Placeholder declaration to match interface; panics if called with nnueUseSIMD=true.
+//
+//go:noescape
+func nnueFloatMatVecFMA(dst *float32, input *float32, weights *float32, inputLen int, outputLen int)

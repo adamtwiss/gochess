@@ -1636,3 +1636,12 @@ l1screlu_neon_inner:
 	BNE l1screlu_neon_outer
 
 	RET
+
+// ============================================================================
+// nnueFloatMatVecFMA — ARM64 stub (not yet optimized, falls back to Go scalar).
+// Go code checks nnueUseSIMDV5 before calling, but this stub exists for linkage.
+// ============================================================================
+TEXT ·nnueFloatMatVecFMA(SB), $0-40
+	MOVD $0, R0
+	MOVD R0, (R0)    // deliberate crash — should not be called
+	RET

@@ -180,7 +180,8 @@ func nnueSCReLUPack(src *int16, dst *byte, count int)
 //
 // where acc8 is uint8 packed accumulator (CReLU-clamped or SCReLU v²/QA),
 // wT8 is transposed int8 weights. Uses VPMADDUBSW (u8×i8→i16) for 2x throughput.
-// accLen must be a multiple of 32. hidden is int32.
+// 4-neuron blocking: processes 4 L1 neurons simultaneously, sharing acc loads.
+// accLen must be a multiple of 32. l1 must be a multiple of 4. hidden is int32.
 //
 //go:noescape
 func nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 int)
@@ -195,3 +196,13 @@ func nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 in
 //
 //go:noescape
 func nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int)
+
+// nnueFloatMatVecFMA computes float32 matrix-vector multiply using AVX2 FMA:
+//
+//	dst[k] += sum_i( input[i] * weights[i*outputLen + k] )
+//
+// dst must be pre-initialized (e.g. with biases). outputLen must be a multiple
+// of 8, max 64. Uses VBROADCASTSS + VFMADD231PS.
+//
+//go:noescape
+func nnueFloatMatVecFMA(dst *float32, input *float32, weights *float32, inputLen int, outputLen int)

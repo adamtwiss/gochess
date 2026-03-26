@@ -1330,6 +1330,20 @@ l1mm_inner:
 //   Y8, Y9 = int32 accumulators (2x unrolled)
 //   Y2-Y5 = loaded data, Y6-Y7 = VPMADDUBSW/VPMADDWD results
 // ============================================================================
+// nnueV5L1Int8MatMulN: 4-neuron blocked int8 matmul.
+// Processes 4 L1 neurons simultaneously, sharing accumulator loads across
+// all 4 weight rows. This gives 4× fewer acc loads and better ILP
+// (4 independent VPMADDUBSW chains for out-of-order execution).
+// L1 must be a multiple of 4. accLen must be a multiple of 32.
+//
+// Register allocation:
+//   SI = acc8 base, DI = current weight group base
+//   R8 = hidden pointer, R9 = stride (accLen bytes)
+//   R10 = acc cursor, R11-R14 = weight cursors (4 rows)
+//   R15 = inner loop counter, DX = outer counter (L1/4)
+//   CX = inner count (accLen/32, constant)
+//   Y0 = ones for VPMADDWD, Y2 = acc data (shared)
+//   Y3-Y6 = weight data, Y8-Y11 = neuron accumulators
 TEXT ·nnueV5L1Int8MatMulN(SB), NOSPLIT, $0-40
 	MOVQ acc8+0(FP), SI
 	MOVQ wT8+8(FP), DI
@@ -1337,62 +1351,108 @@ TEXT ·nnueV5L1Int8MatMulN(SB), NOSPLIT, $0-40
 	MOVQ accLen+24(FP), CX
 	MOVQ l1+32(FP), DX
 
-	// Weight row stride in bytes (1 byte per int8)
-	MOVQ CX, R9                         // R9 = accLen (stride in bytes)
+	MOVQ CX, R9                         // R9 = stride = accLen bytes
+	SHRQ $5, CX                         // CX = accLen / 32 = inner iterations
+	SHRQ $2, DX                         // DX = L1 / 4 = outer iterations
 
-	// Inner loop count: accLen / 64 (2x unrolled, 32 elements per group)
-	SHRQ $6, CX
-
-	// Load ones constant for VPMADDWD widening
-	VMOVDQU nnue_ones_16<>(SB), Y0      // Y0 = [1,1,1,...,1] (16 x int16)
+	VMOVDQU nnue_ones_16<>(SB), Y0      // ones for VPMADDWD widening
 
 l1i8_outer:
-	VPXOR Y8, Y8, Y8                    // accumulator 1
-	VPXOR Y9, Y9, Y9                    // accumulator 2
-	MOVQ SI, R10                        // R10 = acc cursor
-	MOVQ DI, R11                        // R11 = weight cursor
-	MOVQ CX, R12                        // R12 = inner loop counter
+	VPXOR Y8, Y8, Y8                    // acc neuron 0
+	VPXOR Y9, Y9, Y9                    // acc neuron 1
+	VPXOR Y10, Y10, Y10                 // acc neuron 2
+	VPXOR Y11, Y11, Y11                 // acc neuron 3
+
+	MOVQ SI, R10                        // acc cursor
+	MOVQ DI, R11                        // weight row 0
+	LEAQ (DI)(R9*1), R12               // weight row 1
+	LEAQ (DI)(R9*2), R13               // weight row 2
+	LEAQ (R12)(R9*2), R14              // weight row 3 = DI + 3*stride
+	MOVQ CX, R15                        // inner loop counter
 
 l1i8_inner:
-	// Load 32 uint8 acc values and 32 int8 weights
-	VMOVDQU (R10), Y2                   // 32 x uint8
-	VMOVDQU (R11), Y3                   // 32 x int8
+	// Load 32 uint8 accumulator values (shared by all 4 neurons)
+	VMOVDQU (R10), Y2
 
-	// VPMADDUBSW: u8 × i8 → i16 pairwise sums (16 results)
-	VPMADDUBSW Y3, Y2, Y4
+	// Neuron 0: u8×i8 → i16 → i32, accumulate
+	VMOVDQU (R11), Y3
+	VPMADDUBSW Y3, Y2, Y3
+	VPMADDWD Y0, Y3, Y3
+	VPADDD Y3, Y8, Y8
 
-	// VPMADDWD with ones: i16 → i32 (8 results)
-	VPMADDWD Y0, Y4, Y6
-	VPADDD Y6, Y8, Y8
+	// Neuron 1
+	VMOVDQU (R12), Y4
+	VPMADDUBSW Y4, Y2, Y4
+	VPMADDWD Y0, Y4, Y4
+	VPADDD Y4, Y9, Y9
 
-	// Second 32 elements (2x unrolled)
-	VMOVDQU 32(R10), Y2
-	VMOVDQU 32(R11), Y3
-	VPMADDUBSW Y3, Y2, Y5
-	VPMADDWD Y0, Y5, Y7
-	VPADDD Y7, Y9, Y9
+	// Neuron 2
+	VMOVDQU (R13), Y5
+	VPMADDUBSW Y5, Y2, Y5
+	VPMADDWD Y0, Y5, Y5
+	VPADDD Y5, Y10, Y10
 
-	ADDQ $64, R10
-	ADDQ $64, R11
-	DECQ R12
+	// Neuron 3
+	VMOVDQU (R14), Y6
+	VPMADDUBSW Y6, Y2, Y6
+	VPMADDWD Y0, Y6, Y6
+	VPADDD Y6, Y11, Y11
+
+	ADDQ $32, R10
+	ADDQ $32, R11
+	ADDQ $32, R12
+	ADDQ $32, R13
+	ADDQ $32, R14
+	DECQ R15
 	JNZ l1i8_inner
 
-	// Horizontal sum: Y8 + Y9 → scalar
-	VPADDD Y9, Y8, Y8
-	VEXTRACTI128 $1, Y8, X6
-	VPADDD X6, X8, X8
-	VPSHUFD $0x4E, X8, X6
-	VPADDD X6, X8, X8
-	VPSHUFD $0x01, X8, X6
-	VPADDD X6, X8, X8
+	// Horizontal sum neuron 0 → hidden[0]
+	VEXTRACTI128 $1, Y8, X3
+	VPADDD X3, X8, X8
+	VPSHUFD $0x4E, X8, X3
+	VPADDD X3, X8, X8
+	VPSHUFD $0x01, X8, X3
+	VPADDD X3, X8, X8
 	VMOVD X8, AX
-
-	// Accumulate into hidden[i]
 	ADDL (R8), AX
 	MOVL AX, (R8)
 
-	ADDQ $4, R8                          // next hidden slot
-	ADDQ R9, DI                          // next weight row
+	// Horizontal sum neuron 1 → hidden[1]
+	VEXTRACTI128 $1, Y9, X3
+	VPADDD X3, X9, X9
+	VPSHUFD $0x4E, X9, X3
+	VPADDD X3, X9, X9
+	VPSHUFD $0x01, X9, X3
+	VPADDD X3, X9, X9
+	VMOVD X9, AX
+	ADDL 4(R8), AX
+	MOVL AX, 4(R8)
+
+	// Horizontal sum neuron 2 → hidden[2]
+	VEXTRACTI128 $1, Y10, X3
+	VPADDD X3, X10, X10
+	VPSHUFD $0x4E, X10, X3
+	VPADDD X3, X10, X10
+	VPSHUFD $0x01, X10, X3
+	VPADDD X3, X10, X10
+	VMOVD X10, AX
+	ADDL 8(R8), AX
+	MOVL AX, 8(R8)
+
+	// Horizontal sum neuron 3 → hidden[3]
+	VEXTRACTI128 $1, Y11, X3
+	VPADDD X3, X11, X11
+	VPSHUFD $0x4E, X11, X3
+	VPADDD X3, X11, X11
+	VPSHUFD $0x01, X11, X3
+	VPADDD X3, X11, X11
+	VMOVD X11, AX
+	ADDL 12(R8), AX
+	MOVL AX, 12(R8)
+
+	// Advance to next group of 4 neurons
+	ADDQ $16, R8                         // hidden += 4 * sizeof(int32)
+	MOVQ R14, DI                         // DI = end of row 3 = start of row 4
 	DECQ DX
 	JNZ l1i8_outer
 
@@ -1503,5 +1563,132 @@ l1screlu_inner:
 	DECQ DX
 	JNZ l1screlu_outer
 
+	VZEROUPPER
+	RET
+
+// ============================================================================
+// nnueFloatMatVecFMA(dst *float32, input *float32, weights *float32, inputLen int, outputLen int)
+//
+// Float32 matrix-vector multiply using AVX2 FMA:
+//   dst[k] += sum_i( input[i] * weights[i * outputLen + k] )
+//
+// dst must be pre-initialized (e.g. with biases). outputLen must be a multiple
+// of 8. Uses VBROADCASTSS + VFMADD231PS for each input element, processing
+// 8 output neurons per YMM register.
+//
+// Register allocation:
+//   AX = dst, BX = input cursor, CX = weight cursor
+//   DX = inputLen counter, R8 = outputLen, R9 = outputLen * 4 (row stride bytes)
+//   Y0 = broadcast input value
+//   Y8+ = accumulators (loaded from dst, stored back at end)
+// ============================================================================
+TEXT ·nnueFloatMatVecFMA(SB), NOSPLIT, $0-40
+	MOVQ dst+0(FP), AX
+	MOVQ input+8(FP), BX
+	MOVQ weights+16(FP), CX
+	MOVQ inputLen+24(FP), DX
+	MOVQ outputLen+32(FP), R8
+
+	// Row stride in bytes = outputLen * 4
+	LEAQ (R8)(R8*1), R9                // R9 = outputLen * 2
+	LEAQ (R9)(R9*1), R9                // R9 = outputLen * 4? No...
+	// Simpler: outputLen * 4
+	MOVQ R8, R9
+	SHLQ $2, R9                        // R9 = outputLen * 4 bytes per row
+
+	// Compute number of YMM groups = outputLen / 8
+	MOVQ R8, R10
+	SHRQ $3, R10                        // R10 = outputLen / 8
+
+	// Load dst into accumulators
+	// We handle up to 8 groups (outputLen <= 64)
+	MOVQ AX, R11                        // R11 = dst cursor for initial load
+	MOVQ R10, R12                       // R12 = group counter
+	// Load all groups into Y8..Y15
+	VMOVUPS (R11), Y8
+	CMPQ R12, $1
+	JE fmv_loaded
+	VMOVUPS 32(R11), Y9
+	CMPQ R12, $2
+	JE fmv_loaded
+	VMOVUPS 64(R11), Y10
+	CMPQ R12, $3
+	JE fmv_loaded
+	VMOVUPS 96(R11), Y11
+	CMPQ R12, $4
+	JE fmv_loaded
+	VMOVUPS 128(R11), Y12
+	CMPQ R12, $5
+	JE fmv_loaded
+	VMOVUPS 160(R11), Y13
+	CMPQ R12, $6
+	JE fmv_loaded
+	VMOVUPS 192(R11), Y14
+	CMPQ R12, $7
+	JE fmv_loaded
+	VMOVUPS 224(R11), Y15
+
+fmv_loaded:
+	// Main loop: for each input[i], broadcast and FMA
+fmv_input_loop:
+	VBROADCASTSS (BX), Y0              // broadcast input[i] to all 8 lanes
+
+	// Inner loop: FMA for each group of 8 outputs
+	MOVQ CX, R11                       // R11 = weight row cursor
+	VFMADD231PS (R11), Y0, Y8
+	CMPQ R10, $1
+	JE fmv_next_input
+	VFMADD231PS 32(R11), Y0, Y9
+	CMPQ R10, $2
+	JE fmv_next_input
+	VFMADD231PS 64(R11), Y0, Y10
+	CMPQ R10, $3
+	JE fmv_next_input
+	VFMADD231PS 96(R11), Y0, Y11
+	CMPQ R10, $4
+	JE fmv_next_input
+	VFMADD231PS 128(R11), Y0, Y12
+	CMPQ R10, $5
+	JE fmv_next_input
+	VFMADD231PS 160(R11), Y0, Y13
+	CMPQ R10, $6
+	JE fmv_next_input
+	VFMADD231PS 192(R11), Y0, Y14
+	CMPQ R10, $7
+	JE fmv_next_input
+	VFMADD231PS 224(R11), Y0, Y15
+
+fmv_next_input:
+	ADDQ $4, BX                         // next input value (float32 = 4 bytes)
+	ADDQ R9, CX                         // next weight row
+	DECQ DX
+	JNZ fmv_input_loop
+
+	// Store accumulators back to dst
+	MOVQ AX, R11
+	VMOVUPS Y8, (R11)
+	CMPQ R10, $1
+	JE fmv_done
+	VMOVUPS Y9, 32(R11)
+	CMPQ R10, $2
+	JE fmv_done
+	VMOVUPS Y10, 64(R11)
+	CMPQ R10, $3
+	JE fmv_done
+	VMOVUPS Y11, 96(R11)
+	CMPQ R10, $4
+	JE fmv_done
+	VMOVUPS Y12, 128(R11)
+	CMPQ R10, $5
+	JE fmv_done
+	VMOVUPS Y13, 160(R11)
+	CMPQ R10, $6
+	JE fmv_done
+	VMOVUPS Y14, 192(R11)
+	CMPQ R10, $7
+	JE fmv_done
+	VMOVUPS Y15, 224(R11)
+
+fmv_done:
 	VZEROUPPER
 	RET

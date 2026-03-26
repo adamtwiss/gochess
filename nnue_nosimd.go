@@ -35,3 +35,4 @@ func nnueInt8DotN(a *byte, b *int8, count int) int32 { panic("SIMD not available
 func nnueSCReLUPack(src *int16, dst *byte, count int) { panic("SIMD not available") }
 func nnueV5L1Int8MatMulN(acc8 *byte, wT8 *int8, hidden *int32, accLen int, l1 int) { panic("SIMD not available") }
 func nnueV5L1SCReLUMatMulN(acc *int16, wT *int16, hidden *int64, accLen int, l1 int) { panic("SIMD not available") }
+func nnueFloatMatVecFMA(dst *float32, input *float32, weights *float32, inputLen int, outputLen int) { panic("SIMD not available") }
