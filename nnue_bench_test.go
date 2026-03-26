@@ -199,6 +199,53 @@ func loadTestV5Net(b *testing.B) *NNUENetV5 {
 	return nil
 }
 
+// BenchmarkForwardV5PairwiseDotOnly benchmarks just the pairwise dot product SIMD kernel.
+func BenchmarkForwardV5PairwiseDotOnly(b *testing.B) {
+	netV5 := loadTestV5PairwiseNet(b)
+	var board Board
+	board.Reset()
+	board.AttachNNUEV5(netV5)
+	board.NNUEAccV5.MaterializeV5(netV5, &board)
+	acc := board.NNUEAccV5.Current()
+	PW := netV5.HiddenSize / 2
+	outW := netV5.OutputWeights[:PW]
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nnueV5PairwiseDotN(&acc.White[0], &acc.White[PW], &outW[0], PW)
+	}
+}
+
+// BenchmarkForwardV5Pairwise benchmarks the full pairwise forward pass.
+func BenchmarkForwardV5Pairwise(b *testing.B) {
+	netV5 := loadTestV5PairwiseNet(b)
+	var board Board
+	board.Reset()
+	board.AttachNNUEV5(netV5)
+	board.NNUEAccV5.MaterializeV5(netV5, &board)
+	acc := board.NNUEAccV5.Current()
+	pieceCount := board.AllPieces.Count()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		netV5.Forward(acc, White, pieceCount)
+	}
+}
+
+// loadTestV5PairwiseNet loads a v5 pairwise net for benchmarking.
+func loadTestV5PairwiseNet(b *testing.B) *NNUENetV5 {
+	b.Helper()
+	for _, name := range []string{
+		"net-v5-768pw-wdl0-sb200.nnue",
+		"net-v5-768pw-wdl0-sb400.nnue",
+	} {
+		net, err := LoadNNUEV5(name)
+		if err == nil && net.UsePairwise {
+			return net
+		}
+	}
+	b.Skip("no v5 pairwise net available")
+	return nil
+}
+
 // loadTestV5SCReLUNet loads a v5 SCReLU net for benchmarking.
 func loadTestV5SCReLUNet(b *testing.B) *NNUENetV5 {
 	b.Helper()

@@ -1129,98 +1129,119 @@ v5screlu_inner:
 // ============================================================================
 // nnueV5PairwiseDotN(accFirst *int16, accSecond *int16, weights *int16, count int) int64
 //
-// Pairwise dot product for v5 768pw architecture.
+// Optimized pairwise dot product using byte decomposition + VPMADDWD.
 // Computes: sum = sum_i( clamp(a[i],0,255) * clamp(b[i],0,255) * weights[i] )
 // for i=0..count-1, where a=accFirst, b=accSecond (second half of accumulator).
 //
-// count must be a multiple of 16. Returns int64 (caller divides by QA=255).
-// Uses same int32→int64 widening pattern as nnueV5SCReLUDotN.
+// Key optimization: a*b ∈ [0,65025] = byte0 + byte1*256 (same as SCReLU x²).
+//   byte0 = (a*b) & 0xFF, byte1 = (a*b) >> 8
+// Both accumulate safely in int32 for 128-element batches.
+// count must be a multiple of 128. Returns int64 (caller divides by QA=255).
 //
 // Register allocation:
-//   AX  = accFirst pointer
-//   BX  = accSecond pointer
-//   DX  = weights pointer
-//   CX  = loop counter (count/16)
-//   Y0  = zero (floor)
-//   Y1  = 255 (ceiling)
-//   Y2  = clamped a[0..15]
-//   Y3  = clamped b[0..15]
-//   Y4,Y5 = widened a,b (int32)
-//   Y6  = product a*b (int32)
-//   Y7  = scratch for widening
-//   Y8-Y11 = int64 accumulators
-//   Y12 = widened weights (int32)
-//   Y13 = weights int16
+//   AX = accFirst, BX = accSecond, DX = weights
+//   CX = drain counter (count/128), SI = inner counter
+//   Y0 = zero, Y1 = 0x00FF (clamp + byte0 mask)
+//   Y2 = clamped a, Y3 = clamped b, Y4 = product, Y5 = weights
+//   Y6, Y7 = byte0, byte1 terms
+//   Y8-Y9 = int32 byte0 accumulators
+//   Y10-Y11 = int32 byte1 accumulators
+//   Y12-Y13 = int64 drain byte0
+//   Y14-Y15 = int64 drain byte1
 // ============================================================================
 TEXT ·nnueV5PairwiseDotN(SB), NOSPLIT, $0-40
 	MOVQ accFirst+0(FP), AX
 	MOVQ accSecond+8(FP), BX
 	MOVQ weights+16(FP), DX
 	MOVQ count+24(FP), CX
-	SHRQ $4, CX                         // count / 16 = iterations
-	VPXOR Y0, Y0, Y0                    // Y0 = zero (floor)
-	VMOVDQU nnue_clamp_255<>(SB), Y1    // Y1 = 255 (ceiling)
-	VPXOR Y8, Y8, Y8                    // int64 accumulator 0
-	VPXOR Y9, Y9, Y9                    // int64 accumulator 1
-	VPXOR Y10, Y10, Y10                 // int64 accumulator 2
-	VPXOR Y11, Y11, Y11                 // int64 accumulator 3
+	SHRQ $7, CX                         // count / 128 = drain cycles
 
-v5pw_n_loop:
-	// Load and clamp 16 int16 from first half
-	VMOVDQU (AX), Y2
-	VPMAXSW Y0, Y2, Y2                  // max(0, a)
-	VPMINSW Y1, Y2, Y2                  // min(255, a)
-	// Load and clamp 16 int16 from second half
-	VMOVDQU (BX), Y3
-	VPMAXSW Y0, Y3, Y3                  // max(0, b)
-	VPMINSW Y1, Y3, Y3                  // min(255, b)
-	// Load 16 int16 weights
-	VMOVDQU (DX), Y13
+	VPXOR Y0, Y0, Y0                    // zero (floor)
+	VMOVDQU nnue_clamp_255<>(SB), Y1    // 0x00FF (ceiling + byte0 mask)
 
-	// --- Low 8 elements ---
-	VPMOVSXWD X2, Y4                    // a[0..7] -> int32
-	VPMOVSXWD X3, Y5                    // b[0..7] -> int32
-	VPMOVSXWD X13, Y12                  // w[0..7] -> int32
-	VPMULLD Y4, Y5, Y6                  // a*b [0..7] (int32, max 65025)
-	VPMULLD Y12, Y6, Y6                 // a*b*w [0..7] (int32)
-	// Widen to int64 and accumulate
-	VPMOVSXDQ X6, Y7                    // low 4 -> int64
-	VPADDQ Y7, Y8, Y8
-	VEXTRACTI128 $1, Y6, X7
-	VPMOVSXDQ X7, Y7                    // high 4 -> int64
-	VPADDQ Y7, Y9, Y9
+	// Int64 drain accumulators
+	VPXOR Y12, Y12, Y12
+	VPXOR Y13, Y13, Y13
+	VPXOR Y14, Y14, Y14
+	VPXOR Y15, Y15, Y15
 
-	// --- High 8 elements ---
-	VEXTRACTI128 $1, Y2, X4
-	VPMOVSXWD X4, Y4                    // a[8..15] -> int32
-	VEXTRACTI128 $1, Y3, X5
-	VPMOVSXWD X5, Y5                    // b[8..15] -> int32
-	VEXTRACTI128 $1, Y13, X12
-	VPMOVSXWD X12, Y12                  // w[8..15] -> int32
-	VPMULLD Y4, Y5, Y6                  // a*b [8..15]
-	VPMULLD Y12, Y6, Y6                 // a*b*w [8..15]
-	// Widen to int64 and accumulate
-	VPMOVSXDQ X6, Y7                    // low 4 -> int64
-	VPADDQ Y7, Y10, Y10
-	VEXTRACTI128 $1, Y6, X7
-	VPMOVSXDQ X7, Y7                    // high 4 -> int64
-	VPADDQ Y7, Y11, Y11
+v5pw_drain_loop:
+	// Reset int32 batch accumulators
+	VPXOR Y8, Y8, Y8
+	VPXOR Y9, Y9, Y9
+	VPXOR Y10, Y10, Y10
+	VPXOR Y11, Y11, Y11
+	MOVQ $4, SI                          // 4 inner iterations × 32 elements = 128
 
-	ADDQ $32, AX
-	ADDQ $32, BX
-	ADDQ $32, DX
+v5pw_inner:
+	// ======== First 16 elements ========
+	VMOVDQU (AX), Y2                    // load a[0..15]
+	VPMAXSW Y0, Y2, Y2
+	VPMINSW Y1, Y2, Y2                  // clamp a
+	VMOVDQU (BX), Y3                    // load b[0..15]
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3                  // clamp b
+	VPMULLW Y2, Y3, Y4                  // a*b (uint16, max 65025)
+	VMOVDQU (DX), Y5                    // weights[0..15]
+	VPAND Y1, Y4, Y6                    // byte0 = product & 0xFF
+	VPSRLW $8, Y4, Y7                   // byte1 = product >> 8
+	VPMADDWD Y5, Y6, Y6                 // byte0 pairs
+	VPMADDWD Y5, Y7, Y7                 // byte1 pairs
+	VPADDD Y6, Y8, Y8
+	VPADDD Y7, Y10, Y10
+
+	// ======== Second 16 elements ========
+	VMOVDQU 32(AX), Y2
+	VPMAXSW Y0, Y2, Y2
+	VPMINSW Y1, Y2, Y2
+	VMOVDQU 32(BX), Y3
+	VPMAXSW Y0, Y3, Y3
+	VPMINSW Y1, Y3, Y3
+	VPMULLW Y2, Y3, Y4
+	VMOVDQU 32(DX), Y5
+	VPAND Y1, Y4, Y6
+	VPSRLW $8, Y4, Y7
+	VPMADDWD Y5, Y6, Y6
+	VPMADDWD Y5, Y7, Y7
+	VPADDD Y6, Y9, Y9
+	VPADDD Y7, Y11, Y11
+
+	ADDQ $64, AX
+	ADDQ $64, BX
+	ADDQ $64, DX
+	DECQ SI
+	JNZ v5pw_inner
+
+	// === Drain int32 → int64 ===
+	VPADDD Y9, Y8, Y8
+	VPMOVSXDQ X8, Y2
+	VPADDQ Y2, Y12, Y12
+	VEXTRACTI128 $1, Y8, X2
+	VPMOVSXDQ X2, Y2
+	VPADDQ Y2, Y13, Y13
+
+	VPADDD Y11, Y10, Y10
+	VPMOVSXDQ X10, Y2
+	VPSLLQ $8, Y2, Y2
+	VPADDQ Y2, Y14, Y14
+	VEXTRACTI128 $1, Y10, X2
+	VPMOVSXDQ X2, Y2
+	VPSLLQ $8, Y2, Y2
+	VPADDQ Y2, Y15, Y15
+
 	DECQ CX
-	JNZ v5pw_n_loop
+	JNZ v5pw_drain_loop
 
-	// Horizontal sum: Y8+Y9+Y10+Y11 -> single int64
-	VPADDQ Y9, Y8, Y8
-	VPADDQ Y11, Y10, Y10
-	VPADDQ Y10, Y8, Y8                  // 4 x int64
-	VEXTRACTI128 $1, Y8, X9
-	VPADDQ X9, X8, X8                   // 2 x int64
-	VPSHUFD $0x4E, X8, X9               // swap 64-bit halves
-	VPADDQ X9, X8, X8                   // 1 x int64
-	VMOVQ X8, AX
+	// === Combine all int64 accumulators ===
+	VPADDQ Y13, Y12, Y12
+	VPADDQ Y15, Y14, Y14
+	VPADDQ Y14, Y12, Y12
+
+	VEXTRACTI128 $1, Y12, X9
+	VPADDQ X9, X12, X12
+	VPSHUFD $0x4E, X12, X9
+	VPADDQ X9, X12, X12
+	VMOVQ X12, AX
 	MOVQ AX, ret+32(FP)
 
 	VZEROUPPER
