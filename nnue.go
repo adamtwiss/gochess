@@ -365,7 +365,7 @@ func nnuePieceIndex(p Piece) int {
 // When the king is on files e-h, piece squares are mirrored horizontally for symmetry.
 // Feature = bucket * 768 + pieceType * 64 + pieceSq
 func HalfKAIndex(perspective Color, kingSq Square, piece Piece, pieceSq Square) int {
-	pi := nnuePieceIndex(piece)
+	pi := nnuePieceIndexTable[piece]
 	if pi < 0 {
 		return -1 // empty — not a feature
 	}
@@ -378,10 +378,10 @@ func HalfKAIndex(perspective Color, kingSq Square, piece Piece, pieceSq Square) 
 		ks ^= 56
 		ps ^= 56
 		// Swap piece colors: 0-5 <-> 6-11
-		if pi < 6 {
-			pi += 6
-		} else {
+		if pi >= 6 {
 			pi -= 6
+		} else {
+			pi += 6
 		}
 	}
 
@@ -389,12 +389,10 @@ func HalfKAIndex(perspective Color, kingSq Square, piece Piece, pieceSq Square) 
 	bucket := kingBucketTable[ks]
 	if kingBucketMirrorFile[ks] {
 		// Mirror piece square horizontally (file a↔h, b↔g, c↔f, d↔e)
-		psFile := ps % 8
-		psRank := ps / 8
-		ps = psRank*8 + (7 - psFile)
+		ps = (ps & ^7) | (7 - (ps & 7))
 	}
 
-	return bucket*nnueNumPieceTypes*64 + pi*64 + ps
+	return bucket*(nnueNumPieceTypes*64) + pi*64 + ps
 }
 
 // AddFeature adds a feature (piece at square) to the accumulator for both perspectives.

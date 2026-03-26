@@ -1053,11 +1053,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					}
 					return score
 				case TTLower:
-					if score > alpha {
+					if beta-alphaOrig == 1 && score > alpha {
 						alpha = score
 					}
 				case TTUpper:
-					if score < beta {
+					if beta-alphaOrig == 1 && score < beta {
 						beta = score
 					}
 				}
@@ -1199,7 +1199,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Null-move pruning
 	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
 	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
-	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 && beta-alpha == 1 {
+	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 && beta-alpha == 1 && staticEval >= beta {
 		// Adaptive reduction: scales with depth and eval margin above beta
 		R := 3 + depth/3
 		// Reduce less after captures: the position is more forcing
@@ -1467,6 +1467,13 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 		// Save moved piece before MakeMove for consistent history indexing
 		movedPiece := b.Squares[move.From()]
+		capturedPc := Piece(Empty)
+		if isCap {
+			capturedPc = b.Squares[move.To()]
+			if move.Flags() == FlagEnPassant {
+				capturedPc = pieceOf(WhitePawn, b.SideToMove^1)
+			}
+		}
 
 		// History-based pruning: prune quiet moves with deeply negative history at shallow depths
 		if ply > 0 && !inCheck && !improving && !unstable && depth <= 3 &&
@@ -1713,12 +1720,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 				if reduction > 0 {
 					// Continuous capture history adjustment (mirrors quiet LMR pattern)
-					piece := b.Squares[move.From()]
-					cpt := capturedType(b.Squares[move.To()])
-					if move.Flags() == FlagEnPassant {
-						cpt = 1 // pawn
-					}
-					captHistVal := info.CaptHistory[piece][move.To()][cpt]
+					cpt := capturedType(capturedPc)
+					captHistVal := info.CaptHistory[movedPiece][move.To()][cpt]
 
 					// Positive capture history: reduce less
 					if captHistVal > 2000 {
