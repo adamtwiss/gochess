@@ -113,6 +113,15 @@ DATA nnue_257_16<>+24(SB)/8, $0x0101010101010101
 GLOBL nnue_257_16<>(SB), NOPTR+RODATA, $32
 
 // ============================================================================
+// ttPrefetch(bucket *TTBucket)
+// Issues PREFETCHT0 to bring a TT bucket into L1 cache.
+// ============================================================================
+TEXT ·ttPrefetch(SB), NOSPLIT, $0-8
+	MOVQ bucket+0(FP), AX
+	PREFETCHT0 (AX)
+	RET
+
+// ============================================================================
 // nnueSCReLUPack(src *int16, dst *byte, count int)
 // Packs int16 accumulator to uint8 with SCReLU: dst[i] = clamp(src[i],0,255)²/255
 // count must be a multiple of 32. Processes 32 elements per iteration.

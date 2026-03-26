@@ -168,6 +168,12 @@ func nnueCReLUPackN(src *int16, dst *byte, count int)
 //go:noescape
 func nnueInt8DotN(a *byte, b *int8, count int) int32
 
+// ttPrefetch issues PREFETCHT0 for a TT bucket address.
+//
+//go:noescape
+//go:nosplit
+func ttPrefetch(bucket *TTBucket)
+
 // nnueSCReLUPack packs int16 accumulator values to uint8 with SCReLU activation:
 //   dst[i] = clamp(src[i], 0, 255)² / 255
 // count must be a multiple of 32.
