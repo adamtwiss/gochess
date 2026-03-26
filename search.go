@@ -1234,8 +1234,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 			// Verification search at high depths to guard against zugzwang.
 			// Re-search at reduced depth without null move to confirm the cutoff.
-			if depth >= 14 {
-				vScore := b.negamax(depth-1-R, ply, beta-1, beta, info)
+			if depth >= 12 {
+				vScore := b.negamax(depth-1-R, ply+1, beta-1, beta, info)
 				if vScore >= beta {
 					return dampened
 				}
