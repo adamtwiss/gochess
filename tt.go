@@ -116,6 +116,12 @@ func (tt *TranspositionTable) index(key uint64) uint64 {
 	return key & tt.mask
 }
 
+// Prefetch issues a memory prefetch hint for the TT bucket of the given key.
+// Call early in the search node (before draw detection, etc.) to hide L3 latency.
+func (tt *TranspositionTable) Prefetch(key uint64) {
+	ttPrefetch(&tt.buckets[tt.index(key)])
+}
+
 // Probe looks up a position in the table.
 // Uses atomic loads and 32-bit XOR verification for lockless thread safety.
 func (tt *TranspositionTable) Probe(key uint64) (TTEntry, bool) {

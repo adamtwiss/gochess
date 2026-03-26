@@ -957,6 +957,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		return b.EvaluateRelative()
 	}
 
+	// Prefetch TT bucket early to hide memory latency behind draw detection,
+	// time check, and other pre-probe work (~20-50 cycles of computation).
+	info.TT.Prefetch(b.HashKey)
+
 	// Clear PV for this node (must happen before any early return so parent
 	// doesn't copy stale PV data from a previous search at this ply)
 	info.pvLen[ply] = 0
@@ -1938,6 +1942,9 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	if qsDepth >= 32 {
 		return b.EvaluateRelative()
 	}
+
+	// Prefetch TT bucket early
+	info.TT.Prefetch(b.HashKey)
 
 	info.Nodes++
 

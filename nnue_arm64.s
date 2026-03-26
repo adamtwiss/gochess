@@ -1645,3 +1645,9 @@ TEXT ·nnueFloatMatVecFMA(SB), $0-40
 	MOVD $0, R0
 	MOVD R0, (R0)    // deliberate crash — should not be called
 	RET
+
+// ttPrefetch issues PRFM PLDL1KEEP for a TT bucket address.
+TEXT ·ttPrefetch(SB), NOSPLIT, $0-8
+	MOVD bucket+0(FP), R0
+	WORD $0xF9800000    // PRFM PLDL1KEEP, [X0]
+	RET
