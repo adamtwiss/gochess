@@ -164,6 +164,58 @@ lr_scheduler: Sequence {
 }
 ```
 
+### Monitoring Hidden Layer Health During Training
+
+Hidden layer neurons (L1=16, L2=32) can die during training. **Monitor at every checkpoint.**
+
+**Using check-net:**
+```bash
+./tuner check-net net.nnue          # Reports architecture, evals test positions
+```
+Check-net flags: scores should be differentiated (knight ≠ bishop ≠ rook ≠ queen for piece-down positions). Collapsed evals (identical scores for different piece-down) indicate dead neurons.
+
+**Using weight analysis** (from raw quantised.bin or converted .nnue):
+```go
+// Load net and inspect per-neuron weight magnitude
+net, _ := chess.LoadNNUEV5("net.nnue")
+for i := 0; i < net.L1Size; i++ {
+    // Sum |weight| for neuron i across all inputs
+    var sum float64
+    for j := 0; j < 2*net.HiddenSize; j++ {
+        sum += math.Abs(float64(net.L1Weights[j*net.L1Size+i]))
+    }
+    meanW := sum / float64(2*net.HiddenSize)
+    fmt.Printf("Neuron %d: mean|w|=%.1f\n", i, meanW)
+}
+```
+
+**Healthy indicators:**
+- L1 mean|w| > 5 (growing over training)
+- L1 zeros < 10%
+- Per-neuron mean|w| differentiated (not all identical)
+- L1 biases active (not all zero)
+- L2 mean|w| > 20 for int16, > 5 for int8
+
+**Dead neuron indicators:**
+- L1 mean|w| < 1 or declining across checkpoints
+- L1 zeros > 50%
+- Per-neuron mean|w| uniform (e.g. all ~0.7 = no differentiation)
+- L1 biases all zero
+- check-net shows identical scores for different positions
+
+**Timeline from our experience:**
+- CReLU e800: 16/16 alive at SB20 → 1/16 alive at SB400 (dying ReLU)
+- SCReLU e800 with warmup: 16/16 alive through all 800 SBs
+- Without warmup, even SCReLU collapsed by SB40 on long schedules (e100+)
+- **Always check at SB20, SB50, SB100** — if L1 mean|w| is declining, kill and adjust
+
+**Key training requirements for hidden layers:**
+1. **SCReLU activation** (not CReLU) — CReLU has zero gradient at 0, kills neurons permanently
+2. **LR warmup** — 5 SB linear ramp 0.0001→0.001 before cosine decay (see schedule above)
+3. **int8 L1 (QA_L1=64)** gives 69% faster inference via VPMADDUBSW kernel
+4. **Float L2→output inference** — avoids integer truncation in narrow layers
+5. **Score filter `unsigned_abs() < 10000`** in Bullet data loader (consider tightening to 2000)
+
 ### Texel Tuner
 
 See `docs/legacy_trainer.md` for the Go CPU tuner (selfplay, parameter optimization). Still used for Texel tuning of eval parameters.
