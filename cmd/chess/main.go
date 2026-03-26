@@ -663,6 +663,7 @@ func runBench() {
 	// Parse bench-specific flags
 	benchFlags := flag.NewFlagSet("bench", flag.ExitOnError)
 	nnueFile := benchFlags.String("nnue", "", "NNUE network file (overrides net.txt)")
+	classicalMode := benchFlags.Bool("classical", false, "disable NNUE, use classical eval only")
 	benchFlags.Parse(os.Args[2:])
 
 	// Standard bench positions covering opening, middlegame, endgame, tactical, quiet
@@ -677,11 +678,13 @@ func runBench() {
 		"8/8/4kpp1/3p1b2/p6P/2B5/6P1/6K1 w - - 0 1",                                   // Endgame (minor pieces)
 	}
 
-	const benchDepth = 13
+	const benchDepth = 15
 
-	// Load NNUE net
+	// Load NNUE net (unless classical mode)
 	var netV5 *chess.NNUENetV5
-	if *nnueFile != "" {
+	if *classicalMode {
+		fmt.Fprintf(os.Stderr, "Classical eval mode (NNUE disabled)\n")
+	} else if *nnueFile != "" {
 		var err error
 		netV5, err = chess.LoadNNUEV5(*nnueFile)
 		if err != nil {
