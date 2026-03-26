@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -1633,72 +1632,79 @@ Options:
 	}
 	fmt.Println()
 
+	// Helper: evaluate from NNUETrainSample features (no Board needed)
+	evalFromFeatures := func(net *chess.NNUENetV5, ts *chess.NNUETrainSample) int {
+		H := net.HiddenSize
+		acc := chess.NNUEAccumulatorV5{
+			White: make([]int16, H),
+			Black: make([]int16, H),
+		}
+		copy(acc.White, net.InputBiases)
+		copy(acc.Black, net.InputBiases)
+		for _, idx := range ts.WhiteFeatures {
+			row := net.InputWeightRow(idx)
+			for j := 0; j < H; j++ {
+				acc.White[j] += row[j]
+			}
+		}
+		for _, idx := range ts.BlackFeatures {
+			row := net.InputWeightRow(idx)
+			for j := 0; j < H; j++ {
+				acc.Black[j] += row[j]
+			}
+		}
+		return net.Forward(&acc, ts.SideToMove, ts.PieceCount)
+	}
+
 	// === CORRELATION WITH REFERENCE SCORES ===
 	if *dataPath != "" {
-		f, err := os.Open(*dataPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening data: %v\n", err)
-			os.Exit(1)
-		}
-		defer f.Close()
-
-		fi, _ := f.Stat()
-		totalRecords := int(fi.Size()) / chess.BinpackRecordSize
-		step := 1
-		if totalRecords > *numPos {
-			step = totalRecords / *numPos
-		}
-
 		type sample struct {
 			refScore float64
 			eval1    float64
 			eval2    float64
 			bucket   int
-			fen      string
 		}
 		var samples []sample
 
-		var rec [chess.BinpackRecordSize]byte
-		idx := 0
-		for {
-			_, err := io.ReadFull(f, rec[:])
+		reader, err := chess.OpenSFBinpack(*dataPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening data: %v\n", err)
+			os.Exit(1)
+		}
+		defer reader.Close()
+
+		skipCount := 0
+		for len(samples) < *numPos {
+			ts, err := reader.Next()
 			if err != nil {
 				break
 			}
-			idx++
-			if idx%step != 0 {
+			skipCount++
+			if skipCount < 100 {
+				continue
+			}
+			skipCount = 0
+
+			if !ts.HasScore || ts.Score > 10000 || ts.Score < -10000 {
 				continue
 			}
 
-			b, score, _, err := chess.UnpackPosition(rec)
-			if err != nil {
-				continue
-			}
-			// Skip extreme scores and positions with too few pieces
-			if score > 10000 || score < -10000 {
-				continue
+			refScore := float64(ts.Score)
+			if ts.SideToMove == chess.Black {
+				refScore = -refScore
 			}
 
-			e1 := evalPos(net1, b)
 			s := sample{
-				refScore: float64(score),
-				eval1:    float64(e1),
-				bucket:   chess.OutputBucket(b.AllPieces.Count()),
+				refScore: refScore,
+				eval1:    float64(evalFromFeatures(net1, ts)),
+				bucket:   chess.OutputBucket(ts.PieceCount),
 			}
 
 			if net2 != nil {
-				s.eval2 = float64(evalPos(net2, b))
-			}
-
-			// Save FEN for outlier analysis
-			if len(samples) < 100 || (len(samples) < *numPos) {
-				s.fen = "" // only store for outlier candidates
+				s.eval2 = float64(evalFromFeatures(net2, ts))
 			}
 
 			samples = append(samples, s)
-			if len(samples) >= *numPos {
-				break
-			}
 		}
 
 		fmt.Printf("=== Correlation with Reference Scores (%d positions) ===\n", len(samples))
@@ -1825,7 +1831,12 @@ Options:
 		}
 	}
 
-	// === SMOOTHNESS TEST ===
+	// === SMOOTHNESS TEST (requires Board-based eval, skip if smooth=0) ===
+	if *smoothN <= 0 {
+		fmt.Println("\nSmoothing test skipped (-smooth 0)")
+		fmt.Println("\nDone.")
+		return
+	}
 	fmt.Printf("\n=== Smoothness Test (%d positions) ===\n", *smoothN)
 	// Use fixed test positions for reproducibility
 	testFens := []string{

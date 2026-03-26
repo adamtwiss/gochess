@@ -82,6 +82,11 @@ type NNUENetV5 struct {
 	UsePairwise bool
 }
 
+// InputWeightRow returns the input weights for a given feature index (exported for tooling).
+func (net *NNUENetV5) InputWeightRow(featureIdx int) []int16 {
+	return net.inputWeightRow(featureIdx)
+}
+
 // inputWeightRow returns the input weights for a given feature index.
 func (net *NNUENetV5) inputWeightRow(featureIdx int) []int16 {
 	off := featureIdx * net.HiddenSize
