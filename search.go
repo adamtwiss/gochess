@@ -1740,12 +1740,22 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			info.LMRAttempts++
 
 			// LMR: reduced depth, zero window
-			score = -b.negamax(newDepth-reduction, ply+1, -alpha-1, -alpha, info)
+			lmrDepth := newDepth - reduction
+			score = -b.negamax(lmrDepth, ply+1, -alpha-1, -alpha, info)
 
 			if score > alpha && atomic.LoadInt32(&info.Stopped) == 0 {
-				// LMR failed high → re-search full depth, zero window (PVS)
+				// LMR failed high → doDeeper/doShallower before re-search
+				// If score greatly exceeds bestScore, the LMR was too aggressive → search deeper
+				// If score barely exceeds alpha, the LMR was about right → search shallower
+				doDeeperAdj := 0
+				if score > bestScore+60+10*reduction {
+					doDeeperAdj = 1
+				} else if score < bestScore+newDepth {
+					doDeeperAdj = -1
+				}
+
 				info.LMRReSearches++
-				score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info)
+				score = -b.negamax(newDepth+doDeeperAdj, ply+1, -alpha-1, -alpha, info)
 			} else {
 				info.LMRSavings++
 			}
