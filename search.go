@@ -181,6 +181,21 @@ type SearchInfo struct {
 	// SEE quiet pruning statistics
 	SEEQuietPrunes uint64 // Moves pruned by SEE quiet pruning
 
+	// Move ordering quality
+	BetaCutoffs      uint64
+	FirstMoveCutoffs uint64
+
+	// Search stats for comparison with Coda
+	NMPCutoffs      uint64
+	NMPVerify       uint64
+	NMPVerifyFail   uint64
+	RFPCutoffs      uint64
+	FutilityPrunes  uint64
+	LMRSearches     uint64
+	TTCutoffs       uint64
+	RazorCutoffs    uint64
+	QNodes          uint64
+
 	// Singular extension: excluded move per ply for verification search
 	ExcludedMove [64]Move
 
@@ -242,6 +257,13 @@ func (info *SearchInfo) resetForSearch() {
 	info.LMRReSearches = 0
 	info.LMRSavings = 0
 	info.LMPPrunes = 0
+	info.NMPCutoffs = 0
+	info.RFPCutoffs = 0
+	info.FutilityPrunes = 0
+	info.LMRSearches = 0
+	info.TTCutoffs = 0
+	info.RazorCutoffs = 0
+	info.QNodes = 0
 	info.SEEQuietPrunes = 0
 	info.SingularTests = 0
 	info.SingularExtensions = 0
@@ -1051,7 +1073,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					} else {
 						info.pvLen[ply] = 0
 					}
-					return score
+					info.TTCutoffs++; return score
 				case TTLower:
 					if beta-alphaOrig == 1 && score > alpha {
 						alpha = score
@@ -1064,6 +1086,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 				if alpha >= beta {
 					if ttMove != NoMove {
+					info.TTCutoffs++
 						info.pvTable[ply][0] = ttMove
 						info.pvLen[ply] = 1
 
@@ -1235,12 +1258,14 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			// Verification search at high depths to guard against zugzwang.
 			// Re-search at reduced depth without null move to confirm the cutoff.
 			if depth >= 12 {
+				info.NMPVerify++
 				vScore := b.negamax(depth-1-R, ply+1, beta-1, beta, info)
 				if vScore >= beta {
-					return dampened
+					info.NMPCutoffs++; return dampened
 				}
+				info.NMPVerifyFail++
 			} else {
-				return dampened
+				info.NMPCutoffs++; return dampened
 			}
 		} else {
 			// NMP failed low: opponent had a strong reply. Extract it from TT.
@@ -1265,7 +1290,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				margin = depth * 70
 			}
 			if staticEval-margin >= beta {
-				return staticEval - margin
+				info.RFPCutoffs++; return staticEval - margin
 			}
 		}
 
@@ -1277,6 +1302,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				if score < alpha {
 					return score
 				}
+				info.RazorCutoffs++
 			}
 		}
 	}
@@ -1551,6 +1577,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				}
 			}
 			if staticEval+60+lmrDepth*60 <= alpha {
+				info.FutilityPrunes++
 				b.UnmakeMove(move)
 				continue
 			}
@@ -1745,6 +1772,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 		if reduction > 0 {
 			info.LMRAttempts++
+			info.LMRSearches++
 
 			// LMR: reduced depth, zero window
 			lmrDepth := newDepth - reduction
@@ -1803,6 +1831,8 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				info.pvLen[ply] = 1 + info.pvLen[ply+1]
 
 				if alpha >= beta {
+					info.BetaCutoffs++
+					if moveCount == 1 { info.FirstMoveCutoffs++ }
 					// Beta cutoff - update killer moves, history, and counter-move for quiet moves
 					if !isCap {
 						bonus := historyBonus(depth)
@@ -1941,6 +1971,8 @@ func (b *Board) quiescence(alpha, beta, ply int, info *SearchInfo) int {
 // Uses fail-soft: returns the actual best score (not clamped to [alpha, beta]),
 // which is required for correct TT interaction.
 func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDepth int) int {
+	info.QNodes++
+	info.QNodes++
 	// Limit quiescence depth to prevent stack overflow
 	if qsDepth >= 32 {
 		return b.EvaluateRelative()

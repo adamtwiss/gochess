@@ -1,5 +1,11 @@
 package chess
 
+import (
+	"fmt"
+	"os"
+	"sync/atomic"
+)
+
 // Non-linear mobility arrays indexed by move count. Each entry is {MG, EG}.
 // Derived from Stockfish classical at ~70% scale.
 var (
@@ -352,16 +358,26 @@ func (b *Board) Evaluate() int {
 
 // EvaluateRelative returns the evaluation from the perspective of the side to move.
 // Positive values are good for the side to move.
+var dumpEvalEnabled = os.Getenv("GOCHESS_DUMP_EVAL") != ""
+var dumpEvalCount uint64
+
 func (b *Board) EvaluateRelative() int {
+	var score int
 	if UseNNUE && b.NNUENetV5 != nil && b.NNUEAccV5 != nil {
-		return b.NNUEEvaluateRelativeV5()
+		score = b.NNUEEvaluateRelativeV5()
+	} else if UseNNUE && b.NNUENet != nil && b.NNUEAcc != nil {
+		score = b.NNUEEvaluateRelative()
+	} else {
+		score = b.Evaluate()
+		if b.SideToMove == Black {
+			score = -score
+		}
 	}
-	if UseNNUE && b.NNUENet != nil && b.NNUEAcc != nil {
-		return b.NNUEEvaluateRelative()
-	}
-	score := b.Evaluate()
-	if b.SideToMove == Black {
-		return -score
+	if dumpEvalEnabled {
+		n := atomic.AddUint64(&dumpEvalCount, 1) - 1
+		if n < 3000 {
+			fmt.Fprintf(os.Stderr, "EVAL n=%d hash=%016x eval=%d\n", n, b.HashKey, score)
+		}
 	}
 	return score
 }
