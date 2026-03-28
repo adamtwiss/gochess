@@ -95,6 +95,8 @@ func (e *UCIEngine) Run() {
 			e.cmdDebug()
 		case "eval":
 			e.cmdEval()
+		case "see":
+			e.cmdSEE()
 		}
 	}
 	// EOF on stdin: wait for any running search to finish (don't abort it).
@@ -397,7 +399,7 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 		if searchResult.BetaCutoffs > 0 {
 			fmr = searchResult.FirstMoveCutoffs * 100 / searchResult.BetaCutoffs
 		}
-		e.send("info string stats tt=%d nmp=%d rfp=%d razor=%d lmp=%d futility=%d see=%d lmr=%d qnodes=%d fmr=%d%%(%d/%d) nmpv=%d/%d", searchResult.TTCutoffs, searchResult.NMPCutoffs, searchResult.RFPCutoffs, searchResult.RazorCutoffs, searchResult.LMPPrunes, searchResult.FutilityPrunes, searchResult.SEEQuietPrunes, searchResult.LMRSearches, searchResult.QNodes, fmr, searchResult.FirstMoveCutoffs, searchResult.BetaCutoffs, searchResult.NMPVerify, searchResult.NMPVerifyFail)
+		e.send("info string stats tt=%d nmp=%d rfp=%d razor=%d lmp=%d futility=%d see=%d lmr=%d recap=%d qnodes=%d fmr=%d%%(%d/%d) nmpv=%d/%d", searchResult.TTCutoffs, searchResult.NMPCutoffs, searchResult.RFPCutoffs, searchResult.RazorCutoffs, searchResult.LMPPrunes, searchResult.FutilityPrunes, searchResult.SEEQuietPrunes, searchResult.LMRSearches, searchResult.RecaptureExtensions, searchResult.QNodes, fmr, searchResult.FirstMoveCutoffs, searchResult.BetaCutoffs, searchResult.NMPVerify, searchResult.NMPVerifyFail)
 		e.send("bestmove %s", result)
 
 		e.searchMu.Lock()
@@ -659,6 +661,17 @@ func (e *UCIEngine) cmdEval() {
 		pc := b.AllPieces.Count()
 		bucket := OutputBucket(pc)
 		e.send("info string piece_count %d bucket %d", pc, bucket)
+	}
+}
+
+func (e *UCIEngine) cmdSEE() {
+	b := e.board
+	var buf [64]Move
+	caps := b.GenerateCapturesAppend(buf[:0])
+	for _, m := range caps {
+		val := b.SEE(m)
+		ge0 := b.SEESign(m, 0)
+		e.send("SEE from=%d to=%d flags=%d val=%d ge0=%v", m.From(), m.To(), m.Flags(), val, ge0)
 	}
 }
 
