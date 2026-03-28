@@ -400,6 +400,11 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 			fmr = searchResult.FirstMoveCutoffs * 100 / searchResult.BetaCutoffs
 		}
 		e.send("info string stats tt=%d nmp=%d rfp=%d razor=%d lmp=%d futility=%d see=%d lmr=%d recap=%d qnodes=%d fmr=%d%%(%d/%d) nmpv=%d/%d", searchResult.TTCutoffs, searchResult.NMPCutoffs, searchResult.RFPCutoffs, searchResult.RazorCutoffs, searchResult.LMPPrunes, searchResult.FutilityPrunes, searchResult.SEEQuietPrunes, searchResult.LMRSearches, searchResult.RecaptureExtensions, searchResult.QNodes, fmr, searchResult.FirstMoveCutoffs, searchResult.BetaCutoffs, searchResult.NMPVerify, searchResult.NMPVerifyFail)
+		h := searchResult.LMRReductionHist
+		e.send("info string lmr_hist r1=%d r2=%d r3=%d r4=%d r5=%d r6=%d r7+=%d", h[1], h[2], h[3], h[4], h[5], h[6], h[7])
+		e.send("info string lmr_adj pv=%d cut=%d improving=%d failing=%d unstable=%d hist_good=%d hist_bad=%d", searchResult.LMRAdjPV, searchResult.LMRAdjCut, searchResult.LMRAdjImproving, searchResult.LMRAdjFailing, searchResult.LMRAdjUnstable, searchResult.LMRAdjHistGood, searchResult.LMRAdjHistBad)
+		dh := searchResult.DepthHist
+		e.send("info string depth_hist d0=%d d1=%d d2=%d d3=%d d4=%d d5=%d d6=%d d7=%d d8+=%d", dh[0], dh[1], dh[2], dh[3], dh[4], dh[5], dh[6], dh[7], dh[8]+dh[9]+dh[10]+dh[11]+dh[12]+dh[13]+dh[14]+dh[15])
 		e.send("bestmove %s", result)
 
 		e.searchMu.Lock()

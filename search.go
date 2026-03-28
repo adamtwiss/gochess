@@ -196,6 +196,17 @@ type SearchInfo struct {
 	RazorCutoffs    uint64
 	QNodes          uint64
 
+	// LMR reduction histogram and depth histogram
+	LMRReductionHist [8]uint64
+	DepthHist        [16]uint64
+	LMRAdjPV         uint64
+	LMRAdjCut        uint64
+	LMRAdjImproving  uint64
+	LMRAdjFailing    uint64
+	LMRAdjUnstable   uint64
+	LMRAdjHistGood   uint64
+	LMRAdjHistBad    uint64
+
 	// Singular extension: excluded move per ply for verification search
 	ExcludedMove [64]Move
 
@@ -1000,6 +1011,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 
 	info.Nodes++
+	d := depth
+	if d < 0 { d = 0 }
+	if d > 15 { d = 15 }
+	info.DepthHist[d]++
 
 	// Draw detection: repetition and 50-move rule
 	if ply > 0 {
@@ -1670,21 +1685,25 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// Reduce less at PV nodes where accuracy matters most
 				if beta-alpha > 1 {
 					reduction--
+					info.LMRAdjPV++
 				}
 
 				// Reduce more at expected cut nodes (zero window, not first move)
 				if beta-alpha == 1 && moveCount > 1 {
 					reduction++
+					info.LMRAdjCut++
 				}
 
 				// Reduce less when the position is improving (eval > eval 2 plies ago)
 				if improving {
 					reduction--
+					info.LMRAdjImproving++
 				}
 
 				// Reduce more when position is deteriorating significantly
 				if failing {
 					reduction++
+					info.LMRAdjFailing++
 				}
 
 				// Reduce more when multiple moves have already raised alpha
@@ -1695,6 +1714,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// Reduce less when eval is unstable (sharp swing from parent)
 				if unstable {
 					reduction--
+					info.LMRAdjUnstable++
 				}
 
 				// Reduce more when TT move is a capture — quiet alternatives less likely to be good
@@ -1720,7 +1740,10 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				if contHistPtr != nil {
 					histScore += int32(contHistPtr[movedPiece][move.To()])
 				}
-				reduction -= int(histScore / 5000)
+				histAdj := int(histScore / 5000)
+				reduction -= histAdj
+				if histAdj > 0 { info.LMRAdjHistGood++ }
+				if histAdj < 0 { info.LMRAdjHistBad++ }
 
 				// Clamp: never extend (negative), never reduce past depth 1
 				if reduction < 0 {
@@ -1773,6 +1796,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		if reduction > 0 {
 			info.LMRAttempts++
 			info.LMRSearches++
+			r := reduction
+			if r > 7 { r = 7 }
+			info.LMRReductionHist[r]++
 
 			// LMR: reduced depth, zero window
 			lmrDepth := newDepth - reduction
