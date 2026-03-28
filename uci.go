@@ -93,6 +93,8 @@ func (e *UCIEngine) Run() {
 			return
 		case "d":
 			e.cmdDebug()
+		case "eval":
+			e.cmdEval()
 		}
 	}
 	// EOF on stdin: wait for any running search to finish (don't abort it).
@@ -390,6 +392,12 @@ func (e *UCIEngine) cmdGo(tokens []string) {
 				result += " ponder " + searchResult.PV[1].String()
 			}
 		}
+		// Print search statistics for diagnostics
+		fmr := uint64(0)
+		if searchResult.BetaCutoffs > 0 {
+			fmr = searchResult.FirstMoveCutoffs * 100 / searchResult.BetaCutoffs
+		}
+		e.send("info string stats tt=%d nmp=%d rfp=%d razor=%d lmp=%d futility=%d see=%d lmr=%d qnodes=%d fmr=%d%%(%d/%d) nmpv=%d/%d", searchResult.TTCutoffs, searchResult.NMPCutoffs, searchResult.RFPCutoffs, searchResult.RazorCutoffs, searchResult.LMPPrunes, searchResult.FutilityPrunes, searchResult.SEEQuietPrunes, searchResult.LMRSearches, searchResult.QNodes, fmr, searchResult.FirstMoveCutoffs, searchResult.BetaCutoffs, searchResult.NMPVerify, searchResult.NMPVerifyFail)
 		e.send("bestmove %s", result)
 
 		e.searchMu.Lock()
@@ -617,6 +625,41 @@ func (e *UCIEngine) cmdSetOption(tokens []string) {
 func (e *UCIEngine) cmdDebug() {
 	e.send("%s", e.board.Print())
 	e.send("FEN: %s", e.board.ToFEN())
+}
+
+func (e *UCIEngine) cmdEval() {
+	b := e.board
+	rawScore := b.EvaluateRelative()
+	e.send("info string fen %s", b.ToFEN())
+	e.send("info string hash %016x", b.HashKey)
+	e.send("info string raw_nnue %d", rawScore)
+	e.send("info string side %d", b.SideToMove)
+
+	// Dump accumulator values for debugging
+	if b.NNUEAccV5 != nil {
+		acc := b.NNUEAccV5.Current()
+		// Force recompute to get clean values
+		net := b.NNUENetV5
+		net.RecomputeAccumulator(&b, acc, White)
+		net.RecomputeAccumulator(&b, acc, Black)
+		// Print first 16 values of each perspective
+		wStr := ""
+		bStr := ""
+		for i := 0; i < 16 && i < net.HiddenSize; i++ {
+			if i > 0 {
+				wStr += ","
+				bStr += ","
+			}
+			wStr += fmt.Sprintf("%d", acc.White[i])
+			bStr += fmt.Sprintf("%d", acc.Black[i])
+		}
+		e.send("info string white_acc [%s]", wStr)
+		e.send("info string black_acc [%s]", bStr)
+		// Also print output bucket
+		pc := b.AllPieces.Count()
+		bucket := OutputBucket(pc)
+		e.send("info string piece_count %d bucket %d", pc, bucket)
+	}
 }
 
 // computeSearchTime calculates soft and hard time allocations in milliseconds.
