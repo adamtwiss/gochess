@@ -1,7 +1,9 @@
 package chess
 
 import (
+	"fmt"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,6 +71,125 @@ var RecaptureExtEnabled = true
 // PassedPawnExtEnabled is kept for potential future experiments but PP extensions
 // are currently disabled (0.0 Elo ablation, 1095 games).
 var PassedPawnExtEnabled = false
+
+// Feature flags for ablation testing. All true = normal play.
+// Controlled at search start via env vars: DISABLE_ALL=1 disables all,
+// NO_XXX=1 disables individual, ENABLE_XXX=1 re-enables after DISABLE_ALL.
+var FeatNMP = true
+var FeatRFP = true
+var FeatRazoring = true
+var FeatProbCut = true
+var FeatLMR = true
+var FeatLMP = true
+var FeatFutility = true
+var FeatSEEPrune = true
+var FeatHistPrune = true
+var FeatBadNoisy = true
+var FeatExtensions = true
+var FeatAlphaReduce = true
+var FeatIIR = true
+var FeatHindsight = true
+var FeatCorrection = true
+var FeatPVS = true
+var FeatTTCutoff = true
+var FeatTTNearMiss = true
+var FeatTTStore = true
+var FeatQSCaptures = true
+
+// initFeatureFlags reads environment variables and sets feature flags.
+// Called once at the start of each search.
+func initFeatureFlags() {
+	// Reset all to true first
+	FeatNMP = true
+	FeatRFP = true
+	FeatRazoring = true
+	FeatProbCut = true
+	FeatLMR = true
+	FeatLMP = true
+	FeatFutility = true
+	FeatSEEPrune = true
+	FeatHistPrune = true
+	FeatBadNoisy = true
+	FeatExtensions = true
+	FeatAlphaReduce = true
+	FeatIIR = true
+	FeatHindsight = true
+	FeatCorrection = true
+	FeatPVS = true
+	FeatTTCutoff = true
+	FeatTTNearMiss = true
+	FeatTTStore = true
+	FeatQSCaptures = true
+
+	if os.Getenv("DISABLE_ALL") != "" {
+		FeatNMP = false
+		FeatRFP = false
+		FeatRazoring = false
+		FeatProbCut = false
+		FeatLMR = false
+		FeatLMP = false
+		FeatFutility = false
+		FeatSEEPrune = false
+		FeatHistPrune = false
+		FeatBadNoisy = false
+		FeatExtensions = false
+		FeatAlphaReduce = false
+		FeatIIR = false
+		FeatHindsight = false
+		FeatCorrection = false
+		FeatPVS = false
+		FeatTTCutoff = false
+		FeatTTNearMiss = false
+		FeatTTStore = false
+		FeatQSCaptures = false
+	}
+
+	// Individual NO_XXX overrides
+	if os.Getenv("NO_NMP") != "" { FeatNMP = false }
+	if os.Getenv("NO_RFP") != "" { FeatRFP = false }
+	if os.Getenv("NO_RAZORING") != "" { FeatRazoring = false }
+	if os.Getenv("NO_PROBCUT") != "" { FeatProbCut = false }
+	if os.Getenv("NO_LMR") != "" { FeatLMR = false }
+	if os.Getenv("NO_LMP") != "" { FeatLMP = false }
+	if os.Getenv("NO_FUTILITY") != "" { FeatFutility = false }
+	if os.Getenv("NO_SEE_PRUNE") != "" { FeatSEEPrune = false }
+	if os.Getenv("NO_HIST_PRUNE") != "" { FeatHistPrune = false }
+	if os.Getenv("NO_BAD_NOISY") != "" { FeatBadNoisy = false }
+	if os.Getenv("NO_EXTENSIONS") != "" { FeatExtensions = false }
+	if os.Getenv("NO_ALPHA_REDUCE") != "" { FeatAlphaReduce = false }
+	if os.Getenv("NO_IIR") != "" { FeatIIR = false }
+	if os.Getenv("NO_HINDSIGHT") != "" { FeatHindsight = false }
+	if os.Getenv("NO_CORRECTION") != "" { FeatCorrection = false }
+	if os.Getenv("NO_PVS") != "" { FeatPVS = false }
+	if os.Getenv("NO_TT_CUTOFF") != "" { FeatTTCutoff = false }
+	if os.Getenv("NO_TT_NEARMISS") != "" { FeatTTNearMiss = false }
+	if os.Getenv("NO_TT_STORE") != "" { FeatTTStore = false }
+	if os.Getenv("NO_QS_CAPTURES") != "" { FeatQSCaptures = false }
+
+	// Individual ENABLE_XXX re-enables (useful after DISABLE_ALL)
+	if os.Getenv("DISABLE_ALL") != "" {
+		if os.Getenv("ENABLE_NMP") != "" { FeatNMP = true }
+		if os.Getenv("ENABLE_RFP") != "" { FeatRFP = true }
+		if os.Getenv("ENABLE_RAZORING") != "" { FeatRazoring = true }
+		if os.Getenv("ENABLE_PROBCUT") != "" { FeatProbCut = true }
+		if os.Getenv("ENABLE_LMR") != "" { FeatLMR = true }
+		if os.Getenv("ENABLE_LMP") != "" { FeatLMP = true }
+		if os.Getenv("ENABLE_FUTILITY") != "" { FeatFutility = true }
+		if os.Getenv("ENABLE_SEE_PRUNE") != "" { FeatSEEPrune = true }
+		if os.Getenv("ENABLE_HIST_PRUNE") != "" { FeatHistPrune = true }
+		if os.Getenv("ENABLE_BAD_NOISY") != "" { FeatBadNoisy = true }
+		if os.Getenv("ENABLE_EXTENSIONS") != "" { FeatExtensions = true }
+		if os.Getenv("ENABLE_ALPHA_REDUCE") != "" { FeatAlphaReduce = true }
+		if os.Getenv("ENABLE_IIR") != "" { FeatIIR = true }
+		if os.Getenv("ENABLE_HINDSIGHT") != "" { FeatHindsight = true }
+		if os.Getenv("ENABLE_CORRECTION") != "" { FeatCorrection = true }
+		if os.Getenv("ENABLE_PVS") != "" { FeatPVS = true }
+		if os.Getenv("ENABLE_TT_CUTOFF") != "" { FeatTTCutoff = true }
+		if os.Getenv("ENABLE_TT_NEARMISS") != "" { FeatTTNearMiss = true }
+		if os.Getenv("ENABLE_TT_STORE") != "" { FeatTTStore = true }
+		if os.Getenv("ENABLE_QS_CAPTURES") != "" { FeatQSCaptures = true }
+	}
+}
 
 // LMR reduction tables - indexed by [depth][moveNumber]
 // Precomputed for efficiency. Separate tables for quiets and captures.
@@ -476,6 +597,9 @@ func (b *Board) SearchWithTT(maxDepth int, maxTime time.Duration, tt *Transposit
 // The caller may pre-configure fields like TT and OnDepth.
 // StartTime and MaxTime should be set before calling.
 func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo) {
+	// Initialize feature flags from environment variables
+	initFeatureFlags()
+
 	// Create a default TT if none provided
 	if info.TT == nil {
 		info.TT = NewTranspositionTable(16) // 16 MB default
@@ -550,6 +674,12 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 
 		var score int
 
+		// Dump TT after iteration 4 (before depth 5)
+		if depth == 5 && os.Getenv("DUMP_TT") != "" {
+			info.TT.DumpToFile("/tmp/gochess_tt_d4.txt")
+			fmt.Fprintf(os.Stderr, "GoChess TT dumped after d4\n")
+		}
+
 		if depth >= 4 && prevScore > -MateScore+100 && prevScore < MateScore-100 {
 			// Aspiration window search with Stockfish-style fail handling:
 			// On fail-low: narrow beta down (we know score <= old alpha),
@@ -565,6 +695,16 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 				beta = Infinity
 			}
 			for {
+				// Probe divergent hash before each aspiration attempt
+				if os.Getenv("TRACE_NODES") != "" && depth == 5 {
+					if entry, found := info.TT.Probe(0x5cac71485b008015); found {
+						fmt.Fprintf(os.Stderr, "PRE-D5 asp a=%d b=%d: TT HIT at 5cac71485b008015 mv=%s%s sc=%d d=%d f=%d\n",
+							alpha, beta, Square(entry.Move.From()).String(), Square(entry.Move.To()).String(),
+							entry.Score, entry.Depth, entry.Flag)
+					} else {
+						fmt.Fprintf(os.Stderr, "PRE-D5 asp a=%d b=%d: TT MISS at 5cac71485b008015\n", alpha, beta)
+					}
+				}
 				score = b.negamax(depth, 0, alpha, beta, info)
 				if atomic.LoadInt32(&info.Stopped) != 0 {
 					break
@@ -1011,6 +1151,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 
 	info.Nodes++
+	if os.Getenv("TRACE_NODES") != "" && info.Nodes <= 5000 {
+		fmt.Fprintf(os.Stderr, "NM %d d=%d p=%d a=%d b=%d h=%016x\n", info.Nodes, depth, ply, alpha, beta, b.HashKey)
+	}
 	d := depth
 	if d < 0 { d = 0 }
 	if d > 15 { d = 15 }
@@ -1047,7 +1190,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			if ttFlag == TTExact ||
 				(ttFlag == TTLower && score >= beta) ||
 				(ttFlag == TTUpper && score <= alpha) {
-				info.TT.Store(b.HashKey, MaxPly, score, ttFlag, NoMove, 0)
+				if FeatTTStore {
+					info.TT.Store(b.HashKey, MaxPly, score, ttFlag, NoMove, 0)
+				}
 				return score
 			}
 
@@ -1079,7 +1224,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				score += ply
 			}
 
-			if ttDepth >= depth {
+			if FeatTTCutoff && ttDepth >= depth {
 				switch entry.Flag {
 				case TTExact:
 					if ttMove != NoMove {
@@ -1130,7 +1275,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 					}
 					return score
 				}
-			} else if ttDepth >= depth-1 &&
+			} else if FeatTTNearMiss && ttDepth >= depth-1 &&
 				beta-alphaOrig == 1 &&
 				score > -MateScore+100 && score < MateScore-100 {
 				// TT near-miss cutoffs: accept entries 1 ply short with a score margin.
@@ -1173,7 +1318,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			rawEval = b.EvaluateRelative()
 		}
 		// Apply pawn-hash correction history to get adjusted eval for pruning
-		staticEval = info.correctedStaticEval(b, rawEval)
+		if FeatCorrection {
+			staticEval = info.correctedStaticEval(b, rawEval)
+		} else {
+			staticEval = rawEval
+		}
 		if ply <= MaxPly {
 			info.StaticEvals[ply] = staticEval
 		}
@@ -1215,7 +1364,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 
 	// Internal Iterative Reduction: reduce depth when no TT move exists.
 	// Searching without a good move to try first is less efficient.
-	if IIREnabled && depth >= 6 && ttMove == NoMove && !inCheck {
+	if FeatIIR && IIREnabled && depth >= 6 && ttMove == NoMove && !inCheck {
 		depth--
 	}
 
@@ -1226,7 +1375,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Hindsight reduction: when both sides think the position is quiet
 	// (parent's eval + current eval are both positive), reduce depth by 1.
 	// Source: Alexandria (reduction>=1 && (ss-1)->staticEval + ss->staticEval >= 155)
-	if !inCheck && ply >= 1 && depth >= 3 &&
+	if FeatHindsight && !inCheck && ply >= 1 && depth >= 3 &&
 		info.StaticEvals[ply-1] > -MateScore+100 && staticEval > -Infinity {
 		evalSum := info.StaticEvals[ply-1] + staticEval
 		if evalSum > 200 {
@@ -1237,7 +1386,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// Null-move pruning
 	// Skip if: in check, at root, depth too shallow, or no non-pawn material (zugzwang risk)
 	stmNonPawn := b.Occupied[b.SideToMove] &^ b.Pieces[pieceOf(WhitePawn, b.SideToMove)] &^ b.Pieces[pieceOf(WhiteKing, b.SideToMove)]
-	if depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 && beta-alpha == 1 && staticEval >= beta {
+	if FeatNMP && depth >= 3 && !inCheck && ply > 0 && stmNonPawn != 0 && beta-alpha == 1 && staticEval >= beta {
 		// Adaptive reduction: scales with depth and eval margin above beta
 		R := 3 + depth/3
 		// Reduce less after captures: the position is more forcing
@@ -1299,7 +1448,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// NNUE-tuned margins: tighter than classical since eval is more accurate.
 		// improving = true -> depth * 60 (trust rising eval, prune aggressively)
 		// improving = false -> depth * 100
-		if depth <= 7 && ply > 0 {
+		if FeatRFP && depth <= 7 && ply > 0 {
 			margin := depth * 100
 			if improving {
 				margin = depth * 70
@@ -1310,7 +1459,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// Razoring: at shallow depths, if eval is far below alpha, drop to quiescence
-		if RazoringEnabled && depth <= 2 && ply > 0 {
+		if FeatRazoring && RazoringEnabled && depth <= 2 && ply > 0 {
 			razoringMargin := 400 + depth*100
 			if staticEval+razoringMargin < alpha {
 				score := b.quiescence(alpha, beta, ply, info)
@@ -1325,7 +1474,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	// ProbCut: at moderate+ depths, if a shallow search of captures with
 	// raised beta confirms the position is winning, prune the node.
 	probCutBeta := beta + 170
-	if !inCheck && ply > 0 && depth >= 5 && staticEval+85 >= probCutBeta {
+	if FeatProbCut && !inCheck && ply > 0 && depth >= 5 && staticEval+85 >= probCutBeta {
 		pcDepth := depth - 4
 		var pcBuf [64]Move
 		caps := b.GenerateCapturesAppend(pcBuf[:0])
@@ -1436,7 +1585,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		isCap := isCapture(move, b)
 
 		// SEE capture pruning: at shallow depths, prune captures that lose material
-		if isCap && ply > 0 && !inCheck && depth <= 6 &&
+		if FeatSEEPrune && isCap && ply > 0 && !inCheck && depth <= 6 &&
 			move != ttMove && bestScore > -MateScore+100 &&
 			!b.SEESign(move, -depth*100) {
 			continue
@@ -1445,7 +1594,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// SEE quiet pruning: compute SEE before MakeMove (doesn't modify board)
 		var seeQuietScore int
 		checkSEEQuiet := false
-		if SEEQuietPruneEnabled && ply > 0 && !inCheck && depth <= 8 &&
+		if FeatSEEPrune && SEEQuietPruneEnabled && ply > 0 && !inCheck && depth <= 8 &&
 			!isCap && !move.IsPromotion() &&
 			move != killers[0] && move != killers[1] &&
 			move != counterMove && move != ttMove &&
@@ -1517,7 +1666,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// History-based pruning: prune quiet moves with deeply negative history at shallow depths
-		if ply > 0 && !inCheck && !improving && !unstable && depth <= 3 &&
+		if FeatHistPrune && ply > 0 && !inCheck && !improving && !unstable && depth <= 3 &&
 			!isCap && !move.IsPromotion() &&
 			move != ttMove &&
 			move != killers[0] && move != killers[1] &&
@@ -1535,7 +1684,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Bad noisy flag: identify losing captures for tighter futility pruning.
 		// SEE is only called when the cheap guards (depth, eval) suggest pruning is possible.
 		isBadNoisy := false
-		if isCap && !inCheck && ply > 0 && depth <= 4 && move != ttMove &&
+		if FeatBadNoisy && isCap && !inCheck && ply > 0 && depth <= 4 && move != ttMove &&
 			!move.IsPromotion() && bestScore > -MateScore+100 &&
 			staticEval > -Infinity && staticEval+depth*75 <= alpha {
 			isBadNoisy = !b.SEESign(move, 0)
@@ -1570,7 +1719,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// Futility pruning: use estimated post-LMR depth for tighter margin
-		if staticEval > -Infinity && depth <= 8 && !inCheck && !givesCheck &&
+		if FeatFutility && staticEval > -Infinity && depth <= 8 && !inCheck && !givesCheck &&
 			!isCap && !move.IsPromotion() &&
 			bestScore > -MateScore+100 {
 			// Estimate LMR reduction for this move
@@ -1601,15 +1750,17 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Late Move Pruning: at shallow depths, skip late quiet moves
 		// Placed after MakeMove so we can exempt check-giving moves
 	// Formula: (3 + depth*depth), +50% when improving
-		if LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
+		if FeatLMP && LMPEnabled && ply > 0 && !inCheck && depth >= 1 && depth <= 8 &&
 			!isCap && !move.IsPromotion() && !givesCheck &&
 			bestScore > -MateScore+100 && beta-alpha == 1 {
 			lmpLimit := 3 + depth*depth
-			if improving && depth >= 3 {
-				lmpLimit += lmpLimit / 2
-			}
-			if failing {
-				lmpLimit = lmpLimit * 2 / 3
+			if os.Getenv("LMP_BASE_ONLY") == "" {
+				if improving && depth >= 3 {
+					lmpLimit += lmpLimit / 2
+				}
+				if failing {
+					lmpLimit = lmpLimit * 2 / 3
+				}
 			}
 			if moveCount > lmpLimit {
 				info.LMPPrunes++
@@ -1635,7 +1786,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		// Check extensions removed: harmful (-11.2 Elo, SPRT).
 		// PP extensions removed: noise (0.0 Elo ablation, 1095 games).
 		extension := 0
-		if RecaptureExtEnabled && isCap && len(b.UndoStack) >= 2 {
+		if FeatExtensions && RecaptureExtEnabled && isCap && len(b.UndoStack) >= 2 {
 			prevUndo := b.UndoStack[len(b.UndoStack)-2]
 			if prevUndo.Captured != Empty && move.To() == prevUndo.Move.To() {
 				extension = 1
@@ -1646,7 +1797,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		newDepth := depth - 1 + extension
 
 		// Alpha-reduce: after alpha has been raised, reduce subsequent moves by 1 ply
-		if alphaRaisedCount > 0 {
+		if FeatAlphaReduce && alphaRaisedCount > 0 {
 			newDepth--
 		}
 		if newDepth < 0 {
@@ -1671,7 +1822,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		isKiller := move == killers[0] || move == killers[1]
 
 		reduction := 0
-		if LMREnabled && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !givesCheck {
+		if FeatLMR && LMREnabled && !inCheck && !isCap && !move.IsPromotion() && !isKiller && !givesCheck {
 			d, m := depth, moveCount
 			if d >= 64 {
 				d = 63
@@ -1756,7 +1907,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 		}
 
 		// LMR for captures: use separate capture LMR table with capture history adjustments
-		if LMREnabled && !inCheck && isCap && !move.IsPromotion() && !givesCheck && moveCount > 1 && move != ttMove {
+		if FeatLMR && LMREnabled && !inCheck && isCap && !move.IsPromotion() && !givesCheck && moveCount > 1 && move != ttMove {
 			// Only reduce at non-PV nodes (zero window search)
 			if beta-alpha == 1 {
 				d, m := depth, moveCount
@@ -1825,7 +1976,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 				// PVS failed high → full window re-search
 				score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
 			}
-		} else if moveCount > 1 {
+		} else if FeatPVS && moveCount > 1 {
 			// PVS: zero-window for non-first moves
 			score = -b.negamax(newDepth, ply+1, -alpha-1, -alpha, info)
 			if score > alpha && score < beta && atomic.LoadInt32(&info.Stopped) == 0 {
@@ -1834,7 +1985,17 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		} else {
 			// First move: always full window
+			if os.Getenv("TRACE_CALLS") != "" && info.Nodes <= 3000 {
+				fmt.Fprintf(os.Stderr, "CALL n=%d mv=%s%s d=%d p=%d a=%d b=%d\n",
+					info.Nodes, Square(move.From()).String(), Square(move.To()).String(),
+					newDepth, ply+1, -beta, -alpha)
+			}
 			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
+			if os.Getenv("TRACE_CALLS") != "" && info.Nodes <= 3000 {
+				fmt.Fprintf(os.Stderr, "RETN n=%d mv=%s%s d=%d p=%d ret=%d\n",
+					info.Nodes, Square(move.From()).String(), Square(move.To()).String(),
+					newDepth, ply+1, score)
+			}
 		}
 
 		b.UnmakeMove(move)
@@ -1960,7 +2121,9 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			storeScore -= ply
 		}
 
-		info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove, rawEval)
+		if FeatTTStore {
+			info.TT.Store(b.HashKey, depth, storeScore, flag, bestMove, rawEval)
+		}
 	}
 
 	// Update pawn-hash correction history when we have a reliable score.
@@ -2008,6 +2171,11 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 
 	info.Nodes++
 
+	// QSearch node trace
+	if os.Getenv("TRACE_NODES") != "" && info.Nodes <= 5000 {
+		fmt.Fprintf(os.Stderr, "QS %d p=%d a=%d b=%d h=%016x qd=%d\n", info.Nodes, ply, alpha, beta, b.HashKey, qsDepth)
+	}
+
 	// Check time periodically
 	if info.Nodes&1023 == 0 {
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
@@ -2030,6 +2198,13 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		ttHit = true
 		ttMove = entry.Move
 		ttStaticEval = entry.StaticEval
+
+		// Trace TT probe for divergent hash
+		if os.Getenv("TRACE_NODES") != "" && b.HashKey == 0x5cac71485b008015 {
+			fmt.Fprintf(os.Stderr, "QS-TT h=%016x hit mv=%s%s score=%d depth=%d flag=%d\n",
+				b.HashKey, Square(entry.Move.From()).String(), Square(entry.Move.To()).String(),
+				entry.Score, entry.Depth, entry.Flag)
+		}
 
 		if int(entry.Depth) >= -1 {
 			score := int(entry.Score)
@@ -2125,7 +2300,9 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		} else {
 			flag = TTExact
 		}
-		info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, -Infinity)
+		if FeatTTStore {
+			info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, -Infinity)
+		}
 		return bestScore
 	}
 
@@ -2151,6 +2328,11 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		alpha = bestScore
 	}
 
+	// FeatQSCaptures: when disabled, return standPat immediately (skip capture loop)
+	if !FeatQSCaptures {
+		return bestScore
+	}
+
 	// Use MovePicker for captures only (reuse pre-allocated picker)
 	info.pickers[qsIdx].InitQuiescence(b, ttMove, &info.CaptHistory)
 	picker := &info.pickers[qsIdx]
@@ -2160,6 +2342,12 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		move := picker.Next()
 		if move == NoMove {
 			break
+		}
+
+		// Trace captures at the divergent hash
+		if os.Getenv("TRACE_NODES") != "" && b.HashKey == 0x5cac71485b008015 {
+			seeOk := b.SEESign(move, 0)
+			fmt.Fprintf(os.Stderr, "QS-CAP h=%016x mv=%s%s see=%v\n", b.HashKey, Square(move.From()).String(), Square(move.To()).String(), seeOk)
 		}
 
 		// Delta pruning: skip captures that can't possibly raise alpha
@@ -2215,7 +2403,9 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 	} else {
 		flag = TTExact
 	}
-	info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, standPat)
+	if FeatTTStore {
+		info.TT.Store(b.HashKey, -1, storeScore, flag, bestMove, standPat)
+	}
 
 	// QS beta blending: dampen capture fail-high at non-PV nodes.
 	// TT stores unblended score; return blended value (intentional asymmetry, SPRT-validated).

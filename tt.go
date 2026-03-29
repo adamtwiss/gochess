@@ -1,6 +1,10 @@
 package chess
 
-import "sync/atomic"
+import (
+	"fmt"
+	"os"
+	"sync/atomic"
+)
 
 // Transposition table for storing search results
 
@@ -237,5 +241,29 @@ func (tt *TranspositionTable) Hashfull() int {
 		}
 	}
 	return used * 1000 / totalSlots
+}
+
+// DumpToFile writes all non-empty TT entries to a file for comparison.
+func (tt *TranspositionTable) DumpToFile(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for bi := uint64(0); bi <= tt.mask; bi++ {
+		bucket := &tt.buckets[bi]
+		for si := 0; si < 5; si++ {
+			data := atomic.LoadUint64(&bucket.data[si])
+			key := atomic.LoadUint32(&bucket.keys[si])
+			depth, score, flag, mv, _, staticEval := unpackTTData(data)
+			if flag == TTNone { continue }
+			upper32 := key ^ uint32(data)
+			hash := (uint64(upper32) << 32) | bi
+			gen := uint8((data >> 56) & 0xFF)
+			fmt.Fprintf(f, "%d %d %016x %d %d %d %d %d %d\n", bi, si, hash, depth, score, flag, mv, staticEval, gen)
+		}
+	}
+	return nil
 }
 
