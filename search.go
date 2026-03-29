@@ -1998,7 +1998,6 @@ func (b *Board) quiescence(alpha, beta, ply int, info *SearchInfo) int {
 // which is required for correct TT interaction.
 func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDepth int) int {
 	info.QNodes++
-	info.QNodes++
 	// Limit quiescence depth to prevent stack overflow
 	if qsDepth >= 32 {
 		return b.EvaluateRelative()
