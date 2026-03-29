@@ -1,7 +1,6 @@
 package chess
 
 import (
-	"fmt"
 	"math"
 	"os"
 	"sync"
@@ -674,12 +673,6 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 
 		var score int
 
-		// Dump TT after iteration 4 (before depth 5)
-		if depth == 5 && os.Getenv("DUMP_TT") != "" {
-			info.TT.DumpToFile("/tmp/gochess_tt_d4.txt")
-			fmt.Fprintf(os.Stderr, "GoChess TT dumped after d4\n")
-		}
-
 		if depth >= 4 && prevScore > -MateScore+100 && prevScore < MateScore-100 {
 			// Aspiration window search with Stockfish-style fail handling:
 			// On fail-low: narrow beta down (we know score <= old alpha),
@@ -695,16 +688,6 @@ func (b *Board) SearchWithInfo(maxDepth int, info *SearchInfo) (Move, SearchInfo
 				beta = Infinity
 			}
 			for {
-				// Probe divergent hash before each aspiration attempt
-				if os.Getenv("TRACE_NODES") != "" && depth == 5 {
-					if entry, found := info.TT.Probe(0x5cac71485b008015); found {
-						fmt.Fprintf(os.Stderr, "PRE-D5 asp a=%d b=%d: TT HIT at 5cac71485b008015 mv=%s%s sc=%d d=%d f=%d\n",
-							alpha, beta, Square(entry.Move.From()).String(), Square(entry.Move.To()).String(),
-							entry.Score, entry.Depth, entry.Flag)
-					} else {
-						fmt.Fprintf(os.Stderr, "PRE-D5 asp a=%d b=%d: TT MISS at 5cac71485b008015\n", alpha, beta)
-					}
-				}
 				score = b.negamax(depth, 0, alpha, beta, info)
 				if atomic.LoadInt32(&info.Stopped) != 0 {
 					break
@@ -1151,9 +1134,6 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 	}
 
 	info.Nodes++
-	if os.Getenv("TRACE_NODES") != "" && info.Nodes <= 5000 {
-		fmt.Fprintf(os.Stderr, "NM %d d=%d p=%d a=%d b=%d h=%016x\n", info.Nodes, depth, ply, alpha, beta, b.HashKey)
-	}
 	d := depth
 	if d < 0 { d = 0 }
 	if d > 15 { d = 15 }
@@ -1754,13 +1734,11 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			!isCap && !move.IsPromotion() && !givesCheck &&
 			bestScore > -MateScore+100 && beta-alpha == 1 {
 			lmpLimit := 3 + depth*depth
-			if os.Getenv("LMP_BASE_ONLY") == "" {
-				if improving && depth >= 3 {
-					lmpLimit += lmpLimit / 2
-				}
-				if failing {
-					lmpLimit = lmpLimit * 2 / 3
-				}
+			if improving && depth >= 3 {
+				lmpLimit += lmpLimit / 2
+			}
+			if failing {
+				lmpLimit = lmpLimit * 2 / 3
 			}
 			if moveCount > lmpLimit {
 				info.LMPPrunes++
@@ -1985,17 +1963,7 @@ func (b *Board) negamax(depth, ply int, alpha, beta int, info *SearchInfo) int {
 			}
 		} else {
 			// First move: always full window
-			if os.Getenv("TRACE_CALLS") != "" && info.Nodes <= 3000 {
-				fmt.Fprintf(os.Stderr, "CALL n=%d mv=%s%s d=%d p=%d a=%d b=%d\n",
-					info.Nodes, Square(move.From()).String(), Square(move.To()).String(),
-					newDepth, ply+1, -beta, -alpha)
-			}
 			score = -b.negamax(newDepth, ply+1, -beta, -alpha, info)
-			if os.Getenv("TRACE_CALLS") != "" && info.Nodes <= 3000 {
-				fmt.Fprintf(os.Stderr, "RETN n=%d mv=%s%s d=%d p=%d ret=%d\n",
-					info.Nodes, Square(move.From()).String(), Square(move.To()).String(),
-					newDepth, ply+1, score)
-			}
 		}
 
 		b.UnmakeMove(move)
@@ -2171,11 +2139,6 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 
 	info.Nodes++
 
-	// QSearch node trace
-	if os.Getenv("TRACE_NODES") != "" && info.Nodes <= 5000 {
-		fmt.Fprintf(os.Stderr, "QS %d p=%d a=%d b=%d h=%016x qd=%d\n", info.Nodes, ply, alpha, beta, b.HashKey, qsDepth)
-	}
-
 	// Check time periodically
 	if info.Nodes&1023 == 0 {
 		if d := atomic.LoadInt64(&info.Deadline); d > 0 && time.Now().UnixNano() >= d {
@@ -2198,13 +2161,6 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		ttHit = true
 		ttMove = entry.Move
 		ttStaticEval = entry.StaticEval
-
-		// Trace TT probe for divergent hash
-		if os.Getenv("TRACE_NODES") != "" && b.HashKey == 0x5cac71485b008015 {
-			fmt.Fprintf(os.Stderr, "QS-TT h=%016x hit mv=%s%s score=%d depth=%d flag=%d\n",
-				b.HashKey, Square(entry.Move.From()).String(), Square(entry.Move.To()).String(),
-				entry.Score, entry.Depth, entry.Flag)
-		}
 
 		if int(entry.Depth) >= -1 {
 			score := int(entry.Score)
@@ -2342,12 +2298,6 @@ func (b *Board) quiescenceWithDepth(alpha, beta, ply int, info *SearchInfo, qsDe
 		move := picker.Next()
 		if move == NoMove {
 			break
-		}
-
-		// Trace captures at the divergent hash
-		if os.Getenv("TRACE_NODES") != "" && b.HashKey == 0x5cac71485b008015 {
-			seeOk := b.SEESign(move, 0)
-			fmt.Fprintf(os.Stderr, "QS-CAP h=%016x mv=%s%s see=%v\n", b.HashKey, Square(move.From()).String(), Square(move.To()).String(), seeOk)
 		}
 
 		// Delta pruning: skip captures that can't possibly raise alpha
